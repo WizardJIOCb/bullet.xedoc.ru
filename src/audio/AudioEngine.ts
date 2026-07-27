@@ -17,22 +17,25 @@ export interface CatalogAudioTrack {
   id: string;
   title: string;
   file: string;
+  bytes?: number;
 }
+
+const MAX_AUDIO_FILE_BYTES = 48 * 1024 * 1024;
+const MAX_AUDIO_DURATION = 8 * 60;
+const MAX_PLAYBACK_DURATION = 108;
 
 export class AudioEngine {
   private context: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
   private master: GainNode | null = null;
   private frequencyData = new Uint8Array(256);
-  private media: HTMLAudioElement | null = null;
-  private mediaSource: MediaElementAudioSourceNode | null = null;
-  private ownedMediaUrl: string | null = null;
+  private decodedTrack: AudioBuffer | null = null;
+  private trackSource: AudioBufferSourceNode | null = null;
   private profile: MusicProfile = createDefaultMusicProfile();
   private sourceKind: AudioSourceKind = 'synthetic';
   private usingFile = false;
   private running = false;
   private startedAt = 0;
-  private pausedAt = 0;
   private nextStepTime = 0;
   private stepIndex = 0;
   private lastBeatAt = -10;
@@ -69,62 +72,112 @@ export class AudioEngine {
     return this.context;
   }
 
-  private clearMedia(): void {
-    this.mediaSource?.disconnect();
-    this.mediaSource = null;
-    if (this.media) {
-      this.media.pause();
-      this.media.removeAttribute('src');
-      this.media.load();
+  private clearTrackSource(): void {
+    if (!this.trackSource) return;
+    try {
+      this.trackSource.stop();
+    } catch {
+      // A source that never started or already ended is safe to discard.
     }
-    this.media = null;
-    if (this.ownedMediaUrl) URL.revokeObjectURL(this.ownedMediaUrl);
-    this.ownedMediaUrl = null;
+    this.trackSource.disconnect();
+    this.trackSource = null;
   }
 
-  private installMedia(context: AudioContext, src: string, ownsUrl: boolean): void {
-    this.clearMedia();
-    const media = new Audio();
-    media.crossOrigin = 'anonymous';
-    media.preload = 'auto';
-    media.loop = true;
-    media.src = src;
-    this.media = media;
-    this.ownedMediaUrl = ownsUrl ? src : null;
-    this.mediaSource = context.createMediaElementSource(media);
-    this.mediaSource.connect(this.master!);
+  private startDecodedTrack(context: AudioContext, startAt: number): void {
+    if (!this.decodedTrack) throw new Error('Decoded track is not available');
+    this.clearTrackSource();
+    const source = context.createBufferSource();
+    source.buffer = this.decodedTrack;
+    source.loop = true;
+    source.connect(this.master!);
+    source.start(startAt);
+    this.trackSource = source;
+  }
+
+  private async validateAudioBlob(blob: Blob, label: string): Promise<void> {
+    if (blob.size > MAX_AUDIO_FILE_BYTES) {
+      throw new Error(`${label} is larger than 48 MB`);
+    }
+    const duration = await new Promise<number>((resolve, reject) => {
+      const media = new Audio();
+      const url = URL.createObjectURL(blob);
+      let settled = false;
+      let timeout = 0;
+      const finish = (error?: Error): void => {
+        if (settled) return;
+        settled = true;
+        const resolvedDuration = media.duration;
+        window.clearTimeout(timeout);
+        media.removeAttribute('src');
+        media.load();
+        URL.revokeObjectURL(url);
+        if (error) reject(error);
+        else resolve(resolvedDuration);
+      };
+      timeout = window.setTimeout(() => finish(new Error('Audio metadata timed out')), 10000);
+      media.preload = 'metadata';
+      media.addEventListener('loadedmetadata', () => finish(), { once: true });
+      media.addEventListener('error', () => finish(new Error('Audio metadata could not be read')), { once: true });
+      media.src = url;
+    });
+    if (!Number.isFinite(duration) || duration <= 0) throw new Error(`${label} has an invalid duration`);
+    if (duration > MAX_AUDIO_DURATION) throw new Error(`${label} is longer than 8 minutes`);
+  }
+
+  private trimPlaybackBuffer(context: AudioContext, buffer: AudioBuffer): AudioBuffer {
+    if (buffer.duration <= MAX_PLAYBACK_DURATION) return buffer;
+    const frameCount = Math.min(buffer.length, Math.ceil(MAX_PLAYBACK_DURATION * buffer.sampleRate));
+    const trimmed = context.createBuffer(buffer.numberOfChannels, frameCount, buffer.sampleRate);
+    for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
+      trimmed.copyToChannel(buffer.getChannelData(channel).subarray(0, frameCount), channel);
+    }
+    return trimmed;
   }
 
   async prepareFile(file: File): Promise<MusicProfile> {
     const context = this.ensureContext();
     this.stop();
+    this.decodedTrack = null;
+    await this.validateAudioBlob(file, file.name);
     const bytes = await file.arrayBuffer();
     const buffer = await context.decodeAudioData(bytes);
-    this.profile = this.analyzeBuffer(buffer, `${file.name}:${file.size}:${file.lastModified}`, file.name);
+    if (buffer.duration > MAX_AUDIO_DURATION) throw new Error(`${file.name} is longer than 8 minutes`);
+    const profile = this.analyzeBuffer(buffer, `${file.name}:${file.size}:${file.lastModified}`, file.name);
+    const playbackBuffer = this.trimPlaybackBuffer(context, buffer);
+    this.profile = profile;
     this.sourceKind = 'local';
     this.usingFile = true;
-    this.installMedia(context, URL.createObjectURL(file), true);
+    this.decodedTrack = playbackBuffer;
     return this.profile;
   }
 
   async prepareCatalogTrack(track: CatalogAudioTrack): Promise<MusicProfile> {
     const context = this.ensureContext();
     this.stop();
+    this.decodedTrack = null;
+    if (typeof track.bytes === 'number' && track.bytes > MAX_AUDIO_FILE_BYTES) {
+      throw new Error(`${track.title} is larger than 48 MB`);
+    }
     const response = await fetch(track.file, { cache: 'force-cache' });
     if (!response.ok) throw new Error(`Music request failed: ${response.status} ${response.statusText}`);
-    const bytes = await response.arrayBuffer();
-    const byteLength = bytes.byteLength;
+    const blob = await response.blob();
+    await this.validateAudioBlob(blob, track.title);
+    const byteLength = blob.size;
+    const bytes = await blob.arrayBuffer();
     const buffer = await context.decodeAudioData(bytes);
-    this.profile = this.analyzeBuffer(buffer, `catalog:${track.id}:${byteLength}`, track.title);
+    if (buffer.duration > MAX_AUDIO_DURATION) throw new Error(`${track.title} is longer than 8 minutes`);
+    const profile = this.analyzeBuffer(buffer, `catalog:${track.id}:${byteLength}`, track.title);
+    const playbackBuffer = this.trimPlaybackBuffer(context, buffer);
+    this.profile = profile;
     this.sourceKind = 'catalog';
     this.usingFile = true;
-    this.installMedia(context, track.file, false);
+    this.decodedTrack = playbackBuffer;
     return this.profile;
   }
 
   useSynthetic(): MusicProfile {
     this.stop();
-    this.clearMedia();
+    this.decodedTrack = null;
     this.profile = createDefaultMusicProfile();
     this.sourceKind = 'synthetic';
     this.usingFile = false;
@@ -133,15 +186,12 @@ export class AudioEngine {
 
   async start(): Promise<void> {
     const context = this.ensureContext();
-    let playPromise: Promise<void> = Promise.resolve();
-    if (this.usingFile && this.media) {
-      this.media.currentTime = 0;
-      playPromise = this.media.play();
-    }
-    await Promise.all([context.resume(), playPromise]);
+    const startAt = context.currentTime;
+    const resumePromise = context.resume();
+    if (this.usingFile) this.startDecodedTrack(context, startAt);
+    this.startedAt = startAt;
+    await resumePromise;
     this.running = true;
-    this.pausedAt = 0;
-    this.startedAt = context.currentTime;
     this.lastBeatAt = -10;
     this.beatAnchor = this.profile.beatOffset || 0;
     this.lastObservedTime = 0;
@@ -152,35 +202,29 @@ export class AudioEngine {
 
   pause(): void {
     if (!this.running) return;
-    this.pausedAt = this.getTime();
     this.running = false;
-    if (this.media) this.media.pause();
     if (this.context?.state === 'running') void this.context.suspend();
   }
 
   async resume(): Promise<void> {
     const context = this.ensureContext();
     await context.resume();
-    this.startedAt = context.currentTime - this.pausedAt;
     this.running = true;
     if (this.nextStepTime < context.currentTime + 0.01) this.nextStepTime = context.currentTime + 0.04;
-    if (this.usingFile && this.media) await this.media.play();
   }
 
   stop(): void {
     this.running = false;
-    this.pausedAt = 0;
-    if (this.media) {
-      this.media.pause();
-      this.media.currentTime = 0;
-    }
+    this.clearTrackSource();
+    if (this.context) this.startedAt = this.context.currentTime;
     if (this.context?.state === 'running') void this.context.suspend();
   }
 
   getTime(): number {
-    if (this.usingFile && this.media) return this.media.currentTime;
-    if (!this.context) return this.pausedAt;
-    return this.running ? Math.max(0, this.context.currentTime - this.startedAt) : this.pausedAt;
+    if (!this.context) return 0;
+    const elapsed = Math.max(0, this.context.currentTime - this.startedAt);
+    const loopDuration = this.decodedTrack?.duration || this.profile.duration;
+    return this.usingFile && loopDuration > 0 ? elapsed % loopDuration : elapsed;
   }
 
   update(dt: number): AudioBands {
@@ -443,7 +487,7 @@ export class AudioEngine {
 
   async dispose(): Promise<void> {
     this.stop();
-    this.clearMedia();
+    this.decodedTrack = null;
     this.master?.disconnect();
     this.analyser?.disconnect();
     if (this.context && this.context.state !== 'closed') await this.context.close();

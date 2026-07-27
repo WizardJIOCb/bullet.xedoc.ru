@@ -401,6 +401,7 @@ async function loadMusicCatalog(): Promise<void> {
 }
 
 async function loadCatalogTrack(entry: MusicCatalogEntry): Promise<void> {
+  if (musicLoading) return;
   setMusicLoading(true);
   setMusicCatalogError(null);
   setText('#music-title', 'LOADING SERVER TRACK…');
@@ -432,6 +433,7 @@ async function loadCatalogTrack(entry: MusicCatalogEntry): Promise<void> {
 
 const musicFile = query<HTMLInputElement>('#music-file');
 async function loadMusicFile(file: File): Promise<void> {
+  if (musicLoading) return;
   const drop = query<HTMLElement>('#music-drop');
   setMusicLoading(true);
   setMusicCatalogError(null);

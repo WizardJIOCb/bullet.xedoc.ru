@@ -8,8 +8,7 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const publicMusicDir = path.join(projectRoot, 'public', 'assets', 'music');
 const distMusicDir = path.join(projectRoot, 'dist', 'assets', 'music');
 const supportedExtensions = new Set(['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac', '.webm']);
-const publishableFileLimit = 95 * 1024 * 1024;
-const largeFileWarning = 50 * 1024 * 1024;
+const publishableFileLimit = 48 * 1024 * 1024;
 
 export function isSupported(name) {
   return supportedExtensions.has(path.extname(name).toLowerCase());
@@ -59,12 +58,9 @@ export function importedFilename(originalName, hash) {
   return `${semanticName}-${hash.slice(0, 8)}${extension}`;
 }
 
-function assertPublishableSize(name, bytes, warn = true) {
+function assertPublishableSize(name, bytes) {
   if (bytes > publishableFileLimit) {
-    throw new Error(`${name} is larger than 95 MB. Compress or split it before committing to GitHub.`);
-  }
-  if (warn && bytes > largeFileWarning) {
-    console.warn(`Large music file: ${name} (${Math.round(bytes / (1024 * 1024))} MB). GitHub recommends Git LFS above 50 MB.`);
+    throw new Error(`${name} is larger than 48 MB. Compress or split it for browser playback.`);
   }
 }
 
@@ -74,7 +70,7 @@ export async function syncMusic() {
   for (const name of await listFiles(distMusicDir)) {
     const source = path.join(distMusicDir, name);
     const sourceStat = await stat(source);
-    assertPublishableSize(name, sourceStat.size, false);
+    assertPublishableSize(name, sourceStat.size);
     const hash = await fileHash(source);
     const targetName = importedFilename(name, hash);
     const target = path.join(publicMusicDir, targetName);
