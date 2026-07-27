@@ -23,12 +23,12 @@ import {
 } from '../core/types';
 import { generateTrack, radialAt, sampleTrackFrame, type TrackFrame, type TrackPlan } from './track';
 
-type GameState = 'menu' | 'countdown' | 'playing' | 'upgrade' | 'finished';
+type GameState = 'menu' | 'countdown' | 'playing' | 'finished';
 
 interface GameHooks {
   onHud: (stats: RunStats) => void;
   onToast: (message: string, detail?: string, tone?: 'cyan' | 'gold' | 'red' | 'violet') => void;
-  onUpgrade: (options: UpgradeDefinition[]) => void;
+  onUpgradeState: (pending: UpgradeDefinition[], installed: UpgradeDefinition[]) => void;
   onFinish: (result: RunResult) => void;
   onCountdown: (value: string | null) => void;
   onSection: (name: string, index: number) => void;
@@ -131,6 +131,8 @@ export class BallisticGame {
   private section = 1;
   private upgradeIndex = 0;
   private upgradeRoll = 0;
+  private pendingUpgradeOptions: UpgradeDefinition[] = [];
+  private queuedUpgradePicks = 0;
   private lastCollisionCursor = 0;
   private runUpgrades = new Set<UpgradeId>();
   private lastBands: AudioBands = { bass: 0, mids: 0, highs: 0, overall: 0, pulse: 0, onBeat: false };
@@ -216,16 +218,22 @@ export class BallisticGame {
     this.hooks.onCountdown('3');
   }
 
-  async chooseUpgrade(id: UpgradeId): Promise<void> {
-    if (this.state !== 'upgrade') return;
+  chooseUpgrade(id: UpgradeId): boolean {
+    if (this.state !== 'playing' || !this.pendingUpgradeOptions.some((upgrade) => upgrade.id === id)) return false;
     this.runUpgrades.add(id);
     if (id === 'glass-cannon') {
       this.maxShield = Math.max(1, this.maxShield - 1);
       this.shield = Math.min(this.shield, this.maxShield);
     }
     this.hooks.onToast(UPGRADES.find((upgrade) => upgrade.id === id)?.name || 'MODULE INSTALLED', 'Сборка болида обновлена', 'violet');
-    this.state = 'playing';
-    await this.audio.resume();
+    this.pendingUpgradeOptions = [];
+    if (this.queuedUpgradePicks > 0) {
+      this.queuedUpgradePicks -= 1;
+      this.openUpgrade();
+    } else {
+      this.emitUpgradeState();
+    }
+    return true;
   }
 
   setMobileControl(control: 'left' | 'right' | 'boost' | 'cool', active: boolean): void {
@@ -280,6 +288,10 @@ export class BallisticGame {
     this.audio.stop();
     this.state = 'menu';
     this.config = null;
+    this.pendingUpgradeOptions = [];
+    this.queuedUpgradePicks = 0;
+    this.runUpgrades.clear();
+    this.emitUpgradeState();
     this.hooks.onCountdown(null);
   }
 
@@ -301,6 +313,16 @@ export class BallisticGame {
   }
 
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
+    const target = event.target;
+    const isEditing = target instanceof HTMLElement && Boolean(target.closest('input, select, textarea, [contenteditable="true"]'));
+    const upgradeDigit = event.code.match(/^(?:Digit|Numpad)([1-3])$/)?.[1]
+      ?? (['1', '2', '3'].includes(event.key) ? event.key : null);
+    const upgradeIndex = upgradeDigit ? Number(upgradeDigit) - 1 : -1;
+    if (!isEditing && !event.repeat && upgradeIndex >= 0 && this.pendingUpgradeOptions[upgradeIndex]) {
+      event.preventDefault();
+      this.chooseUpgrade(this.pendingUpgradeOptions[upgradeIndex].id);
+      return;
+    }
     if (['ArrowLeft', 'ArrowRight', 'ArrowDown', 'Space'].includes(event.code)) event.preventDefault();
     this.keys.add(event.code);
     if (!event.repeat && ['KeyF', 'Enter'].includes(event.code)) this.fire();
@@ -394,34 +416,92 @@ export class BallisticGame {
 
   private addStructuralRings(primary: number, secondary: number): void {
     const geometry = new THREE.TorusGeometry(this.plan.radius - 0.16, 0.075, 4, 28);
-    const material = new THREE.MeshBasicMaterial({ color: primary, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending });
-    const count = Math.floor(this.plan.length / 92);
+    const material = new THREE.MeshBasicMaterial({ color: primary, transparent: true, opacity: 0.46, blending: THREE.AdditiveBlending });
+    const beats = this.plan.beatDistances;
+    const count = beats.length;
     const rings = new THREE.InstancedMesh(geometry, material, count);
     const matrix = new THREE.Matrix4();
     const quaternion = new THREE.Quaternion();
     const scale = new THREE.Vector3(1, 1, 1);
     const forward = new THREE.Vector3(0, 0, 1);
     for (let index = 0; index < count; index += 1) {
-      const progress = (index * 92 + 36) / this.plan.length;
+      const beat = beats[index];
+      const progress = beat.distance / this.plan.length;
       const frame = sampleTrackFrame(this.plan, progress);
       quaternion.setFromUnitVectors(forward, frame.tangent);
-      scale.setScalar(index % 8 === 0 ? 1.004 : 1);
+      scale.setScalar(1 + beat.strength * 0.006 + (beat.barBeat === 0 ? 0.009 : 0));
       matrix.compose(frame.position, quaternion, scale);
       rings.setMatrixAt(index, matrix);
-      rings.setColorAt(index, new THREE.Color(index % 8 === 0 ? secondary : primary));
+      rings.setColorAt(index, new THREE.Color(beat.barBeat === 0 ? secondary : primary));
     }
     rings.instanceMatrix.needsUpdate = true;
     if (rings.instanceColor) rings.instanceColor.needsUpdate = true;
     rings.frustumCulled = false;
     this.world.add(rings);
+
+    if (this.plan.transitionDistances.length > 0) {
+      const transitionGeometry = new THREE.TorusGeometry(this.plan.radius - 0.34, 0.21, 5, 36);
+      const transitionMaterial = new THREE.MeshBasicMaterial({ color: secondary, transparent: true, opacity: 0.78, blending: THREE.AdditiveBlending });
+      const transitionRings = new THREE.InstancedMesh(transitionGeometry, transitionMaterial, this.plan.transitionDistances.length);
+      for (let index = 0; index < this.plan.transitionDistances.length; index += 1) {
+        const transition = this.plan.transitionDistances[index];
+        const frame = sampleTrackFrame(this.plan, transition.distance / this.plan.length);
+        quaternion.setFromUnitVectors(forward, frame.tangent);
+        const punch = transition.kind === 'drop' ? 1.035 : 1.012;
+        scale.setScalar(punch + transition.strength * 0.012);
+        matrix.compose(frame.position, quaternion, scale);
+        transitionRings.setMatrixAt(index, matrix);
+        transitionRings.setColorAt(index, new THREE.Color(transition.kind === 'drop' ? 0xffd35a : secondary));
+      }
+      transitionRings.instanceMatrix.needsUpdate = true;
+      if (transitionRings.instanceColor) transitionRings.instanceColor.needsUpdate = true;
+      transitionRings.frustumCulled = false;
+      this.world.add(transitionRings);
+    }
   }
 
   private addTrackEvents(): void {
     for (const event of this.plan.events) {
+      const warning = this.createEventWarning(event);
+      if (warning) this.world.add(warning);
       const visual = this.createEventVisual(event);
       this.eventVisuals.set(event.id, visual);
       this.world.add(visual);
     }
+  }
+
+  private createEventWarning(event: TrackEvent): THREE.Object3D | null {
+    if (!['gate', 'halfwall', 'blade', 'cross', 'mine', 'drone'].includes(event.kind)) return null;
+    const distance = event.distance - clamp(event.warningDistance * 0.62, 150, 280);
+    if (distance < 35) return null;
+    const frame = sampleTrackFrame(this.plan, distance / this.plan.length);
+    const group = new THREE.Group();
+    group.userData.warningFor = event.id;
+    group.position.copy(frame.position);
+    group.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(frame.normal, frame.binormal, frame.tangent));
+    const warningColor = event.kind === 'mine' || event.kind === 'drone' ? 0xff9b42 : 0xffd35a;
+    const ring = new THREE.Mesh(
+      new THREE.TorusGeometry(this.plan.radius - 0.62, 0.085, 4, 36),
+      new THREE.MeshBasicMaterial({ color: warningColor, transparent: true, opacity: 0.48, toneMapped: false }),
+    );
+    group.add(ring);
+    const safeAngle = event.kind === 'gate'
+      ? event.angle
+      : event.kind === 'halfwall'
+        ? event.angle + Math.PI
+        : event.kind === 'blade' || event.kind === 'cross'
+          ? event.rotationPhase + Math.PI / Math.max(2, event.armCount)
+          : event.angle + Math.PI;
+    const markerGeometry = new THREE.BoxGeometry(1.25, 0.18, 0.7);
+    const markerMaterial = new THREE.MeshBasicMaterial({ color: 0xfff0a3, toneMapped: false });
+    for (const offset of [-0.16, 0, 0.16]) {
+      const angle = safeAngle + offset;
+      const marker = new THREE.Mesh(markerGeometry, markerMaterial);
+      marker.position.set(Math.cos(angle) * (this.plan.radius - 1.02), Math.sin(angle) * (this.plan.radius - 1.02), 0);
+      marker.rotation.z = angle + Math.PI / 2;
+      group.add(marker);
+    }
+    return group;
   }
 
   private createEventVisual(event: TrackEvent): THREE.Object3D {
@@ -431,16 +511,18 @@ export class BallisticGame {
     const visual = new THREE.Group();
     visual.userData.eventId = event.id;
     visual.userData.baseScale = 1;
+    visual.userData.kind = event.kind;
 
     if (event.kind === 'gate') {
-      const geometry = new THREE.BoxGeometry(4.1, 1.15, 2.2);
+      const geometry = new THREE.BoxGeometry(4.25, 1.35, 2.65);
       const material = new THREE.MeshStandardMaterial({
-        color: 0x25030b,
+        color: 0x240308,
         emissive: theme.colors.danger,
-        emissiveIntensity: 2.8,
-        roughness: 0.26,
-        metalness: 0.76,
+        emissiveIntensity: 0.24,
+        roughness: 0.62,
+        metalness: 0.36,
       });
+      const warningMaterial = new THREE.MeshBasicMaterial({ color: 0xffd45b, toneMapped: false });
       for (let lane = 0; lane < 16; lane += 1) {
         const angle = (lane / 16) * TAU;
         if (angularDistance(angle, event.angle) < event.gapWidth) continue;
@@ -452,6 +534,12 @@ export class BallisticGame {
         panel.position.copy(position);
         panel.quaternion.setFromRotationMatrix(matrix);
         visual.add(panel);
+        if (lane % 3 === 0) {
+          const marker = new THREE.Mesh(new THREE.BoxGeometry(4.36, 0.12, 2.74), warningMaterial);
+          marker.position.copy(position);
+          marker.quaternion.copy(panel.quaternion);
+          visual.add(marker);
+        }
       }
       const halo = new THREE.Mesh(
         new THREE.TorusGeometry(this.plan.radius - 0.48, 0.14, 5, 48, Math.max(0.35, event.gapWidth * 2)),
@@ -461,6 +549,79 @@ export class BallisticGame {
       halo.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), frame.tangent);
       halo.rotateZ(event.angle - event.gapWidth);
       visual.add(halo);
+      return visual;
+    }
+
+    if (event.kind === 'halfwall') {
+      matrix.makeBasis(frame.normal, frame.binormal, frame.tangent);
+      visual.position.copy(frame.position);
+      visual.quaternion.setFromRotationMatrix(matrix);
+      const startAngle = event.angle - event.gapWidth;
+      const arcLength = event.gapWidth * 2;
+      const panelGeometry = new THREE.CircleGeometry(this.plan.radius - 0.72, 48, startAngle, arcLength);
+      const panel = new THREE.Mesh(
+        panelGeometry,
+        new THREE.MeshStandardMaterial({
+          color: 0x180308,
+          emissive: theme.colors.danger,
+          emissiveIntensity: 0.18,
+          roughness: 0.68,
+          metalness: 0.28,
+          side: THREE.DoubleSide,
+        }),
+      );
+      const rim = new THREE.Mesh(
+        new THREE.RingGeometry(this.plan.radius - 1.32, this.plan.radius - 0.54, 48, 1, startAngle, arcLength),
+        new THREE.MeshBasicMaterial({ color: 0xffc857, side: THREE.DoubleSide, transparent: true, opacity: 0.92, toneMapped: false }),
+      );
+      const edge = new THREE.LineSegments(
+        new THREE.EdgesGeometry(panelGeometry, 10),
+        new THREE.LineBasicMaterial({ color: 0xffefb0, transparent: true, opacity: 0.9, toneMapped: false }),
+      );
+      panel.position.z = 0.15;
+      rim.position.z = -0.04;
+      edge.position.z = 0.28;
+      visual.add(panel, rim, edge);
+      return visual;
+    }
+
+    if (event.kind === 'blade' || event.kind === 'cross') {
+      matrix.makeBasis(frame.normal, frame.binormal, frame.tangent);
+      visual.position.copy(frame.position);
+      visual.quaternion.setFromRotationMatrix(matrix);
+      const rotor = new THREE.Group();
+      const armLength = this.plan.radius - 0.74;
+      const armThickness = Math.max(1.2, 2 * armLength * Math.tan(event.gapWidth));
+      const armGeometry = new THREE.BoxGeometry(armLength, armThickness, 2.15);
+      const armMaterial = new THREE.MeshStandardMaterial({
+        color: event.kind === 'cross' ? 0x16030d : 0x1c0306,
+        emissive: theme.colors.danger,
+        emissiveIntensity: 0.22,
+        roughness: 0.58,
+        metalness: 0.48,
+      });
+      const outlineMaterial = new THREE.MeshBasicMaterial({ color: 0xffcf61, side: THREE.BackSide, toneMapped: false });
+      const armCount = Math.max(2, event.armCount);
+      for (let arm = 0; arm < armCount; arm += 1) {
+        const angle = (arm / armCount) * TAU;
+        const armMesh = new THREE.Mesh(armGeometry, armMaterial);
+        armMesh.position.set(Math.cos(angle) * armLength * 0.5, Math.sin(angle) * armLength * 0.5, 0);
+        armMesh.rotation.z = angle;
+        const outline = new THREE.Mesh(armGeometry, outlineMaterial);
+        outline.position.copy(armMesh.position);
+        outline.rotation.copy(armMesh.rotation);
+        outline.scale.set(1.012, 1.32, 1.16);
+        rotor.add(outline, armMesh);
+      }
+      const hub = new THREE.Mesh(
+        new THREE.CylinderGeometry(1.24, 1.24, 2.8, 12),
+        new THREE.MeshBasicMaterial({ color: 0xffefc1, toneMapped: false }),
+      );
+      hub.rotation.x = Math.PI / 2;
+      rotor.add(hub);
+      rotor.rotation.z = event.rotationPhase - event.rotationRate * event.musicTime;
+      visual.userData.rotor = rotor;
+      visual.add(rotor);
       return visual;
     }
 
@@ -474,14 +635,18 @@ export class BallisticGame {
 
     if (event.kind === 'mine') {
       const mine = new THREE.Mesh(
-        new THREE.IcosahedronGeometry(0.92, 1),
-        new THREE.MeshStandardMaterial({ color: 0x240008, emissive: theme.colors.danger, emissiveIntensity: 4.2, metalness: 0.68, roughness: 0.22 }),
+        new THREE.IcosahedronGeometry(1.42, 1),
+        new THREE.MeshStandardMaterial({ color: 0x300408, emissive: theme.colors.danger, emissiveIntensity: 0.34, metalness: 0.48, roughness: 0.5 }),
       );
       const ring = new THREE.Mesh(
-        new THREE.TorusGeometry(1.45, 0.075, 5, 24),
-        new THREE.MeshBasicMaterial({ color: theme.colors.danger, transparent: true, opacity: 0.74, blending: THREE.AdditiveBlending }),
+        new THREE.TorusGeometry(2.05, 0.14, 6, 28),
+        new THREE.MeshBasicMaterial({ color: 0xffd45b, transparent: true, opacity: 0.92, toneMapped: false }),
       );
-      visual.add(mine, ring);
+      const core = new THREE.Mesh(
+        new THREE.IcosahedronGeometry(1.54, 1),
+        new THREE.MeshBasicMaterial({ color: 0xffc45b, wireframe: true, transparent: true, opacity: 0.84, toneMapped: false }),
+      );
+      visual.add(mine, core, ring);
     } else if (event.kind === 'shard') {
       const shard = new THREE.Mesh(
         new THREE.OctahedronGeometry(0.72, 0),
@@ -507,12 +672,16 @@ export class BallisticGame {
       visual.add(core);
     } else {
       const body = new THREE.Mesh(
-        new THREE.SphereGeometry(0.8, 12, 8),
-        new THREE.MeshStandardMaterial({ color: 0x17030c, emissive: theme.colors.danger, emissiveIntensity: 3.6, metalness: 0.86, roughness: 0.18 }),
+        new THREE.SphereGeometry(1.25, 14, 10),
+        new THREE.MeshStandardMaterial({ color: 0x27040b, emissive: theme.colors.danger, emissiveIntensity: 0.3, metalness: 0.58, roughness: 0.46 }),
       );
-      const wingGeometry = new THREE.BoxGeometry(2.9, 0.16, 0.54);
-      const wingMaterial = new THREE.MeshStandardMaterial({ color: 0x25172e, emissive: theme.colors.secondary, emissiveIntensity: 2.2, metalness: 0.8 });
-      visual.add(body, new THREE.Mesh(wingGeometry, wingMaterial));
+      const wingGeometry = new THREE.BoxGeometry(4.4, 0.28, 0.84);
+      const wingMaterial = new THREE.MeshBasicMaterial({ color: 0xffc857, toneMapped: false });
+      const warningRing = new THREE.Mesh(
+        new THREE.TorusGeometry(2.25, 0.12, 6, 28),
+        new THREE.MeshBasicMaterial({ color: 0xffe79a, transparent: true, opacity: 0.88, toneMapped: false }),
+      );
+      visual.add(body, new THREE.Mesh(wingGeometry, wingMaterial), warningRing);
     }
     return visual;
   }
@@ -768,8 +937,11 @@ export class BallisticGame {
     this.section = 1;
     this.upgradeIndex = 0;
     this.upgradeRoll = 0;
+    this.pendingUpgradeOptions = [];
+    this.queuedUpgradePicks = 0;
     this.lastCollisionCursor = 0;
     this.runUpgrades.clear();
+    this.emitUpgradeState();
     for (let index = 0; index < this.rivals.length; index += 1) {
       this.rivals[index].distance = [32, -24, 65][index];
     }
@@ -809,7 +981,7 @@ export class BallisticGame {
     this.uiAccumulator += dt;
     if (this.uiAccumulator > 1 / 30) {
       this.uiAccumulator = 0;
-      if (this.state === 'playing' || this.state === 'countdown' || this.state === 'upgrade') this.hooks.onHud(this.getStats());
+      if (this.state === 'playing' || this.state === 'countdown') this.hooks.onHud(this.getStats());
     }
     this.composer.render(dt);
     if (this.vehicle.visible) {
@@ -860,10 +1032,14 @@ export class BallisticGame {
     const redlineMultiplier = this.runUpgrades.has('redline-engine') ? 1.16 : 1;
     const engineMultiplier = 1 + this.config.garage.engine * 0.065;
     const maxSpeed = baseSpeed * 1.43 * engineMultiplier * redlineMultiplier;
-    const cruisingSpeed = baseSpeed * (cooling ? 0.68 : 1) * engineMultiplier;
+    const cruisingSpeed = baseSpeed * (cooling ? 0.68 : 1);
     const boosting = boostHeld && this.flux > 0 && this.overheatTimer <= 0;
     const overdrive = this.overdriveTimer > 0;
-    const targetSpeed = overdrive ? maxSpeed * 1.08 : boosting ? maxSpeed : cruisingSpeed;
+    const musicDistance = clamp(this.audio.getTransportTime() / this.plan.runDuration, 0, 1) * this.plan.length;
+    const phaseError = musicDistance - this.distance;
+    const phaseAssist = clamp(phaseError * 0.65, -baseSpeed * 0.26, baseSpeed * 0.26);
+    const rawTargetSpeed = overdrive ? maxSpeed * 1.08 : boosting ? maxSpeed : cruisingSpeed;
+    const targetSpeed = clamp(rawTargetSpeed + phaseAssist, baseSpeed * 0.5, maxSpeed * 1.12);
     const acceleration = targetSpeed > this.speed ? 1.5 + this.config.garage.engine * 0.16 : 3.8;
     this.speed = damp(this.speed, targetSpeed, acceleration, dt);
 
@@ -901,8 +1077,9 @@ export class BallisticGame {
       this.hooks.onSection(['IGNITION', 'FRACTURE', 'THE DROP'][newSection - 1], newSection);
     }
     if (this.upgradeIndex < UPGRADES_AT.length && progress >= UPGRADES_AT[this.upgradeIndex]) {
-      this.openUpgrade();
-      return;
+      this.upgradeIndex += 1;
+      if (this.pendingUpgradeOptions.length > 0) this.queuedUpgradePicks += 1;
+      else this.openUpgrade();
     }
     if (this.distance >= this.plan.length) this.finishRun(true);
   }
@@ -923,8 +1100,23 @@ export class BallisticGame {
           if (delta > event.gapWidth * 0.69) this.registerNearMiss();
           else if (this.audio.isInsideBeatWindow()) this.registerPerfect('GATE SYNC');
         }
+      } else if (event.kind === 'halfwall') {
+        if (delta < event.gapWidth) this.hitObstacle(event);
+        else {
+          event.resolved = true;
+          if (delta < event.gapWidth + 0.16) this.registerNearMiss();
+          else if (this.audio.isInsideBeatWindow()) this.registerPerfect('WALL SYNC');
+        }
+      } else if (event.kind === 'blade' || event.kind === 'cross') {
+        const bladeDelta = this.rotorAngularDistance(event, this.audio.getTransportTime());
+        if (bladeDelta < event.gapWidth) this.hitObstacle(event);
+        else {
+          event.resolved = true;
+          if (bladeDelta < event.gapWidth + 0.14) this.registerNearMiss();
+          else if (this.audio.isInsideBeatWindow()) this.registerPerfect(event.kind === 'cross' ? 'CROSS SYNC' : 'BLADE SYNC');
+        }
       } else if (event.kind === 'mine' || event.kind === 'drone') {
-        const threshold = event.kind === 'mine' ? 0.3 : 0.35;
+        const threshold = event.kind === 'mine' ? 0.4 : 0.45;
         if (delta < threshold) this.hitObstacle(event);
         else {
           event.resolved = true;
@@ -955,6 +1147,16 @@ export class BallisticGame {
         } else event.resolved = true;
       }
     }
+  }
+
+  private rotorAngularDistance(event: TrackEvent, transportTime: number): number {
+    const phase = event.rotationPhase + event.rotationRate * (transportTime - event.musicTime);
+    const armCount = Math.max(1, event.armCount);
+    let closest = Math.PI;
+    for (let arm = 0; arm < armCount; arm += 1) {
+      closest = Math.min(closest, angularDistance(this.angle, phase + (arm / armCount) * TAU));
+    }
+    return closest;
   }
 
   private hitObstacle(event: TrackEvent): void {
@@ -1006,7 +1208,7 @@ export class BallisticGame {
         if (event.destroyed || event.resolved || (event.kind !== 'mine' && event.kind !== 'drone')) continue;
         if (event.distance < bullet.distance - 12) continue;
         if (event.distance > bullet.distance + 12) break;
-        if (angularDistance(event.angle, bullet.angle) < (event.kind === 'drone' ? 0.36 : 0.28)) {
+        if (angularDistance(event.angle, bullet.angle) < (event.kind === 'drone' ? 0.46 : 0.4)) {
           event.health -= bullet.damage;
           this.hits += 1;
           bullet.piercing -= 1;
@@ -1046,14 +1248,17 @@ export class BallisticGame {
   }
 
   private openUpgrade(): void {
-    this.upgradeIndex += 1;
     this.upgradeRoll += 1;
     const random = mulberry32(this.plan.seed ^ (this.upgradeRoll * 0x9e3779b9));
     const available = UPGRADES.filter((upgrade) => !this.runUpgrades.has(upgrade.id));
-    const options = pickDistinct(available, 3, random);
-    this.state = 'upgrade';
-    this.audio.pause();
-    this.hooks.onUpgrade(options);
+    this.pendingUpgradeOptions = pickDistinct(available, Math.min(3, available.length), random);
+    this.emitUpgradeState();
+    this.hooks.onToast('MODULE DROP', 'Выбери 1 / 2 / 3 — движение продолжается', 'violet');
+  }
+
+  private emitUpgradeState(): void {
+    const installed = UPGRADES.filter((upgrade) => this.runUpgrades.has(upgrade.id));
+    this.hooks.onUpgradeState([...this.pendingUpgradeOptions], installed);
   }
 
   private registerPerfect(label: string): void {
@@ -1082,6 +1287,9 @@ export class BallisticGame {
     if (this.state === 'finished') return;
     this.state = 'finished';
     this.audio.stop();
+    this.pendingUpgradeOptions = [];
+    this.queuedUpgradePicks = 0;
+    this.emitUpgradeState();
     const rank = this.getRank();
     const accuracy = this.shots > 0 ? this.hits / this.shots : 0;
     const finalScore = Math.round(this.score + (survived ? 5000 : 0) + (4 - rank) * 1200);
@@ -1157,6 +1365,7 @@ export class BallisticGame {
 
   private updateEventVisuals(dt: number, activeDistance: number): void {
     const time = this.audio.getTime();
+    const transportTime = this.audio.getTransportTime();
     for (const event of this.plan.events) {
       const visual = this.eventVisuals.get(event.id);
       if (!visual) continue;
@@ -1164,7 +1373,9 @@ export class BallisticGame {
       if (!event.destroyed && !event.resolved) visual.visible = ahead > -45 && ahead < 1100;
       if (!visual.visible) continue;
       const pulse = 1 + this.lastBands.pulse * 0.1 + Math.sin(time * 3.2 + event.id) * 0.035;
-      if (event.kind !== 'gate') visual.scale.setScalar(damp(visual.scale.x, pulse, 8, dt));
+      if (!['gate', 'halfwall', 'blade', 'cross'].includes(event.kind)) visual.scale.setScalar(damp(visual.scale.x, pulse, 8, dt));
+      const rotor = visual.userData.rotor as THREE.Group | undefined;
+      if (rotor) rotor.rotation.z = event.rotationPhase + event.rotationRate * (transportTime - event.musicTime);
       if (event.kind === 'mine' || event.kind === 'shard' || event.kind === 'coolant') visual.rotateZ(dt * (event.kind === 'mine' ? 1.2 : 2.4));
     }
   }

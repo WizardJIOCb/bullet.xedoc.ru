@@ -1,5 +1,5 @@
 import { clamp, hashString } from '../core/math';
-import type { MusicProfile } from '../core/types';
+import type { MusicProfile, MusicTransition, RhythmBeat } from '../core/types';
 import { createDefaultMusicProfile } from '../game/track';
 
 export interface AudioBands {
@@ -222,9 +222,14 @@ export class AudioEngine {
 
   getTime(): number {
     if (!this.context) return 0;
-    const elapsed = Math.max(0, this.context.currentTime - this.startedAt);
+    const elapsed = this.getTransportTime();
     const loopDuration = this.decodedTrack?.duration || this.profile.duration;
     return this.usingFile && loopDuration > 0 ? elapsed % loopDuration : elapsed;
+  }
+
+  getTransportTime(): number {
+    if (!this.context) return 0;
+    return Math.max(0, this.context.currentTime - this.startedAt);
   }
 
   update(dt: number): AudioBands {
@@ -415,7 +420,7 @@ export class AudioEngine {
     const midsNorm = normalize(midsRaw);
     const highsNorm = normalize(highsRaw);
     const tempo = this.estimateTempo(energyNorm, bassNorm, hop / buffer.sampleRate);
-    const bins = 192;
+    const bins = 384;
     const compress = (values: number[]): number[] => Array.from({ length: bins }, (_, index) => {
       const start = Math.floor((index / bins) * values.length);
       const end = Math.max(start + 1, Math.floor(((index + 1) / bins) * values.length));
@@ -425,6 +430,28 @@ export class AudioEngine {
     });
     const cleanTitle = title.replace(/\.[^/.]+$/, '').slice(0, 48).toUpperCase();
     const runDuration = clamp(buffer.duration, 58, 108);
+    const energy = compress(energyNorm);
+    const bass = compress(bassNorm);
+    const mids = compress(midsNorm);
+    const highs = compress(highsNorm);
+    const rhythm = this.buildRhythmMap(
+      energyNorm,
+      bassNorm,
+      midsNorm,
+      highsNorm,
+      Math.min(buffer.duration, MAX_PLAYBACK_DURATION),
+      runDuration,
+      hop / buffer.sampleRate,
+      tempo.bpm,
+      tempo.beatOffset,
+    );
+    const contentFingerprint = [
+      tempo.bpm,
+      Math.round(buffer.duration * 10),
+      ...energy.filter((_, index) => index % 8 === 0).map((value) => Math.round(value * 31)),
+      ...bass.filter((_, index) => index % 8 === 0).map((value) => Math.round(value * 31)),
+      ...highs.filter((_, index) => index % 8 === 0).map((value) => Math.round(value * 31)),
+    ].join(':');
     return {
       id: key,
       title: cleanTitle,
@@ -432,12 +459,138 @@ export class AudioEngine {
       runDuration,
       bpm: tempo.bpm,
       beatOffset: tempo.beatOffset,
-      energy: compress(energyNorm),
-      bass: compress(bassNorm),
-      mids: compress(midsNorm),
-      highs: compress(highsNorm),
-      seed: hashString(key),
+      energy,
+      bass,
+      mids,
+      highs,
+      beats: rhythm.beats,
+      transitions: rhythm.transitions,
+      seed: hashString(contentFingerprint),
     };
+  }
+
+  private buildRhythmMap(
+    energy: number[],
+    bass: number[],
+    mids: number[],
+    highs: number[],
+    sourceDuration: number,
+    runDuration: number,
+    frameDuration: number,
+    bpm: number,
+    beatOffset: number,
+  ): { beats: RhythmBeat[]; transitions: MusicTransition[] } {
+    const onset = energy.map((value, index) => {
+      if (index === 0) return 0;
+      const energyRise = Math.max(0, value - energy[index - 1]);
+      const bassRise = Math.max(0, bass[index] - bass[index - 1]);
+      const spectralChange = Math.abs(mids[index] - mids[index - 1]) + Math.abs(highs[index] - highs[index - 1]);
+      return energyRise * 0.42 + bassRise * 0.42 + spectralChange * 0.16;
+    });
+    const sortedOnsets = [...onset].sort((a, b) => a - b);
+    const onsetCeiling = sortedOnsets[Math.floor(sortedOnsets.length * 0.94)] || 1;
+    const interval = 60 / bpm;
+    const beats: RhythmBeat[] = [];
+    const sourceFrames = Math.max(1, energy.length - 1);
+    const frameAt = (time: number): number => {
+      const loopTime = sourceDuration > 0 ? ((time % sourceDuration) + sourceDuration) % sourceDuration : time;
+      return clamp(Math.round(loopTime / Math.max(frameDuration, sourceDuration / sourceFrames)), 0, sourceFrames);
+    };
+    let barBeat: 0 | 1 | 2 | 3 = 0;
+    for (let time = Math.max(0, beatOffset); time <= runDuration + 0.0001; time += interval) {
+      const center = frameAt(time);
+      let peakIndex = center;
+      for (let offset = -2; offset <= 2; offset += 1) {
+        const candidate = clamp(center + offset, 0, sourceFrames);
+        if ((onset[candidate] || 0) > (onset[peakIndex] || 0)) peakIndex = candidate;
+      }
+      const onsetStrength = clamp((onset[peakIndex] || 0) / onsetCeiling, 0, 1);
+      const loopTime = sourceDuration > 0 ? ((time % sourceDuration) + sourceDuration) % sourceDuration : time;
+      let alignment = peakIndex * frameDuration - loopTime;
+      if (sourceDuration > 0 && alignment > sourceDuration * 0.5) alignment -= sourceDuration;
+      if (sourceDuration > 0 && alignment < -sourceDuration * 0.5) alignment += sourceDuration;
+      const maximumShift = Math.min(0.11, interval * 0.22);
+      const onsetShift = onsetStrength > 0.16 ? clamp(alignment, -maximumShift, maximumShift) * 0.86 : 0;
+      const previousBeat = beats[beats.length - 1];
+      const minimumTime = previousBeat ? previousBeat.time + interval * 0.5 : 0;
+      const alignedTime = clamp(Math.max(minimumTime, time + onsetShift), 0, runDuration);
+      beats.push({
+        time: Number(alignedTime.toFixed(4)),
+        strength: clamp(0.28 + onsetStrength * 0.58 + (barBeat === 0 ? 0.14 : 0), 0, 1),
+        bass: bass[peakIndex] || 0,
+        highs: highs[peakIndex] || 0,
+        barBeat,
+      });
+      barBeat = ((barBeat + 1) % 4) as 0 | 1 | 2 | 3;
+    }
+
+    const sourceCandidates: MusicTransition[] = [];
+    const average = (values: number[], start: number, end: number): number => {
+      let sum = 0;
+      let count = 0;
+      for (let index = Math.max(0, start); index < Math.min(values.length, end); index += 1) {
+        sum += values[index];
+        count += 1;
+      }
+      return sum / Math.max(1, count);
+    };
+    const transitionStep = Math.max(1, Math.round(0.42 / frameDuration));
+    const longWindow = Math.max(transitionStep * 4, Math.round(2.2 / frameDuration));
+    for (let index = longWindow; index < energy.length - transitionStep; index += transitionStep) {
+      const beforeEnergy = average(energy, index - longWindow, index - transitionStep);
+      const nowEnergy = average(energy, index, index + transitionStep);
+      const beforeBass = average(bass, index - longWindow, index - transitionStep);
+      const nowBass = average(bass, index, index + transitionStep);
+      const beforeHighs = average(highs, index - transitionStep * 2, index);
+      const nowHighs = average(highs, index, index + transitionStep);
+      const energyDelta = nowEnergy - beforeEnergy;
+      const bassDelta = nowBass - beforeBass;
+      const highDelta = nowHighs - beforeHighs;
+      let kind: MusicTransition['kind'] | null = null;
+      let strength = 0;
+      if (energyDelta > 0.16 && bassDelta > 0.08) {
+        kind = 'drop';
+        strength = energyDelta * 2.5 + bassDelta * 1.6;
+      } else if (energyDelta > 0.1) {
+        kind = 'build';
+        strength = energyDelta * 3.2 + Math.max(0, highDelta);
+      } else if (energyDelta < -0.16 && nowEnergy < 0.52) {
+        kind = 'break';
+        strength = -energyDelta * 2.8;
+      } else if (Math.abs(highDelta) > 0.18) {
+        kind = 'fill';
+        strength = Math.abs(highDelta) * 2.4 + Math.abs(bassDelta);
+      }
+      if (!kind || strength < 0.38) continue;
+      sourceCandidates.push({
+        time: Number(Math.min(sourceDuration, index * frameDuration).toFixed(4)),
+        strength: clamp(strength, 0, 1),
+        kind,
+      });
+    }
+    sourceCandidates.sort((a, b) => b.strength - a.strength);
+    const selected: MusicTransition[] = [];
+    for (const candidate of sourceCandidates) {
+      if (candidate.time < 4 || candidate.time > sourceDuration - 3) continue;
+      if (selected.some((item) => Math.abs(item.time - candidate.time) < 2.4)) continue;
+      selected.push(candidate);
+      if (selected.length >= 16) break;
+    }
+    if (selected.length === 0 && runDuration > 20) {
+      selected.push(
+        { time: Number((runDuration * 0.36).toFixed(4)), strength: 0.58, kind: 'build' },
+        { time: Number((runDuration * 0.62).toFixed(4)), strength: 0.78, kind: 'drop' },
+      );
+    }
+    const transitions: MusicTransition[] = [];
+    for (let loopStart = 0; loopStart < runDuration; loopStart += Math.max(sourceDuration, 0.1)) {
+      for (const transition of selected) {
+        const time = transition.time + loopStart;
+        if (time < runDuration) transitions.push({ ...transition, time });
+      }
+    }
+    transitions.sort((a, b) => a.time - b.time);
+    return { beats, transitions };
   }
 
   private estimateTempo(energy: number[], bass: number[], frameDuration: number): { bpm: number; beatOffset: number } {

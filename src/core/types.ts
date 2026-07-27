@@ -59,7 +59,23 @@ export interface MusicProfile {
   bass: number[];
   mids: number[];
   highs: number[];
+  beats: RhythmBeat[];
+  transitions: MusicTransition[];
   seed: number;
+}
+
+export interface RhythmBeat {
+  time: number;
+  strength: number;
+  bass: number;
+  highs: number;
+  barBeat: 0 | 1 | 2 | 3;
+}
+
+export interface MusicTransition {
+  time: number;
+  strength: number;
+  kind: 'build' | 'drop' | 'break' | 'fill';
 }
 
 export interface RunConfig {
@@ -88,7 +104,7 @@ export interface UpgradeDefinition {
   tone: 'cyan' | 'gold' | 'red' | 'violet';
 }
 
-export type TrackEventKind = 'gate' | 'mine' | 'shard' | 'boost' | 'drone' | 'coolant';
+export type TrackEventKind = 'gate' | 'halfwall' | 'blade' | 'cross' | 'mine' | 'shard' | 'boost' | 'drone' | 'coolant';
 
 export interface TrackEvent {
   id: number;
@@ -100,6 +116,13 @@ export interface TrackEvent {
   resolved: boolean;
   destroyed: boolean;
   beatIndex: number;
+  musicTime: number;
+  strength: number;
+  rotationRate: number;
+  rotationPhase: number;
+  armCount: number;
+  patternId: number;
+  warningDistance: number;
 }
 
 export interface RunStats {

@@ -1,6 +1,6 @@
 import './styles.css';
 import { AudioEngine, type CatalogAudioTrack } from './audio/AudioEngine';
-import { ABILITIES, TRACKS, WEAPONS, type AbilityId, type GarageState, type RunConfig, type RunResult, type RunStats, type TrackId, type UpgradeDefinition, type WeaponId } from './core/types';
+import { ABILITIES, TRACKS, WEAPONS, type AbilityId, type GarageState, type RunConfig, type RunResult, type RunStats, type TrackId, type UpgradeDefinition, type UpgradeId, type WeaponId } from './core/types';
 import { BallisticGame } from './game/Game';
 
 const query = <T extends Element>(selector: string): T => {
@@ -54,7 +54,9 @@ function randomSeed(): number {
 const app = query<HTMLElement>('#app');
 const menu = query<HTMLElement>('#menu');
 const hud = query<HTMLElement>('#hud');
-const upgradeScreen = query<HTMLElement>('#upgrade-screen');
+const upgradeDraft = query<HTMLElement>('#upgrade-draft');
+const upgradeOptions = query<HTMLElement>('#upgrade-options');
+const installedUpgrades = query<HTMLElement>('#installed-upgrades');
 const resultsScreen = query<HTMLElement>('#results-screen');
 const startButton = query<HTMLButtonElement>('#start-run');
 const musicLibrary = query<HTMLFieldSetElement>('#music-library');
@@ -78,7 +80,7 @@ let selectedMusicId = 'synthetic';
 const game = new BallisticGame(query<HTMLCanvasElement>('#game-canvas'), audio, {
   onHud: updateHud,
   onToast: showToast,
-  onUpgrade: showUpgrade,
+  onUpgradeState: renderUpgradeState,
   onFinish: showResults,
   onCountdown: showCountdown,
   onSection: (name, index) => {
@@ -186,25 +188,44 @@ function showCountdown(value: string | null): void {
   }
 }
 
-function showUpgrade(options: UpgradeDefinition[]): void {
-  const container = query<HTMLElement>('#upgrade-options');
-  container.innerHTML = options.map((upgrade, index) => `
-    <button class="upgrade-card upgrade-card--${upgrade.tone}" data-upgrade="${upgrade.id}" type="button">
-      <span class="upgrade-card__index">0${index + 1}</span>
-      <span class="upgrade-card__glyph"><i></i><i></i><i></i></span>
-      <small>${upgrade.tag}</small>
-      <strong>${upgrade.name}</strong>
-      <p>${upgrade.description}</p>
-      <span class="upgrade-card__install">INSTALL MODULE <b>→</b></span>
+const UPGRADE_ICON_PATHS: Record<UpgradeId, string> = {
+  'cryo-loop': '<path d="M12 2v20M4.2 6.5l15.6 11M4.2 17.5l15.6-11M9 4l3 3 3-3M9 20l3-3 3 3"/>',
+  'resonant-chamber': '<circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="7"/><path d="M3 12h3m12 0h3"/>',
+  'kinetic-skin': '<path d="M12 2 20 6v5c0 5-3.2 8.6-8 11-4.8-2.4-8-6-8-11V6l8-4Z"/><path d="m8.5 12 2.2 2.2 4.8-5"/>',
+  'phase-battery': '<rect x="4" y="7" width="15" height="10" rx="2"/><path d="M19 10h2v4h-2M12 8l-3 5h3l-1 3 4-6h-3Z"/>',
+  'redline-engine': '<path d="m14 2-8 12h6l-2 8 8-12h-6l2-8Z"/>',
+  'glass-cannon': '<path d="M12 3 3 20h18L12 3Z"/><path d="M8 15h8M12 8v10"/>',
+  'echo-shield': '<path d="M12 3 19 6v5c0 4.4-2.7 7.6-7 10-4.3-2.4-7-5.6-7-10V6l7-3Z"/><path d="M9 9c2-2 4-2 6 0M8 13c2.7-2.5 5.3-2.5 8 0"/>',
+  afterburner: '<path d="M13 2c1 5-3 6-3 10 0 2 1 3 2 4-4 0-6-2-6-5-2 3-1 9 6 11 7-2 8-9 4-13 0 3-1 4-2 5 1-5-1-8-1-12Z"/>',
+  'flux-magnet': '<path d="M5 4v9a7 7 0 0 0 14 0V4h-5v9a2 2 0 0 1-4 0V4H5Z"/><path d="M5 8h5m4 0h5"/>',
+};
+
+function upgradeIcon(id: UpgradeId): string {
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${UPGRADE_ICON_PATHS[id]}</svg>`;
+}
+
+function renderUpgradeState(pending: UpgradeDefinition[], installed: UpgradeDefinition[]): void {
+  upgradeDraft.hidden = pending.length === 0;
+  upgradeOptions.innerHTML = pending.map((upgrade, index) => `
+    <button class="upgrade-choice upgrade-choice--${upgrade.tone}" data-upgrade-choice="${upgrade.id}" type="button" aria-keyshortcuts="${index + 1}" aria-label="${index + 1}: ${upgrade.name}. ${upgrade.description}">
+      <span class="upgrade-choice__key">${index + 1}</span>
+      <span class="upgrade-choice__icon">${upgradeIcon(upgrade.id)}</span>
+      <span class="upgrade-choice__copy"><strong>${upgrade.name}</strong><small>${upgrade.tag}</small></span>
+      <span class="upgrade-choice__description">${upgrade.description}</span>
+      <span class="upgrade-choice__tooltip" role="tooltip">${upgrade.description}</span>
     </button>
   `).join('');
-  for (const button of queryAll<HTMLButtonElement>('[data-upgrade]')) {
-    button.addEventListener('click', async () => {
-      upgradeScreen.classList.remove('is-active');
-      await game.chooseUpgrade(button.dataset.upgrade as UpgradeDefinition['id']);
-    }, { once: true });
+  for (const button of Array.from(upgradeOptions.querySelectorAll<HTMLButtonElement>('[data-upgrade-choice]'))) {
+    button.addEventListener('click', () => {
+      game.chooseUpgrade(button.dataset.upgradeChoice as UpgradeId);
+    });
   }
-  upgradeScreen.classList.add('is-active');
+  installedUpgrades.innerHTML = installed.map((upgrade) => `
+    <span class="installed-upgrade installed-upgrade--${upgrade.tone}" tabindex="0" role="img" aria-label="${upgrade.name}: ${upgrade.description}" title="${upgrade.name}: ${upgrade.description}">
+      <span class="installed-upgrade__icon">${upgradeIcon(upgrade.id)}</span>
+      <span class="installed-upgrade__name">${upgrade.name}</span>
+    </span>
+  `).join('');
 }
 
 function rankFromResult(result: RunResult): string {
