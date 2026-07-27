@@ -17,6 +17,18 @@
   box-sizing: border-box;
 }
 
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 html,
 body,
 #app {
@@ -28,7 +40,8 @@ body,
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -37,6 +50,7 @@ button {
 }
 
 button:focus-visible,
+select:focus-visible,
 label:focus-within {
   outline: 2px solid var(--cyan);
   outline-offset: 3px;
@@ -370,6 +384,111 @@ label:focus-within {
 
 .panel-label--spaced {
   margin-top: 25px;
+}
+
+.music-library {
+  min-width: 0;
+  margin: 12px 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.music-library__legend {
+  margin-bottom: 6px;
+  color: rgba(219, 245, 255, 0.45);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+}
+
+.music-library__control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 7px;
+}
+
+.music-library__select,
+.music-library__retry {
+  min-height: 44px;
+  border: 1px solid rgba(108, 223, 255, 0.25);
+  background-color: rgba(5, 20, 30, 0.92);
+  color: rgba(238, 251, 255, 0.9);
+}
+
+.music-library__select {
+  min-width: 0;
+  width: 100%;
+  appearance: none;
+  padding: 0 36px 0 11px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--cyan) 50%),
+    linear-gradient(135deg, var(--cyan) 50%, transparent 50%);
+  background-position:
+    calc(100% - 16px) 17px,
+    calc(100% - 11px) 17px;
+  background-repeat: no-repeat;
+  background-size: 5px 5px, 5px 5px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+
+.music-library__select option {
+  background: #06101a;
+  color: #e7fbff;
+}
+
+.music-library__select:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.music-library__status,
+.music-library__error {
+  min-height: 1.45em;
+  margin: 6px 2px 0;
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.music-library__status {
+  color: var(--muted);
+}
+
+.music-library__error {
+  color: var(--red);
+}
+
+.music-library__retry {
+  padding-inline: 10px;
+  color: var(--cyan);
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+
+.music-library.has-error .music-library__select {
+  border-color: rgba(255, 62, 99, 0.65);
+}
+
+.music-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 9px;
+  color: rgba(217, 240, 248, 0.35);
+  font-size: 7px;
+  letter-spacing: 0.16em;
+}
+
+.music-divider::before,
+.music-divider::after {
+  content: "";
+  height: 1px;
+  flex: 1;
+  background: var(--line);
 }
 
 .music-drop {

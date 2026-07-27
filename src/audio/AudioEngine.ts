@@ -11,6 +11,14 @@ export interface AudioBands {
   onBeat: boolean;
 }
 
+export type AudioSourceKind = 'synthetic' | 'catalog' | 'local';
+
+export interface CatalogAudioTrack {
+  id: string;
+  title: string;
+  file: string;
+}
+
 export class AudioEngine {
   private context: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
@@ -18,8 +26,9 @@ export class AudioEngine {
   private frequencyData = new Uint8Array(256);
   private media: HTMLAudioElement | null = null;
   private mediaSource: MediaElementAudioSourceNode | null = null;
-  private mediaUrl: string | null = null;
+  private ownedMediaUrl: string | null = null;
   private profile: MusicProfile = createDefaultMusicProfile();
+  private sourceKind: AudioSourceKind = 'synthetic';
   private usingFile = false;
   private running = false;
   private startedAt = 0;
@@ -35,6 +44,10 @@ export class AudioEngine {
 
   getProfile(): MusicProfile {
     return this.profile;
+  }
+
+  getSourceKind(): AudioSourceKind {
+    return this.sourceKind;
   }
 
   isCustomTrack(): boolean {
@@ -56,39 +69,76 @@ export class AudioEngine {
     return this.context;
   }
 
+  private clearMedia(): void {
+    this.mediaSource?.disconnect();
+    this.mediaSource = null;
+    if (this.media) {
+      this.media.pause();
+      this.media.removeAttribute('src');
+      this.media.load();
+    }
+    this.media = null;
+    if (this.ownedMediaUrl) URL.revokeObjectURL(this.ownedMediaUrl);
+    this.ownedMediaUrl = null;
+  }
+
+  private installMedia(context: AudioContext, src: string, ownsUrl: boolean): void {
+    this.clearMedia();
+    const media = new Audio();
+    media.crossOrigin = 'anonymous';
+    media.preload = 'auto';
+    media.loop = true;
+    media.src = src;
+    this.media = media;
+    this.ownedMediaUrl = ownsUrl ? src : null;
+    this.mediaSource = context.createMediaElementSource(media);
+    this.mediaSource.connect(this.master!);
+  }
+
   async prepareFile(file: File): Promise<MusicProfile> {
     const context = this.ensureContext();
     this.stop();
     const bytes = await file.arrayBuffer();
-    const buffer = await context.decodeAudioData(bytes.slice(0));
+    const buffer = await context.decodeAudioData(bytes);
     this.profile = this.analyzeBuffer(buffer, `${file.name}:${file.size}:${file.lastModified}`, file.name);
+    this.sourceKind = 'local';
     this.usingFile = true;
+    this.installMedia(context, URL.createObjectURL(file), true);
+    return this.profile;
+  }
 
-    if (this.mediaUrl) URL.revokeObjectURL(this.mediaUrl);
-    if (this.mediaSource) {
-      this.mediaSource.disconnect();
-      this.mediaSource = null;
-    }
-    this.mediaUrl = URL.createObjectURL(file);
-    this.media = new Audio(this.mediaUrl);
-    this.media.preload = 'auto';
-    this.media.crossOrigin = 'anonymous';
-    this.media.loop = true;
-    this.mediaSource = context.createMediaElementSource(this.media);
-    this.mediaSource.connect(this.master!);
+  async prepareCatalogTrack(track: CatalogAudioTrack): Promise<MusicProfile> {
+    const context = this.ensureContext();
+    this.stop();
+    const response = await fetch(track.file, { cache: 'force-cache' });
+    if (!response.ok) throw new Error(`Music request failed: ${response.status} ${response.statusText}`);
+    const bytes = await response.arrayBuffer();
+    const byteLength = bytes.byteLength;
+    const buffer = await context.decodeAudioData(bytes);
+    this.profile = this.analyzeBuffer(buffer, `catalog:${track.id}:${byteLength}`, track.title);
+    this.sourceKind = 'catalog';
+    this.usingFile = true;
+    this.installMedia(context, track.file, false);
     return this.profile;
   }
 
   useSynthetic(): MusicProfile {
     this.stop();
+    this.clearMedia();
     this.profile = createDefaultMusicProfile();
+    this.sourceKind = 'synthetic';
     this.usingFile = false;
     return this.profile;
   }
 
   async start(): Promise<void> {
     const context = this.ensureContext();
-    await context.resume();
+    let playPromise: Promise<void> = Promise.resolve();
+    if (this.usingFile && this.media) {
+      this.media.currentTime = 0;
+      playPromise = this.media.play();
+    }
+    await Promise.all([context.resume(), playPromise]);
     this.running = true;
     this.pausedAt = 0;
     this.startedAt = context.currentTime;
@@ -98,10 +148,6 @@ export class AudioEngine {
     this.beatPulse = 0;
     this.stepIndex = 0;
     this.nextStepTime = context.currentTime + 0.05;
-    if (this.usingFile && this.media) {
-      this.media.currentTime = 0;
-      await this.media.play();
-    }
   }
 
   pause(): void {
@@ -397,13 +443,9 @@ export class AudioEngine {
 
   async dispose(): Promise<void> {
     this.stop();
-    this.mediaSource?.disconnect();
-    this.mediaSource = null;
+    this.clearMedia();
     this.master?.disconnect();
     this.analyser?.disconnect();
-    if (this.mediaUrl) URL.revokeObjectURL(this.mediaUrl);
-    this.mediaUrl = null;
-    this.media = null;
     if (this.context && this.context.state !== 'closed') await this.context.close();
     this.context = null;
   }

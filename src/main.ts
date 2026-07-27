@@ -1,5 +1,5 @@
 import './styles.css';
-import { AudioEngine } from './audio/AudioEngine';
+import { AudioEngine, type CatalogAudioTrack } from './audio/AudioEngine';
 import { ABILITIES, TRACKS, WEAPONS, type AbilityId, type GarageState, type RunConfig, type RunResult, type RunStats, type TrackId, type UpgradeDefinition, type WeaponId } from './core/types';
 import { BallisticGame } from './game/Game';
 
@@ -11,6 +11,16 @@ const query = <T extends Element>(selector: string): T => {
 
 const queryAll = <T extends Element>(selector: string): T[] => Array.from(document.querySelectorAll<T>(selector));
 const setText = (selector: string, value: string): void => { query<HTMLElement>(selector).textContent = value; };
+
+interface MusicCatalogEntry extends CatalogAudioTrack {
+  bytes: number;
+  format: string;
+}
+
+interface MusicManifest {
+  version: 1;
+  tracks: MusicCatalogEntry[];
+}
 
 const DEFAULT_GARAGE: GarageState = {
   credits: 900,
@@ -47,6 +57,10 @@ const hud = query<HTMLElement>('#hud');
 const upgradeScreen = query<HTMLElement>('#upgrade-screen');
 const resultsScreen = query<HTMLElement>('#results-screen');
 const startButton = query<HTMLButtonElement>('#start-run');
+const musicLibrary = query<HTMLFieldSetElement>('#music-library');
+const musicCatalog = query<HTMLSelectElement>('#music-catalog');
+const musicCatalogRetry = query<HTMLButtonElement>('#music-catalog-retry');
+const musicCatalogError = query<HTMLElement>('#music-catalog-error');
 const audio = new AudioEngine();
 let garage = loadGarage();
 let selectedTrack: TrackId = 'aurora';
@@ -57,6 +71,9 @@ let lastConfig: RunConfig | null = null;
 let toastTimer = 0;
 let reducedEffects = localStorage.getItem('ballistic-edge-reduced-fx') === '1';
 let musicLoading = false;
+let musicCatalogReady = false;
+let musicCatalogEntries: MusicCatalogEntry[] = [];
+let selectedMusicId = 'synthetic';
 
 const game = new BallisticGame(query<HTMLCanvasElement>('#game-canvas'), audio, {
   onHud: updateHud,
@@ -75,6 +92,24 @@ function selectRadio<T extends string>(selector: string, value: T, attribute: st
     const selected = button.dataset[attribute] === value;
     button.classList.toggle('is-selected', selected);
     button.setAttribute('aria-checked', String(selected));
+    button.tabIndex = selected ? 0 : -1;
+  }
+}
+
+function installRadioKeyboard(buttons: HTMLButtonElement[]): void {
+  for (const button of buttons) {
+    button.addEventListener('keydown', (event) => {
+      if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      const currentIndex = buttons.indexOf(button);
+      const nextIndex = event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? buttons.length - 1
+          : (currentIndex + (event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 1) + buttons.length) % buttons.length;
+      buttons[nextIndex].focus();
+      buttons[nextIndex].click();
+    });
   }
 }
 
@@ -100,9 +135,14 @@ function formatDuration(seconds: number): string {
 
 function updateMusicUi(): void {
   const profile = audio.getProfile();
+  const sourceLabel = {
+    synthetic: 'Встроенный синтезатор',
+    catalog: 'Серверная библиотека',
+    local: 'Локальный аудиофайл',
+  }[audio.getSourceKind()];
   setText('#music-title', `${profile.title} // ${profile.bpm} BPM`);
-  setText('#music-meta', `${audio.isCustomTrack() ? 'Локальный аудиофайл' : 'Встроенный синтетический трек'} · ${formatDuration(profile.duration)}`);
-  setText('#music-action', audio.isCustomTrack() ? 'CHANGE' : 'LOAD MP3');
+  setText('#music-meta', `${sourceLabel} · ${formatDuration(profile.duration)}`);
+  setText('#music-action', audio.getSourceKind() === 'local' ? 'CHANGE FILE' : 'LOAD FILE');
   setText('#music-hud', `${profile.title} // ${profile.bpm} BPM`);
 }
 
@@ -219,34 +259,53 @@ async function launchRun(replay = false): Promise<void> {
   setText('#section-label', 'SECTOR 01 // IGNITION');
   try {
     await game.startRun(lastConfig);
+  } catch (error) {
+    console.error(error);
+    game.backToMenu();
+    audio.useSynthetic();
+    selectedMusicId = 'synthetic';
+    renderMusicCatalog();
+    updateMusicUi();
+    hud.classList.remove('is-active');
+    menu.classList.remove('is-hidden');
+    game.previewTrack(selectedTrack, lastRunSeed);
+    setMusicCatalogError('Не удалось начать воспроизведение. Включён синтетический режим.');
+    setText('#music-catalog-status', 'SYNTHETIC MODE ONLINE');
+    showToast('AUDIO START ERROR', 'Включён синтетический режим — запустите заезд ещё раз', 'red');
   } finally {
     startButton.disabled = musicLoading;
   }
 }
 
-for (const button of queryAll<HTMLButtonElement>('[data-track]')) {
+const trackButtons = queryAll<HTMLButtonElement>('[data-track]');
+for (const button of trackButtons) {
   button.addEventListener('click', () => {
     selectedTrack = button.dataset.track as TrackId;
     selectRadio('[data-track]', selectedTrack, 'track');
     game.previewTrack(selectedTrack, lastRunSeed);
   });
 }
+installRadioKeyboard(trackButtons);
 
-for (const button of queryAll<HTMLButtonElement>('[data-weapon]')) {
+const weaponButtons = queryAll<HTMLButtonElement>('[data-weapon]');
+for (const button of weaponButtons) {
   button.addEventListener('click', () => {
     selectedWeapon = button.dataset.weapon as WeaponId;
     selectRadio('[data-weapon]', selectedWeapon, 'weapon');
     setText('#weapon-description', WEAPONS[selectedWeapon].description);
   });
 }
+installRadioKeyboard(weaponButtons);
 
-for (const button of queryAll<HTMLButtonElement>('[data-ability]')) {
+const abilityButtons = queryAll<HTMLButtonElement>('[data-ability]');
+for (const button of abilityButtons) {
   button.addEventListener('click', () => {
     selectedAbility = button.dataset.ability as AbilityId;
     selectRadio('[data-ability]', selectedAbility, 'ability');
     setText('#ability-description', ABILITIES[selectedAbility].description);
   });
 }
+installRadioKeyboard(abilityButtons);
 
 for (const button of queryAll<HTMLButtonElement>('.garage-module')) {
   button.addEventListener('click', () => {
@@ -266,35 +325,146 @@ for (const button of queryAll<HTMLButtonElement>('.garage-module')) {
   });
 }
 
+function formatFileSize(bytes: number): string {
+  return `${(bytes / (1024 * 1024)).toFixed(bytes >= 10 * 1024 * 1024 ? 0 : 1)} MB`;
+}
+
+function parseMusicManifest(value: unknown): MusicCatalogEntry[] {
+  if (!value || typeof value !== 'object') throw new Error('Music manifest is not an object');
+  const manifest = value as Partial<MusicManifest>;
+  if (manifest.version !== 1 || !Array.isArray(manifest.tracks)) throw new Error('Unsupported music manifest');
+  return manifest.tracks.filter((track): track is MusicCatalogEntry => Boolean(
+    track
+    && typeof track.id === 'string'
+    && typeof track.title === 'string'
+    && typeof track.file === 'string'
+    && track.file.startsWith('/assets/music/')
+    && typeof track.bytes === 'number'
+    && typeof track.format === 'string',
+  ));
+}
+
+function renderMusicCatalog(): void {
+  musicCatalog.replaceChildren(new Option('EDGE SIGNAL // SYNTHETIC', 'synthetic'));
+  for (const entry of musicCatalogEntries) {
+    musicCatalog.add(new Option(`${entry.title} // ${entry.format} · ${formatFileSize(entry.bytes)}`, entry.id));
+  }
+  if (audio.getSourceKind() === 'local') {
+    musicCatalog.add(new Option(`${audio.getProfile().title} // LOCAL FILE`, 'local'));
+  }
+  musicCatalog.value = selectedMusicId;
+  if (!musicCatalog.value) {
+    selectedMusicId = 'synthetic';
+    musicCatalog.value = selectedMusicId;
+  }
+}
+
+function setMusicLoading(loading: boolean): void {
+  musicLoading = loading;
+  startButton.disabled = loading;
+  musicLibrary.setAttribute('aria-busy', String(loading));
+  musicCatalog.disabled = loading || !musicCatalogReady;
+  query<HTMLElement>('#music-drop').classList.toggle('is-loading', loading);
+}
+
+function setMusicCatalogError(message: string | null, allowRetry = false): void {
+  musicLibrary.classList.toggle('has-error', Boolean(message));
+  musicCatalogError.hidden = !message;
+  musicCatalogError.textContent = message || '';
+  musicCatalogRetry.hidden = !message || !allowRetry;
+}
+
+async function loadMusicCatalog(): Promise<void> {
+  musicLibrary.setAttribute('aria-busy', 'true');
+  musicCatalog.disabled = true;
+  musicCatalogRetry.hidden = true;
+  setMusicCatalogError(null);
+  setText('#music-catalog-status', 'Сканируем серверную библиотеку…');
+  try {
+    const response = await fetch('/assets/music/manifest.json', { cache: 'no-store' });
+    if (!response.ok) throw new Error(`Manifest request failed: ${response.status}`);
+    musicCatalogEntries = parseMusicManifest(await response.json());
+    musicCatalogReady = true;
+    renderMusicCatalog();
+    setText('#music-catalog-status', `${musicCatalogEntries.length} SERVER TRACK${musicCatalogEntries.length === 1 ? '' : 'S'} ONLINE // трасса выбирается отдельно`);
+  } catch (error) {
+    console.error(error);
+    musicCatalogEntries = [];
+    musicCatalogReady = true;
+    renderMusicCatalog();
+    setText('#music-catalog-status', 'SYNTHETIC MODE ONLINE');
+    setMusicCatalogError('Каталог музыки недоступен. Можно играть с синтезатором или загрузить свой файл.', true);
+  } finally {
+    musicLibrary.setAttribute('aria-busy', 'false');
+    musicCatalog.disabled = musicLoading;
+  }
+}
+
+async function loadCatalogTrack(entry: MusicCatalogEntry): Promise<void> {
+  setMusicLoading(true);
+  setMusicCatalogError(null);
+  setText('#music-title', 'LOADING SERVER TRACK…');
+  setText('#music-meta', `${entry.format} · ${formatFileSize(entry.bytes)} · анализируем BPM и спектр`);
+  setText('#music-action', 'WAIT');
+  setText('#music-catalog-status', `ANALYZING // ${entry.title}`);
+  try {
+    await audio.prepareCatalogTrack(entry);
+    selectedMusicId = entry.id;
+    renderMusicCatalog();
+    updateMusicUi();
+    game.previewTrack(selectedTrack, lastRunSeed);
+    query<HTMLElement>('#music-drop').classList.remove('has-file');
+    setText('#music-catalog-status', `ACTIVE // ${entry.title} // трасса выбирается отдельно в блоке 01`);
+  } catch (error) {
+    console.error(error);
+    audio.useSynthetic();
+    selectedMusicId = 'synthetic';
+    renderMusicCatalog();
+    updateMusicUi();
+    game.previewTrack(selectedTrack, lastRunSeed);
+    setMusicCatalogError('Трек не удалось загрузить или декодировать. Включён синтетический режим.');
+    setText('#music-catalog-status', 'SYNTHETIC MODE ONLINE');
+    showToast('AUDIO ERROR', 'Серверный трек не декодирован — включён синтетический режим', 'red');
+  } finally {
+    setMusicLoading(false);
+  }
+}
+
 const musicFile = query<HTMLInputElement>('#music-file');
 async function loadMusicFile(file: File): Promise<void> {
   const drop = query<HTMLElement>('#music-drop');
-  musicLoading = true;
-  startButton.disabled = true;
-  drop.classList.add('is-loading');
+  setMusicLoading(true);
+  setMusicCatalogError(null);
   setText('#music-title', 'ANALYZING SPECTRUM…');
   setText('#music-meta', 'Строим energy map, ищем BPM и транзиенты');
   setText('#music-action', 'WAIT');
   try {
     await audio.prepareFile(file);
+    selectedMusicId = 'local';
+    renderMusicCatalog();
     updateMusicUi();
     game.previewTrack(selectedTrack, lastRunSeed);
     drop.classList.add('has-file');
+    setText('#music-catalog-status', `ACTIVE // ${audio.getProfile().title} // LOCAL FILE`);
   } catch (error) {
     console.error(error);
     audio.useSynthetic();
+    selectedMusicId = 'synthetic';
+    renderMusicCatalog();
     updateMusicUi();
+    game.previewTrack(selectedTrack, lastRunSeed);
+    setMusicCatalogError('Локальный файл не удалось декодировать. Включён синтетический режим.');
+    setText('#music-catalog-status', 'SYNTHETIC MODE ONLINE');
     showToast('AUDIO ERROR', 'Формат не декодирован — включён синтетический трек', 'red');
   } finally {
-    musicLoading = false;
-    startButton.disabled = false;
-    drop.classList.remove('is-loading');
+    setMusicLoading(false);
   }
 }
 
 musicFile.addEventListener('change', () => {
   const file = musicFile.files?.[0];
   if (file) void loadMusicFile(file);
+  musicFile.value = '';
 });
 
 const musicDrop = query<HTMLElement>('#music-drop');
@@ -314,6 +484,26 @@ musicDrop.addEventListener('drop', (event) => {
   const file = event.dataTransfer?.files?.[0];
   if (file?.type.startsWith('audio/')) void loadMusicFile(file);
 });
+
+musicCatalog.addEventListener('change', () => {
+  const value = musicCatalog.value;
+  if (value === 'synthetic') {
+    audio.useSynthetic();
+    selectedMusicId = value;
+    renderMusicCatalog();
+    updateMusicUi();
+    game.previewTrack(selectedTrack, lastRunSeed);
+    musicDrop.classList.remove('has-file');
+    setMusicCatalogError(null);
+    setText('#music-catalog-status', 'ACTIVE // EDGE SIGNAL // трасса выбирается отдельно в блоке 01');
+    return;
+  }
+  if (value === 'local') return;
+  const entry = musicCatalogEntries.find((candidate) => candidate.id === value);
+  if (entry) void loadCatalogTrack(entry);
+});
+
+musicCatalogRetry.addEventListener('click', () => void loadMusicCatalog());
 
 query<HTMLButtonElement>('#effects-toggle').addEventListener('click', (event) => {
   reducedEffects = !reducedEffects;
@@ -361,8 +551,12 @@ effectsButton.setAttribute('aria-pressed', String(reducedEffects));
 effectsButton.classList.toggle('is-active', reducedEffects);
 effectsButton.querySelector('span')!.textContent = reducedEffects ? 'SAFE' : 'MAX';
 updateGarageUi();
+selectRadio('[data-track]', selectedTrack, 'track');
+selectRadio('[data-weapon]', selectedWeapon, 'weapon');
+selectRadio('[data-ability]', selectedAbility, 'ability');
 updateMusicUi();
 setText('#seed-label', 'SEED // RANDOMIZED');
+void loadMusicCatalog();
 
 window.addEventListener('beforeunload', () => {
   game.dispose();

@@ -61,8 +61,20 @@
 
           <aside class="loadout-panel panel-glass">
             <div class="panel-label"><span>02</span> MUSIC MATRIX</div>
+            <fieldset id="music-library" class="music-library" aria-busy="true">
+              <legend class="music-library__legend">SERVER LIBRARY</legend>
+              <div class="music-library__control">
+                <select id="music-catalog" class="music-library__select" aria-label="Выбор музыки" aria-describedby="music-catalog-status music-catalog-error" autocomplete="off" disabled>
+                  <option value="">СИНХРОНИЗАЦИЯ КАТАЛОГА…</option>
+                </select>
+                <button id="music-catalog-retry" class="music-library__retry" type="button" hidden>RETRY</button>
+              </div>
+              <p id="music-catalog-status" class="music-library__status" role="status" aria-live="polite">Читаем /assets/music…</p>
+              <p id="music-catalog-error" class="music-library__error" role="alert" hidden></p>
+            </fieldset>
+            <div class="music-divider"><span>ИЛИ ЛОКАЛЬНЫЙ ФАЙЛ</span></div>
             <label id="music-drop" class="music-drop" for="music-file">
-              <input id="music-file" type="file" accept="audio/mpeg,audio/mp3,audio/wav,audio/ogg,audio/*" hidden />
+              <input id="music-file" class="visually-hidden" type="file" accept="audio/mpeg,audio/mp3,audio/wav,audio/ogg,audio/*" />
               <span class="music-drop__icon" aria-hidden="true">
                 <svg viewBox="0 0 32 32"><path d="M9 23.5V8.8l15-3.3v14.8M9 23.5c0 2-1.8 3.7-4 3.7s-4-1.3-4-3.3 1.8-3.7 4-3.7c1.6 0 3 .7 4 1.7m15-1.6c0 2-1.8 3.7-4 3.7s-4-1.3-4-3.3 1.8-3.7 4-3.7c1.6 0 3 .7 4 1.7M9 13l15-3.3"/></svg>
               </span>
@@ -70,7 +82,7 @@
                 <strong id="music-title">EDGE SIGNAL // 148 BPM</strong>
                 <small id="music-meta">Встроенный синтетический трек · 01:22</small>
               </span>
-              <span class="music-drop__action" id="music-action">LOAD MP3</span>
+              <span class="music-drop__action" id="music-action">LOAD FILE</span>
             </label>
             <p class="privacy-note"><span>LOCAL</span> Аудио анализируется только в браузере и не загружается на сервер.</p>
 

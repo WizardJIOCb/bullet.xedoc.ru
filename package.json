@@ -4,7 +4,10 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "music:sync": "node scripts/sync-music.mjs",
+    "predev": "npm run music:sync",
     "dev": "vite --host 0.0.0.0",
+    "prebuild": "npm run music:sync",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 0.0.0.0",
     "test": "vitest run"
