@@ -79,6 +79,8 @@ export class BallisticGame {
   private readonly rgbPass: ShaderPass;
   private readonly scene = new THREE.Scene();
   private readonly camera = new THREE.PerspectiveCamera(76, 1, 0.08, 1500);
+  private readonly chaseScene = new THREE.Scene();
+  private readonly chaseCamera = new THREE.PerspectiveCamera(76, 1, 0.08, 100);
   private readonly world = new THREE.Group();
   private readonly dynamicLayer = new THREE.Group();
   private readonly eventVisuals = new Map<number, THREE.Object3D>();
@@ -88,7 +90,7 @@ export class BallisticGame {
   private readonly bursts: Burst[] = [];
   private readonly rivals: Rival[] = [];
   private readonly vehicle: THREE.Group;
-  private readonly engineGlow: THREE.Mesh;
+  private readonly engineGlow: THREE.Group;
   private streakGeometry: THREE.BufferGeometry | null = null;
   private streakLines: THREE.LineSegments | null = null;
   private streaks: StreakSpec[] = [];
@@ -164,10 +166,21 @@ export class BallisticGame {
     this.camera.add(cameraLight);
     this.scene.add(this.camera);
 
-    const craft = this.createCraft(0x37f6ff, 0xa55cff, 1);
+    const craft = this.createCraft(0x37f6ff, 0xa55cff, 1.16);
     this.vehicle = craft.group;
     this.engineGlow = craft.engineGlow;
-    this.dynamicLayer.add(this.vehicle);
+    this.vehicle.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      const materials = Array.isArray(object.material) ? object.material : [object.material];
+      for (const material of materials) {
+        material.depthTest = false;
+        material.depthWrite = false;
+      }
+      object.renderOrder = typeof object.userData.chaseLayer === 'number'
+        ? object.userData.chaseLayer
+        : materials.some((material) => material.transparent) ? 34 : 32;
+    });
+    this.chaseScene.add(this.vehicle);
 
     this.plan = generateTrack(TRACKS.aurora, this.audio.getProfile(), 1);
     this.buildWorld('aurora', 1);
@@ -275,6 +288,8 @@ export class BallisticGame {
     const height = Math.max(1, this.canvas.clientHeight || window.innerHeight);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
+    this.chaseCamera.aspect = width / height;
+    this.chaseCamera.updateProjectionMatrix();
     this.renderer.setSize(width, height, false);
     this.composer.setSize(width, height);
   };
@@ -555,11 +570,16 @@ export class BallisticGame {
     const factors = [0.987, 1.016, 1.004];
     for (let index = 0; index < 3; index += 1) {
       const craft = this.createCraft(colors[index][0], colors[index][1], 0.72).group;
+      const fadedMaterials = new Set<THREE.Material>();
       craft.traverse((object) => {
-        if (object instanceof THREE.Mesh) {
-          const material = object.material as THREE.Material;
+        if (!(object instanceof THREE.Mesh)) return;
+        const materials = Array.isArray(object.material) ? object.material : [object.material];
+        for (const material of materials) {
+          if (fadedMaterials.has(material)) continue;
+          fadedMaterials.add(material);
           material.transparent = true;
-          material.opacity = 0.58;
+          material.opacity *= 0.58;
+          material.depthWrite = false;
         }
       });
       this.dynamicLayer.add(craft);
@@ -567,25 +587,141 @@ export class BallisticGame {
     }
   }
 
-  private createCraft(primary: number, secondary: number, scale: number): { group: THREE.Group; engineGlow: THREE.Mesh } {
+  private createCraft(primary: number, secondary: number, scale: number): { group: THREE.Group; engineGlow: THREE.Group } {
     const group = new THREE.Group();
     group.scale.setScalar(scale);
-    const shellMaterial = new THREE.MeshStandardMaterial({ color: 0x10151f, emissive: primary, emissiveIntensity: 0.65, metalness: 0.92, roughness: 0.18 });
-    const trimMaterial = new THREE.MeshStandardMaterial({ color: 0xe9fbff, emissive: secondary, emissiveIntensity: 2.8, metalness: 0.66, roughness: 0.1 });
-    const body = new THREE.Mesh(new THREE.ConeGeometry(0.56, 3.6, 7), shellMaterial);
-    body.geometry.rotateX(Math.PI / 2);
-    body.position.z = 0.25;
-    const canopy = new THREE.Mesh(new THREE.SphereGeometry(0.48, 12, 7), trimMaterial);
-    canopy.scale.set(0.7, 0.46, 1.25);
-    canopy.position.set(0, -0.05, -0.12);
-    const wings = new THREE.Mesh(new THREE.BoxGeometry(3.1, 0.11, 0.62), shellMaterial);
-    wings.position.z = -0.64;
-    const engineGlow = new THREE.Mesh(
-      new THREE.CircleGeometry(0.52, 16),
-      new THREE.MeshBasicMaterial({ color: primary, transparent: true, opacity: 0.92, blending: THREE.AdditiveBlending, side: THREE.DoubleSide }),
+    const shellMaterial = new THREE.MeshBasicMaterial({ color: 0x010309, toneMapped: false });
+    const trimMaterial = new THREE.MeshBasicMaterial({ color: 0x17445c, toneMapped: false });
+    const outlineMaterial = new THREE.MeshBasicMaterial({ color: 0x010208, side: THREE.BackSide });
+    const glowMaterial = new THREE.MeshBasicMaterial({
+      color: primary,
+      transparent: true,
+      opacity: 0.22,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      toneMapped: false,
+    });
+
+    const bodyGeometry = new THREE.ConeGeometry(0.68, 4.15, 7);
+    bodyGeometry.rotateX(Math.PI / 2);
+    const body = new THREE.Mesh(bodyGeometry, shellMaterial);
+    body.position.z = 0.3;
+    const bodyOutline = new THREE.Mesh(bodyGeometry, outlineMaterial);
+    bodyOutline.position.copy(body.position);
+    bodyOutline.scale.setScalar(1.12);
+
+    const canopy = new THREE.Mesh(new THREE.SphereGeometry(0.54, 14, 8), trimMaterial);
+    canopy.scale.set(0.78, 0.48, 1.3);
+    canopy.position.set(0, -0.07, -0.08);
+
+    const rearHull = new THREE.Mesh(new THREE.SphereGeometry(0.96, 10, 7), shellMaterial);
+    rearHull.scale.set(1.24, 0.7, 1.05);
+    rearHull.position.set(0, 0, -0.74);
+
+    const wingGeometry = new THREE.BoxGeometry(3.85, 0.28, 0.82);
+    const wings = new THREE.Mesh(wingGeometry, shellMaterial);
+    wings.position.z = -0.68;
+    const wingOutline = new THREE.Mesh(wingGeometry, outlineMaterial);
+    wingOutline.position.copy(wings.position);
+    wingOutline.scale.set(1.06, 1.24, 1.12);
+    const wingEdgeMaterial = glowMaterial.clone();
+    wingEdgeMaterial.opacity = 0.16;
+    const wingEdge = new THREE.Mesh(new THREE.BoxGeometry(4.12, 0.045, 0.14), wingEdgeMaterial);
+    wingEdge.position.set(0, -0.095, -0.96);
+
+    const sternShape = new THREE.Shape();
+    sternShape.moveTo(-2.18, -0.06);
+    sternShape.lineTo(-1.55, 0.54);
+    sternShape.lineTo(-0.72, 0.42);
+    sternShape.lineTo(0, 0.88);
+    sternShape.lineTo(0.72, 0.42);
+    sternShape.lineTo(1.55, 0.54);
+    sternShape.lineTo(2.18, -0.06);
+    sternShape.lineTo(1.15, -0.58);
+    sternShape.lineTo(0.5, -0.42);
+    sternShape.lineTo(0, -0.78);
+    sternShape.lineTo(-0.5, -0.42);
+    sternShape.lineTo(-1.15, -0.58);
+    sternShape.closePath();
+    const sternPlate = new THREE.Mesh(
+      new THREE.ShapeGeometry(sternShape),
+      new THREE.MeshBasicMaterial({ color: 0x01030a, side: THREE.DoubleSide, toneMapped: false }),
     );
-    engineGlow.position.z = -1.6;
-    group.add(body, canopy, wings, engineGlow);
+    sternPlate.position.z = -2.02;
+    sternPlate.userData.chaseLayer = 30;
+
+    const makeSternFacet = (points: Array<[number, number]>, color: number): THREE.Mesh => {
+      const shape = new THREE.Shape();
+      shape.moveTo(points[0][0], points[0][1]);
+      for (let index = 1; index < points.length; index += 1) shape.lineTo(points[index][0], points[index][1]);
+      shape.closePath();
+      const facet = new THREE.Mesh(
+        new THREE.ShapeGeometry(shape),
+        new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide, toneMapped: false }),
+      );
+      facet.position.z = -2.035;
+      facet.userData.chaseLayer = 31;
+      return facet;
+    };
+    const leftFacet = makeSternFacet([
+      [-2.02, -0.05], [-1.53, 0.44], [-0.76, 0.34], [-0.18, 0.02], [-0.58, -0.31], [-1.28, -0.47],
+    ], 0x16102d);
+    const rightFacet = makeSternFacet([
+      [2.02, -0.05], [1.53, 0.44], [0.76, 0.34], [0.18, 0.02], [0.58, -0.31], [1.28, -0.47],
+    ], 0x072431);
+
+    const engineGlow = new THREE.Group();
+    engineGlow.position.z = -1.9;
+    const engineCasingGeometry = new THREE.CylinderGeometry(0.34, 0.42, 0.74, 10);
+    engineCasingGeometry.rotateX(Math.PI / 2);
+    for (const x of [-0.72, 0.72]) {
+      const casing = new THREE.Mesh(engineCasingGeometry, shellMaterial);
+      casing.position.set(x, 0, -1.51);
+      group.add(casing);
+
+      const engineRing = new THREE.Mesh(
+        new THREE.TorusGeometry(0.33, 0.075, 6, 18),
+        new THREE.MeshBasicMaterial({
+          color: x < 0 ? primary : secondary,
+          transparent: true,
+          opacity: 0.42,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+          toneMapped: false,
+        }),
+      );
+      engineRing.position.x = x;
+      engineGlow.add(engineRing);
+
+      const glow = new THREE.Mesh(new THREE.CircleGeometry(0.24, 18), glowMaterial.clone());
+      glow.position.x = x;
+      engineGlow.add(glow);
+
+      const trailGeometry = new THREE.CylinderGeometry(0.2, 0.035, 3.25, 8, 1, true);
+      trailGeometry.rotateX(Math.PI / 2);
+      const trail = new THREE.Mesh(
+        trailGeometry,
+        new THREE.MeshBasicMaterial({
+          color: x < 0 ? primary : secondary,
+          transparent: true,
+          opacity: 0.14,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+          side: THREE.DoubleSide,
+          toneMapped: false,
+        }),
+      );
+      trail.position.set(x, 0, -1.62);
+      group.add(trail);
+    }
+    const reactorMaterial = glowMaterial.clone();
+    reactorMaterial.color.setHex(secondary);
+    reactorMaterial.opacity = 0.28;
+    const reactor = new THREE.Mesh(new THREE.CircleGeometry(0.14, 14), reactorMaterial);
+    engineGlow.add(reactor);
+
+    group.add(bodyOutline, wingOutline, body, rearHull, canopy, wings, sternPlate, leftFacet, rightFacet, wingEdge, engineGlow);
     return { group, engineGlow };
   }
 
@@ -676,6 +812,13 @@ export class BallisticGame {
       if (this.state === 'playing' || this.state === 'countdown' || this.state === 'upgrade') this.hooks.onHud(this.getStats());
     }
     this.composer.render(dt);
+    if (this.vehicle.visible) {
+      const autoClear = this.renderer.autoClear;
+      this.renderer.autoClear = false;
+      this.renderer.clearDepth();
+      this.renderer.render(this.chaseScene, this.chaseCamera);
+      this.renderer.autoClear = autoClear;
+    }
     this.animationFrame = requestAnimationFrame(this.frame);
   };
 
@@ -968,12 +1111,12 @@ export class BallisticGame {
     const circumferential = frame.normal.clone().multiplyScalar(-Math.sin(this.angle)).add(frame.binormal.clone().multiplyScalar(Math.cos(this.angle))).normalize();
     const phaseTarget = this.phaseTimer > 0 ? this.plan.radius * 0.22 : this.plan.radius - 1.15;
     this.cameraRadial = damp(this.cameraRadial || phaseTarget, phaseTarget, this.phaseTimer > 0 ? 7 : 4, dt);
-    const craftPosition = frame.position.clone().add(radial.clone().multiplyScalar(this.cameraRadial));
-    const craftMatrix = new THREE.Matrix4().makeBasis(circumferential, radial, frame.tangent);
-    this.vehicle.position.copy(craftPosition);
-    this.vehicle.quaternion.setFromRotationMatrix(craftMatrix);
-    this.vehicle.rotateZ(-this.angularVelocity * 0.1);
-    this.vehicle.visible = this.state !== 'menu' || true;
+    const craftLean = clamp(this.angularVelocity * 0.045, -0.24, 0.24);
+    this.vehicle.position.x = damp(this.vehicle.position.x, -craftLean * 1.35, 7, dt);
+    this.vehicle.position.y = damp(this.vehicle.position.y, -2.7, 7, dt);
+    this.vehicle.position.z = damp(this.vehicle.position.z || -8.6, -8.6, 9, dt);
+    this.vehicle.rotation.set(-0.06, Math.PI, craftLean);
+    this.vehicle.visible = this.state !== 'menu' && this.state !== 'finished';
     this.engineGlow.scale.setScalar(0.75 + this.lastBands.bass * 0.8 + (this.overdriveTimer > 0 ? 1.1 : 0));
 
     const speedRatio = this.config ? clamp(this.speed / (this.plan.length / this.plan.runDuration * 1.55), 0, 1.25) : 0.34;
@@ -989,7 +1132,8 @@ export class BallisticGame {
     const lookRadial = radialAt(lookFrame, this.angle).multiplyScalar(Math.max(0.5, this.cameraRadial - 1));
     const lookTarget = lookFrame.position.clone().add(lookRadial);
     this.camera.lookAt(lookTarget);
-    this.camera.fov = damp(this.camera.fov, 74 + speedRatio * 24 + (this.overdriveTimer > 0 ? 5 : 0), 4.5, dt);
+    const targetFov = clamp(72 + speedRatio * 19 + (this.overdriveTimer > 0 ? 3 : 0), 74, 98);
+    this.camera.fov = damp(this.camera.fov, targetFov, 4.5, dt);
     this.camera.updateProjectionMatrix();
     this.damageKick *= Math.exp(-dt * 8);
 
@@ -1177,6 +1321,7 @@ export class BallisticGame {
     this.canvas.removeEventListener('pointerdown', this.handleCanvasPointerDown);
     this.disposeGroup(this.world);
     this.disposeGroup(this.dynamicLayer);
+    this.removeAndDispose(this.vehicle);
     this.composer.dispose();
     this.renderer.dispose();
   }
