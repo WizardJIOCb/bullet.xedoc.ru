@@ -21,7 +21,7 @@ export interface CatalogAudioTrack {
 }
 
 const MAX_AUDIO_FILE_BYTES = 48 * 1024 * 1024;
-const MAX_AUDIO_DURATION = 8 * 60;
+const MAX_AUDIO_DURATION = 3 * 60;
 const MAX_PLAYBACK_DURATION = 108;
 
 export class AudioEngine {
@@ -121,7 +121,7 @@ export class AudioEngine {
       media.src = url;
     });
     if (!Number.isFinite(duration) || duration <= 0) throw new Error(`${label} has an invalid duration`);
-    if (duration > MAX_AUDIO_DURATION) throw new Error(`${label} is longer than 8 minutes`);
+    if (duration > MAX_AUDIO_DURATION) throw new Error(`${label} is longer than 3 minutes`);
   }
 
   private trimPlaybackBuffer(context: AudioContext, buffer: AudioBuffer): AudioBuffer {
@@ -141,7 +141,7 @@ export class AudioEngine {
     await this.validateAudioBlob(file, file.name);
     const bytes = await file.arrayBuffer();
     const buffer = await context.decodeAudioData(bytes);
-    if (buffer.duration > MAX_AUDIO_DURATION) throw new Error(`${file.name} is longer than 8 minutes`);
+    if (buffer.duration > MAX_AUDIO_DURATION) throw new Error(`${file.name} is longer than 3 minutes`);
     const profile = this.analyzeBuffer(buffer, `${file.name}:${file.size}:${file.lastModified}`, file.name);
     const playbackBuffer = this.trimPlaybackBuffer(context, buffer);
     this.profile = profile;
@@ -165,7 +165,7 @@ export class AudioEngine {
     const byteLength = blob.size;
     const bytes = await blob.arrayBuffer();
     const buffer = await context.decodeAudioData(bytes);
-    if (buffer.duration > MAX_AUDIO_DURATION) throw new Error(`${track.title} is longer than 8 minutes`);
+    if (buffer.duration > MAX_AUDIO_DURATION) throw new Error(`${track.title} is longer than 3 minutes`);
     const profile = this.analyzeBuffer(buffer, `catalog:${track.id}:${byteLength}`, track.title);
     const playbackBuffer = this.trimPlaybackBuffer(context, buffer);
     this.profile = profile;
