@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#03050a" />
+    <meta name="description" content="Ballistic Edge — музыкальная roguelike-гонка на сверхзвуковой скорости." />
+    <title>BALLISTIC EDGE // Pulse Run</title>
+  </head>
+  <body>
+    <main id="app">
+      <canvas id="game-canvas" aria-label="Игровая сцена Ballistic Edge"></canvas>
+      <div class="visual-overlay visual-overlay--vignette" aria-hidden="true"></div>
+      <div class="visual-overlay visual-overlay--scanlines" aria-hidden="true"></div>
+      <div id="damage-flash" aria-hidden="true"></div>
+
+      <section id="menu" class="screen screen--menu">
+        <header class="menu-header">
+          <div class="system-mark">
+            <span class="system-mark__dot"></span>
+            WEBGL PULSE-RACING PROTOCOL
+          </div>
+          <button id="effects-toggle" class="icon-button" type="button" aria-pressed="false" title="Уменьшить вспышки">
+            FX <span>MAX</span>
+          </button>
+        </header>
+
+        <div class="menu-grid">
+          <section class="hero-panel">
+            <div class="hero-panel__eyebrow">MACH // ROGUELIKE // RHYTHM</div>
+            <h1 class="game-title"><span>BALLISTIC</span><strong>EDGE</strong></h1>
+            <p class="hero-panel__lead">
+              Оседлай внутреннюю стенку мегатоннеля. Собери боевой билд. Преврати любой MP3 в трассу, которая дышит в ритме.
+            </p>
+
+            <div class="track-heading">
+              <span>01 / ВЫБЕРИ СИГНАЛ ТРАССЫ</span>
+              <span id="track-count">03 ROUTES ONLINE</span>
+            </div>
+            <div class="track-grid" role="radiogroup" aria-label="Выбор трассы">
+              <button class="track-card is-selected" data-track="aurora" type="button" role="radio" aria-checked="true">
+                <span class="track-card__visual track-card__visual--aurora"><i></i><i></i><i></i></span>
+                <span class="track-card__meta">FLOW / 01</span>
+                <strong>Aurora Spine</strong>
+                <small>Широкие дуги / x0.88 hazard</small>
+              </button>
+              <button class="track-card" data-track="reactor" type="button" role="radio" aria-checked="false">
+                <span class="track-card__visual track-card__visual--reactor"><i></i><i></i><i></i></span>
+                <span class="track-card__meta">HEAT / 02</span>
+                <strong>Solar Rupture</strong>
+                <small>Узкие окна / x1.18 hazard</small>
+              </button>
+              <button class="track-card" data-track="void" type="button" role="radio" aria-checked="false">
+                <span class="track-card__visual track-card__visual--void"><i></i><i></i><i></i></span>
+                <span class="track-card__meta">VOID / 03</span>
+                <strong>Null Cathedral</strong>
+                <small>Штопоры / богатый Flux</small>
+              </button>
+            </div>
+          </section>
+
+          <aside class="loadout-panel panel-glass">
+            <div class="panel-label"><span>02</span> MUSIC MATRIX</div>
+            <label id="music-drop" class="music-drop" for="music-file">
+              <input id="music-file" type="file" accept="audio/mpeg,audio/mp3,audio/wav,audio/ogg,audio/*" hidden />
+              <span class="music-drop__icon" aria-hidden="true">
+                <svg viewBox="0 0 32 32"><path d="M9 23.5V8.8l15-3.3v14.8M9 23.5c0 2-1.8 3.7-4 3.7s-4-1.3-4-3.3 1.8-3.7 4-3.7c1.6 0 3 .7 4 1.7m15-1.6c0 2-1.8 3.7-4 3.7s-4-1.3-4-3.3 1.8-3.7 4-3.7c1.6 0 3 .7 4 1.7M9 13l15-3.3"/></svg>
+              </span>
+              <span class="music-drop__copy">
+                <strong id="music-title">EDGE SIGNAL // 148 BPM</strong>
+                <small id="music-meta">Встроенный синтетический трек · 01:22</small>
+              </span>
+              <span class="music-drop__action" id="music-action">LOAD MP3</span>
+            </label>
+            <p class="privacy-note"><span>LOCAL</span> Аудио анализируется только в браузере и не загружается на сервер.</p>
+
+            <div class="panel-label panel-label--spaced"><span>03</span> COMBAT LOADOUT</div>
+            <div class="selector-block">
+              <div class="selector-block__title">WEAPON</div>
+              <div class="segmented" role="radiogroup" aria-label="Выбор оружия">
+                <button class="is-selected" data-weapon="pulse" type="button" role="radio" aria-checked="true">PULSE</button>
+                <button data-weapon="scatter" type="button" role="radio" aria-checked="false">ARC</button>
+                <button data-weapon="rail" type="button" role="radio" aria-checked="false">RAIL</button>
+              </div>
+              <p id="weapon-description">Точный импульс. Попадание в бит наносит двойной урон.</p>
+            </div>
+            <div class="selector-block">
+              <div class="selector-block__title">ACTIVE MODULE</div>
+              <div class="segmented" role="radiogroup" aria-label="Выбор способности">
+                <button class="is-selected" data-ability="phase" type="button" role="radio" aria-checked="true">PHASE</button>
+                <button data-ability="emp" type="button" role="radio" aria-checked="false">EMP</button>
+                <button data-ability="overdrive" type="button" role="radio" aria-checked="false">REDLINE</button>
+              </div>
+              <p id="ability-description">На 1,4 сек. отрывает болид от стенки и игнорирует столкновения.</p>
+            </div>
+          </aside>
+
+          <section class="garage-panel panel-glass">
+            <div class="garage-panel__header">
+              <div>
+                <div class="panel-label"><span>04</span> BOLIDE GARAGE</div>
+                <p>Постоянные модули сохраняются между забегами.</p>
+              </div>
+              <div class="credits"><i></i><strong id="credits-value">900</strong> CR</div>
+            </div>
+            <div class="garage-grid">
+              <button class="garage-module" data-module="engine" type="button">
+                <span class="garage-module__icon">ENG</span>
+                <span><strong>Vector Drive</strong><small>тяга и управление</small></span>
+                <span class="garage-module__level" data-level-for="engine">LV.0</span>
+                <span class="garage-module__cost" data-cost-for="engine">250 CR</span>
+              </button>
+              <button class="garage-module" data-module="cooling" type="button">
+                <span class="garage-module__icon">CRY</span>
+                <span><strong>Cryo Lattice</strong><small>скорость охлаждения</small></span>
+                <span class="garage-module__level" data-level-for="cooling">LV.0</span>
+                <span class="garage-module__cost" data-cost-for="cooling">250 CR</span>
+              </button>
+              <button class="garage-module" data-module="shield" type="button">
+                <span class="garage-module__icon">SHD</span>
+                <span><strong>Aegis Skin</strong><small>ёмкость щита</small></span>
+                <span class="garage-module__level" data-level-for="shield">LV.0</span>
+                <span class="garage-module__cost" data-cost-for="shield">250 CR</span>
+              </button>
+              <button class="garage-module" data-module="weapon" type="button">
+                <span class="garage-module__icon">WPN</span>
+                <span><strong>Flux Chamber</strong><small>урон оружия</small></span>
+                <span class="garage-module__level" data-level-for="weapon">LV.0</span>
+                <span class="garage-module__cost" data-cost-for="weapon">250 CR</span>
+              </button>
+            </div>
+          </section>
+
+          <section class="launch-panel">
+            <button id="start-run" class="launch-button" type="button">
+              <span class="launch-button__icon">▶</span>
+              <span><small>INITIALIZE RUN</small><strong>РАЗОГНАТЬСЯ</strong></span>
+              <span class="launch-button__seed" id="seed-label">SEED // RANDOM</span>
+            </button>
+            <div class="control-strip">
+              <span><kbd>A</kbd><kbd>D</kbd> WALL RIDE</span>
+              <span><kbd>SPACE</kbd> BOOST</span>
+              <span><kbd>F</kbd> / CLICK FIRE</span>
+              <span><kbd>Q</kbd> ABILITY</span>
+              <span><kbd>S</kbd> COOL</span>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section id="hud" class="hud" aria-live="polite">
+        <div class="hud-top hud-panel">
+          <div class="hud-brand"><strong>BE</strong><span id="hud-track">AURORA SPINE</span></div>
+          <div class="race-progress">
+            <span id="section-label">SECTOR 01 // IGNITION</span>
+            <div class="race-progress__bar"><i id="progress-fill"></i><b class="rival-dot rival-dot--one"></b><b class="rival-dot rival-dot--two"></b><b class="rival-dot rival-dot--three"></b></div>
+          </div>
+          <div class="rank"><strong id="rank-value">4</strong><span>/ 4<br />POSITION</span></div>
+        </div>
+
+        <div class="hud-left">
+          <div class="meter-title">AEGIS // SHIELD</div>
+          <div id="shield-pips" class="shield-pips"><i></i><i></i><i></i></div>
+          <div class="vertical-stat">
+            <span>FLUX</span>
+            <div class="vertical-stat__bar vertical-stat__bar--flux"><i id="flux-fill"></i></div>
+            <strong id="flux-value">100</strong>
+          </div>
+        </div>
+
+        <div class="hud-center">
+          <div id="rhythm-ring" class="rhythm-ring"><i></i><span></span></div>
+          <div class="target-brackets"><i></i><i></i><i></i><i></i></div>
+          <div id="event-toast" class="event-toast"></div>
+          <div class="speed-readout"><strong id="speed-value">0000</strong><span>KM/H</span></div>
+          <div class="sync-readout">SYNC <strong id="sync-value">×0</strong></div>
+        </div>
+
+        <div class="hud-right">
+          <div class="vertical-stat vertical-stat--right">
+            <span>HEAT</span>
+            <div class="vertical-stat__bar vertical-stat__bar--heat"><i id="heat-fill"></i></div>
+            <strong id="heat-value">00</strong>
+          </div>
+          <div class="combat-state">
+            <span>WEAPON</span><strong id="hud-weapon">PULSE LANCE</strong><i id="weapon-ready"></i>
+            <span>ABILITY</span><strong id="hud-ability">PHASE SHIFT</strong><small id="ability-ready">READY</small>
+          </div>
+        </div>
+
+        <div class="hud-bottom">
+          <span id="score-value">000000</span>
+          <span id="music-hud">EDGE SIGNAL // 148 BPM</span>
+          <span>RUN DATA LOCAL // <b id="fps-hint">120Hz SIM</b></span>
+        </div>
+      </section>
+
+      <div id="countdown" class="countdown" aria-live="assertive"></div>
+
+      <section id="upgrade-screen" class="screen screen--overlay upgrade-screen" aria-labelledby="upgrade-title">
+        <div class="upgrade-shell">
+          <div class="upgrade-kicker">ROGUELIKE INTERCEPT // TIME DILATION ACTIVE</div>
+          <h2 id="upgrade-title">ВЫБЕРИ МОДУЛЬ</h2>
+          <p>Выбор останется с болидом до конца текущего забега.</p>
+          <div id="upgrade-options" class="upgrade-grid"></div>
+          <small class="upgrade-hint">Музыка и симуляция поставлены на паузу</small>
+        </div>
+      </section>
+
+      <section id="results-screen" class="screen screen--overlay results-screen" aria-labelledby="result-title">
+        <div class="results-shell panel-glass">
+          <div class="result-rank"><span>RUN RANK</span><strong id="result-rank">S</strong><i></i></div>
+          <div class="results-copy">
+            <div id="result-status" class="upgrade-kicker">SIGNAL CONQUERED</div>
+            <h2 id="result-title">PULSE COMPLETE</h2>
+            <p id="result-route">AURORA SPINE // SEED 000000</p>
+          </div>
+          <div class="result-score"><span>TOTAL SCORE</span><strong id="result-score">000000</strong><small id="result-best">NEW PERSONAL BEST</small></div>
+          <div class="result-stats">
+            <div><span>MAX VELOCITY</span><strong id="result-speed">0 KM/H</strong></div>
+            <div><span>ACCURACY</span><strong id="result-accuracy">0%</strong></div>
+            <div><span>PERFECT SYNC</span><strong id="result-perfects">0</strong></div>
+            <div><span>NEAR MISSES</span><strong id="result-near">0</strong></div>
+            <div><span>TARGETS ERASED</span><strong id="result-kills">0</strong></div>
+            <div><span>REWARD</span><strong id="result-credits">+0 CR</strong></div>
+          </div>
+          <div class="result-actions">
+            <button id="replay-run" class="launch-button launch-button--compact" type="button"><span>↻</span><strong>REPLAY SEED</strong></button>
+            <button id="return-menu" class="secondary-button" type="button">RETURN TO GARAGE</button>
+          </div>
+        </div>
+      </section>
+
+      <div class="mobile-controls" aria-label="Сенсорное управление">
+        <div><button data-control="left" type="button">◀</button><button data-control="right" type="button">▶</button></div>
+        <div><button data-control="cool" type="button">COOL</button><button data-action="fire" type="button">FIRE</button><button data-control="boost" type="button">BOOST</button><button data-action="ability" type="button">Q</button></div>
+      </div>
+    </main>
+    <noscript>Для Ballistic Edge нужен JavaScript и поддержка WebGL.</noscript>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
