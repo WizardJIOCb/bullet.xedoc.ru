@@ -3,6 +3,7 @@ import type { MusicProfile, MusicTransition, RhythmBeat } from '../core/types';
 import { createDefaultMusicProfile } from '../game/track';
 import type { AudioSettings } from '../settings/SettingsStore';
 import { analyzeMusicNovelty, normalizeMusicBands, poolMusicCurve } from './musicAnalysis';
+import { createMusicAccentEnvelope } from './musicAccent';
 
 export interface AudioBands {
   bass: number;
@@ -14,7 +15,7 @@ export interface AudioBands {
 }
 
 export type AudioSourceKind = 'synthetic' | 'catalog' | 'local';
-export type GameSound = 'fire' | 'impact' | 'pickup' | 'perfect' | 'ability' | 'upgrade' | 'destroy';
+export type GameSound = 'fire' | 'impact' | 'pickup' | 'ability' | 'upgrade' | 'destroy';
 
 export type AudioImportErrorCode = 'empty' | 'too-large' | 'too-long' | 'read' | 'network' | 'decode' | 'invalid';
 
@@ -54,6 +55,11 @@ export class AudioEngine {
   private context: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
   private musicInput: GainNode | null = null;
+  private musicAccentFilter: BiquadFilterNode | null = null;
+  private musicAccentGain: GainNode | null = null;
+  private musicAccentPeakGain = 1;
+  private musicAccentPeakEq = 0;
+  private musicAccentReleaseAt = 0;
   private musicGain: GainNode | null = null;
   private effectsGain: GainNode | null = null;
   private outputGain: GainNode | null = null;
@@ -118,6 +124,7 @@ export class AudioEngine {
     if (duration <= 0) return;
 
     const context = this.ensureContext();
+    this.resetMusicAccent();
     const generation = ++this.previewGeneration;
     const offset = this.previewOffset >= duration ? 0 : clamp(this.previewOffset, 0, duration);
     try {
@@ -148,6 +155,7 @@ export class AudioEngine {
 
   pausePreview(): void {
     if (this.transportMode !== 'preview' || !this.previewPlaying) return;
+    this.resetMusicAccent();
     const time = this.getPreviewTime();
     this.previewGeneration += 1;
     this.clearTrackSource();
@@ -159,6 +167,7 @@ export class AudioEngine {
 
   seekPreview(seconds: number): void {
     if (!this.decodedTrack || this.transportMode === 'game') return;
+    this.resetMusicAccent();
     const duration = this.getPreviewDuration();
     const target = clamp(Number.isFinite(seconds) ? seconds : 0, 0, duration);
     const wasPlaying = this.transportMode === 'preview' && this.previewPlaying;
@@ -179,6 +188,7 @@ export class AudioEngine {
 
   stopPreview(reset = true): void {
     const time = this.getPreviewTime();
+    this.resetMusicAccent();
     this.previewGeneration += 1;
     this.previewPlaying = false;
     if (this.transportMode === 'game') {
@@ -210,6 +220,74 @@ export class AudioEngine {
     this.outputGain.gain.setTargetAtTime(this.audioSettings.muted ? 0 : this.audioSettings.masterVolume, now, 0.025);
   }
 
+  /** Rewards an on-beat action by briefly lifting the music itself, without a new SFX source. */
+  accentMusic(amount = 1): void {
+    const context = this.context;
+    const accentGain = this.musicAccentGain?.gain;
+    const accentEq = this.musicAccentFilter?.gain;
+    if (
+      !context
+      || !accentGain
+      || !accentEq
+      || context.state !== 'running'
+      || this.transportMode !== 'game'
+      || !this.running
+    ) return;
+
+    const envelope = createMusicAccentEnvelope(amount, this.profile.bpm);
+    if (!envelope.active) return;
+    const now = context.currentTime;
+    const heldGain = this.holdAudioParam(accentGain, now, 1);
+    const heldEq = this.holdAudioParam(accentEq, now, 0);
+    const peakAt = now + envelope.attackSeconds;
+    const releaseAt = now + envelope.releaseSeconds;
+    const scheduledAccentActive = Number.isFinite(this.musicAccentReleaseAt)
+      && now < this.musicAccentReleaseAt;
+    const peakGain = Math.max(
+      heldGain,
+      envelope.peakGain,
+      scheduledAccentActive ? this.musicAccentPeakGain : 1,
+    );
+    const peakEq = Math.max(
+      heldEq,
+      envelope.peakLowShelfDb,
+      scheduledAccentActive ? this.musicAccentPeakEq : 0,
+    );
+
+    accentGain.linearRampToValueAtTime(peakGain, peakAt);
+    accentGain.linearRampToValueAtTime(1, releaseAt);
+    accentEq.linearRampToValueAtTime(peakEq, peakAt);
+    accentEq.linearRampToValueAtTime(0, releaseAt);
+    this.musicAccentPeakGain = peakGain;
+    this.musicAccentPeakEq = peakEq;
+    this.musicAccentReleaseAt = releaseAt;
+  }
+
+  private holdAudioParam(param: AudioParam, time: number, fallback: number): number {
+    const held = Number.isFinite(param.value) ? param.value : fallback;
+    if (typeof param.cancelAndHoldAtTime === 'function') param.cancelAndHoldAtTime(time);
+    else {
+      param.cancelScheduledValues(time);
+      param.setValueAtTime(held, time);
+    }
+    return held;
+  }
+
+  private resetMusicAccent(): void {
+    this.musicAccentPeakGain = 1;
+    this.musicAccentPeakEq = 0;
+    this.musicAccentReleaseAt = 0;
+    if (!this.context) return;
+    const now = this.context.currentTime;
+    const reset = (param: AudioParam | undefined, baseline: number): void => {
+      if (!param) return;
+      param.cancelScheduledValues(now);
+      param.setValueAtTime(baseline, now);
+    };
+    reset(this.musicAccentGain?.gain, 1);
+    reset(this.musicAccentFilter?.gain, 0);
+  }
+
   private ensureContext(): AudioContext {
     if (this.context) return this.context;
     this.context = new AudioContext();
@@ -218,10 +296,16 @@ export class AudioEngine {
     this.analyser.smoothingTimeConstant = 0.76;
     this.frequencyData = new Uint8Array(this.analyser.frequencyBinCount);
     this.musicInput = this.context.createGain();
+    this.musicAccentFilter = this.context.createBiquadFilter();
+    this.musicAccentGain = this.context.createGain();
     this.musicGain = this.context.createGain();
     this.effectsGain = this.context.createGain();
     this.outputGain = this.context.createGain();
     this.limiter = this.context.createDynamicsCompressor();
+    this.musicAccentFilter.type = 'lowshelf';
+    this.musicAccentFilter.frequency.value = 180;
+    this.musicAccentFilter.gain.value = 0;
+    this.musicAccentGain.gain.value = 1;
     this.musicGain.gain.value = this.audioSettings.musicVolume;
     this.effectsGain.gain.value = this.audioSettings.effectsVolume;
     this.outputGain.gain.value = this.audioSettings.muted ? 0 : this.audioSettings.masterVolume;
@@ -231,7 +315,9 @@ export class AudioEngine {
     this.limiter.attack.value = 0.003;
     this.limiter.release.value = 0.18;
     this.musicInput.connect(this.analyser);
-    this.analyser.connect(this.musicGain);
+    this.analyser.connect(this.musicAccentFilter);
+    this.musicAccentFilter.connect(this.musicAccentGain);
+    this.musicAccentGain.connect(this.musicGain);
     this.musicGain.connect(this.outputGain);
     this.effectsGain.connect(this.outputGain);
     this.outputGain.connect(this.limiter);
@@ -518,6 +604,7 @@ export class AudioEngine {
 
   async start(paused = false): Promise<void> {
     const context = this.ensureContext();
+    this.resetMusicAccent();
     this.stopPreview(true);
     this.clearTrackSource();
     if (paused) {
@@ -545,6 +632,7 @@ export class AudioEngine {
 
   pause(): void {
     if (this.transportMode !== 'game' || !this.running) return;
+    this.resetMusicAccent();
     this.running = false;
     if (this.context?.state === 'running') void this.context.suspend();
   }
@@ -561,6 +649,7 @@ export class AudioEngine {
   }
 
   stop(): void {
+    this.resetMusicAccent();
     this.previewGeneration += 1;
     this.previewPlaying = false;
     this.previewOffset = 0;
@@ -763,9 +852,6 @@ export class AudioEngine {
     } else if (sound === 'pickup') {
       tone('sine', 620, 980, 0.14, 0.1);
       tone('sine', 930, 1320, 0.12, 0.055, 0.055);
-    } else if (sound === 'perfect') {
-      tone('triangle', 880, 1320, 0.16, 0.075);
-      tone('sine', 1320, 1760, 0.13, 0.045, 0.07);
     } else if (sound === 'ability') {
       tone('sawtooth', 120, 720, 0.24, 0.12);
       tone('sine', 360, 1080, 0.26, 0.06, 0.025);
@@ -1350,6 +1436,8 @@ export class AudioEngine {
     this.decodedTrack = null;
     this.musicInput?.disconnect();
     this.analyser?.disconnect();
+    this.musicAccentFilter?.disconnect();
+    this.musicAccentGain?.disconnect();
     this.musicGain?.disconnect();
     this.effectsGain?.disconnect();
     this.outputGain?.disconnect();

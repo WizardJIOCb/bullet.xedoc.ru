@@ -1899,7 +1899,7 @@ export class BallisticGame {
     this.flux = Math.min(100, this.flux + 5);
     if (this.runUpgrades.has('cryo-loop')) this.heat = Math.max(0, this.heat - 7);
     if (this.runUpgrades.has('echo-shield') && this.sync % 8 === 0) this.shield = Math.min(this.maxShield, this.shield + 1);
-    this.audio.playEffect('perfect', this.sync % 4 === 0 ? 1 : 0.45);
+    this.audio.accentMusic(this.sync % 4 === 0 ? 1 : 0.45);
     if (this.sync % 4 === 0) this.hooks.onToast('PERFECT', `${label} / SYNC ×${this.sync}`, 'gold');
   }
 
