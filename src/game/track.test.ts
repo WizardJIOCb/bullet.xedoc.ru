@@ -39,7 +39,7 @@ describe('procedural track generation', () => {
     expect(first.events.map((event) => event.id)).toEqual(first.events.map((_, index) => index));
     expect(first.events.every((event) => event.musicTime >= 0.7 && event.musicTime < first.runDuration)).toBe(true);
     expect(first.events.filter((event) => event.kind === 'gate').every((event) => event.gapWidth >= 0.7)).toBe(true);
-    const hazardKinds = new Set(['gate', 'halfwall', 'blade', 'cross', 'bastion']);
+    const hazardKinds = new Set(['gate', 'aperture', 'halfwall', 'blade', 'cross', 'bastion']);
     const patternIdsByBeat = new Map<number, Set<number>>();
     for (const event of first.events.filter((candidate) => hazardKinds.has(candidate.kind))) {
       const patternIds = patternIdsByBeat.get(event.beatIndex) || new Set<number>();
@@ -53,7 +53,7 @@ describe('procedural track generation', () => {
     const profile = createDefaultMusicProfile();
     const aurora = generateTrack(TRACKS.aurora, profile, 44);
     const reactor = generateTrack(TRACKS.reactor, profile, 44);
-    const hazardKinds = new Set(['gate', 'halfwall', 'blade', 'cross', 'bastion']);
+    const hazardKinds = new Set(['gate', 'aperture', 'halfwall', 'blade', 'cross', 'bastion']);
     const countHazards = (plan: ReturnType<typeof generateTrack>): number => plan.events.filter((event) => hazardKinds.has(event.kind)).length;
 
     expect(countHazards(reactor)).toBeGreaterThan(countHazards(aurora));
@@ -130,7 +130,7 @@ describe('procedural track generation', () => {
       transitions: [],
     };
     const plan = generateTrack(TRACKS.aurora, profile, 53);
-    const largeKinds = new Set(['gate', 'halfwall', 'blade', 'cross']);
+    const largeKinds = new Set(['gate', 'aperture', 'halfwall', 'blade', 'cross']);
 
     expect(beats[accentIndex].barBeat).not.toBe(0);
     expect(plan.events.some((event) => event.beatIndex === accentIndex && largeKinds.has(event.kind))).toBe(true);
@@ -184,6 +184,62 @@ describe('procedural track generation', () => {
     )) <= 0.41)).toBe(true);
     expect(transientPattern.length).toBeGreaterThanOrEqual(2);
     expect(transientPattern.every((event) => event.trigger === 'transient' && event.armCount === 3)).toBe(true);
+  });
+
+  it('reserves one narrow aperture for a strong analyzed kick onset on a downbeat', () => {
+    const runDuration = 58;
+    const apertureIndex = 24;
+    const offDownbeatIndex = 45;
+    const missingOnsetIndex = 64;
+    const beats: RhythmBeat[] = Array.from({ length: 116 }, (_, index) => {
+      const candidate = index === apertureIndex || index === offDownbeatIndex || index === missingOnsetIndex;
+      return {
+        time: 0.25 + index * 0.5,
+        strength: candidate ? 0.99 : 0.2,
+        bass: candidate ? 0.99 : 0.24,
+        highs: candidate ? 0.46 : 0.22,
+        barBeat: (index % 4) as RhythmBeat['barBeat'],
+        gridBeat: true,
+        cue: candidate ? 'kick' as const : 'beat' as const,
+        onset: index === apertureIndex || index === offDownbeatIndex ? 0.99 : 0,
+        kick: candidate ? 0.99 : 0,
+        transient: 0,
+      };
+    }).filter((beat) => beat.time <= runDuration);
+    const profile: MusicProfile = {
+      ...createDefaultMusicProfile(),
+      duration: runDuration,
+      runDuration,
+      bpm: 120,
+      beatOffset: 0.25,
+      energy: Array(192).fill(0.88),
+      bass: Array(192).fill(0.9),
+      mids: Array(192).fill(0.56),
+      highs: Array(192).fill(0.42),
+      beats,
+      transitions: [],
+    };
+    const plan = generateTrack(TRACKS.aurora, profile, 0xa93e);
+    const apertures = plan.events.filter((event) => event.kind === 'aperture');
+
+    expect(apertures).toHaveLength(1);
+    expect(apertures[0]).toMatchObject({
+      musicTime: beats[apertureIndex].time,
+      beatIndex: apertureIndex,
+      trigger: 'kick',
+      armCount: 1,
+    });
+    expect(apertures[0].gapWidth).toBeGreaterThanOrEqual(0.61);
+    expect(apertures[0].gapWidth).toBeLessThanOrEqual(0.66);
+    expect(apertures[0].warningDistance).toBeGreaterThanOrEqual(560);
+    expect(apertures[0].safeAngle).toBeTypeOf('number');
+    expect(plan.events.filter((event) => event.patternId === apertures[0].patternId)).toHaveLength(1);
+    expect(plan.events.some((event) => (
+      event.kind === 'aperture' && event.musicTime === beats[offDownbeatIndex].time
+    ))).toBe(false);
+    expect(plan.events.some((event) => (
+      event.kind === 'aperture' && event.musicTime === beats[missingOnsetIndex].time
+    ))).toBe(false);
   });
 
   it('replaces the low drone with a large destructible bastion on a heavy bass hit', () => {
@@ -298,7 +354,7 @@ describe('procedural track generation', () => {
       beats,
       transitions: [],
     };
-    const hazards = new Set(['gate', 'halfwall', 'blade', 'cross', 'bastion']);
+    const hazards = new Set(['gate', 'aperture', 'halfwall', 'blade', 'cross', 'bastion']);
 
     expect(generateTrack(TRACKS.reactor, profile, 707).events.some((event) => hazards.has(event.kind))).toBe(false);
   });
@@ -432,7 +488,7 @@ describe('procedural track generation', () => {
       expect(drop.first?.trigger).toBe('drop');
       expect(drop.events.map((event) => event.kind)).toEqual(['cross', 'cross', 'cross']);
       expect(rest.first?.trigger).toBe('break');
-      expect(rest.events.every((event) => !['gate', 'halfwall', 'blade', 'cross', 'bastion'].includes(event.kind))).toBe(true);
+      expect(rest.events.every((event) => !['gate', 'aperture', 'halfwall', 'blade', 'cross', 'bastion'].includes(event.kind))).toBe(true);
     }
   });
 
@@ -498,7 +554,7 @@ describe('procedural track generation', () => {
       transitions: [{ time: beats[dropIndex].time + 0.12, strength: 1, kind: 'drop' }],
     };
     const plan = generateTrack(TRACKS.reactor, profile, 118);
-    const hazardKinds = new Set(['gate', 'halfwall', 'blade', 'cross', 'bastion']);
+    const hazardKinds = new Set(['gate', 'aperture', 'halfwall', 'blade', 'cross', 'bastion']);
 
     expect(plan.events.some((event) => event.beatIndex === accentIndex && hazardKinds.has(event.kind))).toBe(false);
     const dropTime = beats[dropIndex].time + 0.12;
@@ -544,7 +600,7 @@ describe('procedural track generation', () => {
       beats,
       transitions: [],
     };
-    const hazardKinds = new Set(['gate', 'halfwall', 'blade', 'cross', 'bastion']);
+    const hazardKinds = new Set(['gate', 'aperture', 'halfwall', 'blade', 'cross', 'bastion']);
     const patternStarts = (plan: ReturnType<typeof generateTrack>): number[] => {
       const starts = new Map<number, number>();
       for (const event of plan.events.filter((candidate) => hazardKinds.has(candidate.kind))) {
@@ -626,7 +682,7 @@ describe('procedural track generation', () => {
         { time: 55.25, strength: 0.72, kind: 'break' },
       ],
     };
-    const hazardKinds = new Set(['gate', 'halfwall', 'blade', 'cross', 'bastion']);
+    const hazardKinds = new Set(['gate', 'aperture', 'halfwall', 'blade', 'cross', 'bastion']);
     const summarize = (plan: ReturnType<typeof generateTrack>) => {
       const starts = new Map<number, { time: number; kind: string }>();
       for (const event of plan.events.filter((candidate) => hazardKinds.has(candidate.kind))) {

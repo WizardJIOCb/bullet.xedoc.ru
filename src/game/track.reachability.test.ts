@@ -23,6 +23,7 @@ const TIME_EPSILON = 1e-9;
 const MIN_FOLLOWER_CLEARANCE = 0.2;
 const HAZARD_KINDS = new Set<TrackEvent['kind']>([
   'gate',
+  'aperture',
   'halfwall',
   'blade',
   'cross',
@@ -204,7 +205,7 @@ describe('generated track corridor reachability', () => {
     }
 
     expect(followedHazards).toBeGreaterThan(350);
-    expect(coveredKinds).toEqual(new Set(['gate', 'halfwall', 'blade', 'cross', 'bastion']));
+    expect(coveredKinds).toEqual(new Set(['gate', 'aperture', 'halfwall', 'blade', 'cross', 'bastion']));
     expect([...coveredTriggers]).toEqual(expect.arrayContaining([
       'kick',
       'transient',
@@ -212,6 +213,58 @@ describe('generated track corridor reachability', () => {
       'fill',
       'drop',
     ]));
+  }, 20_000);
+
+  it('keeps every analyzed aperture isolated by recovery space and exact music timing', () => {
+    const profile = createHighBpmProfile('dense');
+    const seeds = [0, 1, 17, 91, 712, 0xdeadbeef];
+    let apertureCount = 0;
+
+    for (const theme of Object.values(TRACKS)) {
+      for (const seed of seeds) {
+        const plan = generateTrack(theme, profile, seed);
+        const grouped = new Map<number, TrackEvent[]>();
+        for (const event of hazardEvents(plan.events)) {
+          const pattern = grouped.get(event.patternId);
+          if (pattern) pattern.push(event);
+          else grouped.set(event.patternId, [event]);
+        }
+        const patterns = [...grouped.values()]
+          .map((events) => ({
+            events,
+            start: Math.min(...events.map((event) => event.musicTime)),
+            end: Math.max(...events.map((event) => event.musicTime)),
+          }))
+          .sort((left, right) => left.start - right.start);
+
+        for (let index = 0; index < patterns.length; index += 1) {
+          const pattern = patterns[index];
+          const aperture = pattern.events.find((event) => event.kind === 'aperture');
+          if (!aperture) continue;
+          apertureCount += 1;
+          expect(pattern.events, `${theme.id}/${seed} aperture pattern must be singular`).toHaveLength(1);
+          const sourceBeat = plan.beatDistances[aperture.beatIndex];
+          expect(aperture.musicTime).toBe(sourceBeat.time);
+          expect(sourceBeat).toMatchObject({
+            cue: 'kick',
+            barBeat: 0,
+            gridBeat: true,
+          });
+          expect(sourceBeat.onset ?? 0).toBeGreaterThanOrEqual(0.92);
+          expect(sourceBeat.kick ?? 0).toBeGreaterThanOrEqual(0.94);
+          if (index > 0) {
+            expect(pattern.start - patterns[index - 1].end).toBeGreaterThanOrEqual(1.4 - 1e-9);
+            expect(patterns[index - 1].events[0].kind).not.toBe('aperture');
+          }
+          if (index + 1 < patterns.length) {
+            expect(patterns[index + 1].start - pattern.end).toBeGreaterThanOrEqual(1.4 - 1e-9);
+            expect(patterns[index + 1].events[0].kind).not.toBe('aperture');
+          }
+        }
+      }
+    }
+
+    expect(apertureCount).toBeGreaterThan(8);
   }, 20_000);
 
   it('follows wrapped openings and then reverses without resetting angular velocity', () => {

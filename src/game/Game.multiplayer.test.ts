@@ -22,6 +22,8 @@ interface AiHarness {
   dynamicLayer: THREE.Group;
   createCraft: Mock;
   createRacerNameplate: Mock;
+  createRivalBeacon: Mock;
+  prepareOpponentVisual: Mock;
   removeAndDispose: Mock;
 }
 
@@ -127,6 +129,8 @@ function aiHarness(
       thrustTrails: [],
     })),
     createRacerNameplate: vi.fn(() => null),
+    createRivalBeacon: vi.fn(() => new THREE.Sprite()),
+    prepareOpponentVisual: vi.fn(() => ({ kind: 'ai' })),
     removeAndDispose: vi.fn(),
   }) as unknown as AiHarness;
 }
@@ -135,7 +139,10 @@ function remoteHarness(): RemoteHarness {
   return Object.assign(Object.create(BallisticGame.prototype) as object, {
     remoteRacers: new Map(),
     dynamicLayer: new THREE.Group(),
-    createRemoteRacerMesh: vi.fn(() => new THREE.Group()),
+    createRemoteRacerMesh: vi.fn(() => ({
+      mesh: new THREE.Group(),
+      visual: { kind: 'remote' },
+    })),
     removeAndDispose: vi.fn((mesh: THREE.Object3D) => mesh.parent?.remove(mesh)),
   }) as unknown as RemoteHarness;
 }

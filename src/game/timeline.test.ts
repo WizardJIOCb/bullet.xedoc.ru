@@ -75,17 +75,18 @@ describe('track timeline snapshots', () => {
     const template = source.events[0];
     const plan = replaceEvents(source, [
       eventAt(template, 0, 1, 'gate', 4, 0.7),
-      eventAt(template, 1, 2, 'halfwall', 7, 0.8),
-      eventAt(template, 2, 3, 'blade', 10, 0.82),
-      eventAt(template, 3, 4, 'cross', 13, 0.9),
-      eventAt(template, 4, 5, 'bastion', 16, 0.76),
-      eventAt(template, 5, 6, 'boost', 19, 0.7),
-      eventAt(template, 6, 7, 'coolant', 22, 0.7),
+      eventAt(template, 1, 2, 'aperture', 7, 0.96),
+      eventAt(template, 2, 3, 'halfwall', 10, 0.8),
+      eventAt(template, 3, 4, 'blade', 13, 0.82),
+      eventAt(template, 4, 5, 'cross', 16, 0.9),
+      eventAt(template, 5, 6, 'bastion', 19, 0.76),
+      eventAt(template, 6, 7, 'boost', 22, 0.7),
+      eventAt(template, 7, 8, 'coolant', 25, 0.7),
     ]);
 
     const timeline = createTrackTimeline(plan, profile, { includeRewards: false });
 
-    expect(timeline.patterns.map((marker) => marker.kind)).toEqual(['gate', 'halfwall', 'blade', 'cross', 'bastion']);
+    expect(timeline.patterns.map((marker) => marker.kind)).toEqual(['gate', 'aperture', 'halfwall', 'blade', 'cross', 'bastion']);
     expect(timeline.patterns.every((marker) => marker.category === 'hazard')).toBe(true);
   });
 

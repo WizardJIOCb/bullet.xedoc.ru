@@ -42,13 +42,37 @@ describe('MusicLibrary', () => {
       activePlaylistId: 'playlist-1',
       activeTrackId: null,
       tracks: [],
-      playlists: [{ id: 'playlist-1', name: 'Мои треки', trackIds: [] }],
+      playlists: [{ id: 'playlist-1', name: 'My tracks', system: true, trackIds: [] }],
     });
     expect(metadata.getItem(MUSIC_LIBRARY_METADATA_KEY)).not.toBeNull();
 
     first.playlists[0].name = 'mutated outside';
     first.playlists[0].trackIds.push('ghost');
-    expect(library.getSnapshot().playlists[0]).toMatchObject({ name: 'Мои треки', trackIds: [] });
+    expect(library.getSnapshot().playlists[0]).toMatchObject({ name: 'My tracks', trackIds: [] });
+  });
+
+  it('marks legacy built-in list names as localizable and makes a renamed list custom', () => {
+    const metadata = new MemoryMusicLibraryStorage();
+    metadata.setItem(MUSIC_LIBRARY_METADATA_KEY, JSON.stringify({
+      version: 1,
+      tracks: [],
+      playlists: [{
+        id: 'legacy-default',
+        name: 'Мои треки',
+        trackIds: [],
+        createdAt: 10,
+        updatedAt: 10,
+      }],
+      activePlaylistId: 'legacy-default',
+      activeTrackId: null,
+    }));
+    const { library } = createHarness(metadata);
+
+    expect(library.getSnapshot().playlists[0].system).toBe(true);
+    expect(library.renamePlaylist('legacy-default', 'Night drive')).toMatchObject({
+      name: 'Night drive',
+      system: false,
+    });
   });
 
   it('stores a Blob separately from localStorage metadata and restores it in another instance', async () => {
@@ -123,7 +147,7 @@ describe('MusicLibrary', () => {
     expect(library.getSnapshot()).toMatchObject({
       activePlaylistId: 'playlist-2',
       activeTrackId: null,
-      playlists: [{ id: 'playlist-2', name: 'Мои треки' }],
+      playlists: [{ id: 'playlist-2', name: 'My tracks' }],
     });
   });
 

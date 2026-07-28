@@ -5,7 +5,17 @@ import { BallisticGame, type RivalStartDescriptor } from './game/Game';
 import { TouchInputRouter, type TouchInputAction } from './input/TouchInputRouter';
 import { MusicPreviewController } from './ui/MusicPreview';
 import { RaceTimelineController } from './ui/RaceTimeline';
-import { createBrowserMusicLibrary, type MusicLibrarySnapshot } from './music/MusicLibrary';
+import { createBrowserMusicLibrary, type MusicLibrarySnapshot, type MusicPlaylist } from './music/MusicLibrary';
+import {
+  abilityDescription,
+  applyDocumentTranslations,
+  getLocaleTag,
+  setLanguage,
+  t,
+  upgradeDescription,
+  weaponDescription,
+  type TranslationKey,
+} from './i18n';
 import {
   LobbyClient,
   defaultLobbyUrl,
@@ -105,6 +115,8 @@ try {
 } catch {
   // Storage can be unavailable; the in-memory defaults remain usable.
 }
+setLanguage(settings.language);
+applyDocumentTranslations();
 const audio = new AudioEngine();
 audio.setAudioSettings(settings.audio);
 let garage = loadGarage();
@@ -196,7 +208,7 @@ function refreshCoursePreview(): void {
   setText('#seed-label', `SEED // ${timeline.planSeed.toString(16).toUpperCase().padStart(8, '0')}`);
 }
 
-type SettingsTab = 'audio' | 'graphics' | 'controls';
+type SettingsTab = 'audio' | 'graphics' | 'controls' | 'language';
 
 interface BindingCapture {
   action: InputAction;
@@ -208,29 +220,29 @@ const settingsStatus = query<HTMLElement>('#settings-status');
 let activeSettingsTab: SettingsTab = 'audio';
 let bindingCapture: BindingCapture | null = null;
 
-const CONTROL_GROUPS: Array<{ label: string; actions: Array<{ id: InputAction; name: string; detail: string }> }> = [
+const CONTROL_GROUPS: Array<{ label: string; actions: Array<{ id: InputAction; nameKey: TranslationKey; detail: string }> }> = [
   {
     label: 'MOVEMENT',
     actions: [
-      { id: 'left', name: 'Влево', detail: 'WALL RIDE LEFT' },
-      { id: 'right', name: 'Вправо', detail: 'WALL RIDE RIGHT' },
-      { id: 'boost', name: 'Ускорение', detail: 'BOOST' },
-      { id: 'cool', name: 'Охлаждение', detail: 'COOL REACTOR' },
+      { id: 'left', nameKey: 'settings.control.left', detail: 'WALL RIDE LEFT' },
+      { id: 'right', nameKey: 'settings.control.right', detail: 'WALL RIDE RIGHT' },
+      { id: 'boost', nameKey: 'settings.control.boost', detail: 'BOOST' },
+      { id: 'cool', nameKey: 'settings.control.cool', detail: 'COOL REACTOR' },
     ],
   },
   {
     label: 'COMBAT',
     actions: [
-      { id: 'fire', name: 'Огонь', detail: 'FIRE WEAPON' },
-      { id: 'ability', name: 'Способность', detail: 'ACTIVE MODULE' },
+      { id: 'fire', nameKey: 'settings.control.fire', detail: 'FIRE WEAPON' },
+      { id: 'ability', nameKey: 'settings.control.ability', detail: 'ACTIVE MODULE' },
     ],
   },
   {
     label: 'ROGUELIKE',
     actions: [
-      { id: 'upgrade1', name: 'Улучшение 1', detail: 'FIRST MODULE' },
-      { id: 'upgrade2', name: 'Улучшение 2', detail: 'SECOND MODULE' },
-      { id: 'upgrade3', name: 'Улучшение 3', detail: 'THIRD MODULE' },
+      { id: 'upgrade1', nameKey: 'settings.control.upgrade1', detail: 'FIRST MODULE' },
+      { id: 'upgrade2', nameKey: 'settings.control.upgrade2', detail: 'SECOND MODULE' },
+      { id: 'upgrade3', nameKey: 'settings.control.upgrade3', detail: 'THIRD MODULE' },
     ],
   },
 ];
@@ -330,15 +342,20 @@ function renderControlsSettings(): void {
     <div class="settings-control-group">${group.label}</div>
     ${group.actions.map((action) => {
       const bindings = settings.controls[action.id];
+      const actionName = t(action.nameKey);
       return `
         <div class="settings-control-row">
-          <span><strong>${action.name}</strong><small>${action.detail}</small></span>
+          <span><strong>${actionName}</strong><small>${action.detail}</small></span>
           ${bindings.map((code, slot) => {
             const capturing = bindingCapture?.action === action.id && bindingCapture.slot === slot;
             const label = capturing ? 'PRESS KEY' : formatKeyCode(code);
             const ariaLabel = capturing
-              ? `${action.name}, нажмите новую клавишу. Escape — отмена`
-              : `${action.name}, ${slot === 0 ? 'основная' : 'дополнительная'} клавиша: ${formatKeyCode(code)}`;
+              ? t('settings.capture', { action: actionName })
+              : t('settings.binding', {
+                action: actionName,
+                slot: t(slot === 0 ? 'settings.primary' : 'settings.secondary'),
+                key: formatKeyCode(code),
+              });
             return `<button class="settings-key ${capturing ? 'is-capturing' : ''} ${code ? '' : 'is-empty'}" type="button" data-binding-action="${action.id}" data-binding-slot="${slot}" aria-label="${ariaLabel}">${label}</button>`;
           }).join('')}
         </div>
@@ -380,10 +397,15 @@ function syncSettingsUi(): void {
   const brightnessPercent = Math.round(settings.graphics.brightness * 100);
   query<HTMLInputElement>('#graphics-brightness').value = String(brightnessPercent);
   query<HTMLOutputElement>('#graphics-brightness-value').value = `${brightnessPercent}%`;
+  const rivalVisibilityPercent = Math.round(settings.graphics.rivalVisibility * 100);
+  query<HTMLInputElement>('#graphics-rival-visibility').value = String(rivalVisibilityPercent);
+  query<HTMLOutputElement>('#graphics-rival-visibility-value').value = `${rivalVisibilityPercent}%`;
+  document.documentElement.style.setProperty('--rival-visibility', String(settings.graphics.rivalVisibility));
   query<HTMLInputElement>('#graphics-bloom').checked = settings.graphics.bloom;
   query<HTMLInputElement>('#graphics-chromatic').checked = settings.graphics.chromaticAberration;
   query<HTMLInputElement>('#graphics-shake').checked = settings.graphics.cameraShake;
   query<HTMLInputElement>('#graphics-reduced').checked = settings.graphics.reducedFlashes;
+  query<HTMLSelectElement>('#settings-language').value = settings.language;
   updateEffectsButton();
   updateControlHints();
   renderControlsSettings();
@@ -393,7 +415,7 @@ function setSettingsTab(tab: SettingsTab, focus = false): void {
   if (bindingCapture && tab !== activeSettingsTab) {
     bindingCapture = null;
     game.setInputCapture(true);
-    setSettingsStatus('KEY CAPTURE CANCELLED // TAB CHANGED');
+    setSettingsStatus(t('settings.captureCancelledTab'));
     renderControlsSettings();
   }
   activeSettingsTab = tab;
@@ -406,7 +428,7 @@ function setSettingsTab(tab: SettingsTab, focus = false): void {
   for (const panel of queryAll<HTMLElement>('[data-settings-panel]')) {
     panel.hidden = panel.dataset.settingsPanel !== tab;
   }
-  query<HTMLButtonElement>('#settings-reset').textContent = tab === 'controls' ? 'RESET KEYS' : 'RESET TAB';
+  query<HTMLButtonElement>('#settings-reset').textContent = t(tab === 'controls' ? 'settings.resetKeys' : 'settings.resetTab');
 }
 
 function cancelBindingCapture(message = 'KEY CAPTURE CANCELLED'): void {
@@ -417,6 +439,39 @@ function cancelBindingCapture(message = 'KEY CAPTURE CANCELLED'): void {
   setSettingsStatus(message);
   renderControlsSettings();
   query<HTMLButtonElement>(`[data-binding-action="${cancelled.action}"][data-binding-slot="${cancelled.slot}"]`)?.focus();
+}
+
+function refreshLocalizedUi(): void {
+  applyDocumentTranslations();
+  setText('#weapon-description', weaponDescription(selectedWeapon));
+  setText('#ability-description', abilityDescription(selectedAbility));
+  renderMusicCatalog();
+  updateMusicUi();
+  if (!musicCatalogReady) {
+    setText('#music-catalog-status', t('library.scan'));
+  } else if (musicCatalogLoadFailed) {
+    setText('#music-catalog-status', 'SYNTHETIC MODE ONLINE');
+    setMusicCatalogError(t('audio.catalogUnavailable'), true);
+  } else if (audio.getSourceKind() === 'catalog') {
+    setText('#music-catalog-status', t('library.activeCatalog', { title: audio.getProfile().title }));
+    setMusicCatalogError(null);
+  } else if (audio.getSourceKind() === 'synthetic') {
+    setText('#music-catalog-status', t('library.activeSynthetic'));
+    setMusicCatalogError(null);
+  } else {
+    setText('#music-catalog-status', `ACTIVE // ${audio.getProfile().title} // LOCAL FILE`);
+    setMusicCatalogError(null);
+  }
+  setPlaylistStatus(t('playlist.initial'));
+  updateGarageUi();
+  renderPlaylistUi();
+  renderControlsSettings();
+  renderUpgradeState(latestPendingUpgrades, latestInstalledUpgrades);
+  refreshCoursePreview();
+  if (onlineRoom) renderOnlineRoom(onlineRoom);
+  else renderOnlineRooms();
+  syncSettingsUi();
+  setSettingsTab(activeSettingsTab);
 }
 
 function closeSettings(): void {
@@ -451,7 +506,7 @@ function installRadioKeyboard(buttons: HTMLButtonElement[]): void {
 }
 
 function updateGarageUi(): void {
-  setText('#credits-value', garage.credits.toLocaleString('ru-RU'));
+  setText('#credits-value', garage.credits.toLocaleString(getLocaleTag()));
   const modules: Array<keyof Pick<GarageState, 'engine' | 'cooling' | 'shield' | 'weapon'>> = ['engine', 'cooling', 'shield', 'weapon'];
   for (const module of modules) {
     const level = garage[module];
@@ -473,13 +528,13 @@ function formatDuration(seconds: number): string {
 function updateMusicUi(): void {
   const profile = audio.getProfile();
   const sourceLabel = {
-    synthetic: 'Встроенный синтезатор',
-    catalog: 'Серверная библиотека',
-    local: 'Локальный аудиофайл',
+    synthetic: t('music.source.synthetic'),
+    catalog: t('music.source.catalog'),
+    local: t('music.source.local'),
   }[audio.getSourceKind()];
   setText('#music-title', `${profile.title} // ${profile.bpm} BPM`);
   setText('#music-meta', `${sourceLabel} · ${formatDuration(profile.duration)}`);
-  setText('#music-action', audio.getSourceKind() === 'local' ? 'CHANGE FILE' : 'LOAD FILE');
+  setText('#music-action', t(audio.getSourceKind() === 'local' ? 'music.changeFile' : 'music.loadFile'));
   setText('#music-hud', `${profile.title} // ${profile.bpm} BPM`);
 }
 
@@ -601,18 +656,24 @@ function upgradeIcon(id: UpgradeId): string {
   return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${UPGRADE_ICON_PATHS[id]}</svg>`;
 }
 
+let latestPendingUpgrades: UpgradeDefinition[] = [];
+let latestInstalledUpgrades: UpgradeDefinition[] = [];
+
 function renderUpgradeState(pending: UpgradeDefinition[], installed: UpgradeDefinition[]): void {
+  latestPendingUpgrades = pending;
+  latestInstalledUpgrades = installed;
   upgradeDraft.hidden = pending.length === 0;
   upgradeOptions.innerHTML = pending.map((upgrade, index) => {
     const action = `upgrade${index + 1}` as InputAction;
     const keyLabel = formatKeyCode(settings.controls[action][0]);
+    const description = upgradeDescription(upgrade.id);
     return `
-    <button class="upgrade-choice upgrade-choice--${upgrade.tone}" data-upgrade-choice="${upgrade.id}" type="button" aria-keyshortcuts="${formatAriaKeyShortcut(settings.controls[action][0])}" aria-label="${keyLabel}: ${upgrade.name}. ${upgrade.description}">
+    <button class="upgrade-choice upgrade-choice--${upgrade.tone}" data-upgrade-choice="${upgrade.id}" type="button" aria-keyshortcuts="${formatAriaKeyShortcut(settings.controls[action][0])}" aria-label="${keyLabel}: ${upgrade.name}. ${description}">
       <span class="upgrade-choice__key">${keyLabel}</span>
       <span class="upgrade-choice__icon">${upgradeIcon(upgrade.id)}</span>
       <span class="upgrade-choice__copy"><strong>${upgrade.name}</strong><small>${upgrade.tag}</small></span>
-      <span class="upgrade-choice__description">${upgrade.description}</span>
-      <span class="upgrade-choice__tooltip" role="tooltip">${upgrade.description}</span>
+      <span class="upgrade-choice__description">${description}</span>
+      <span class="upgrade-choice__tooltip" role="tooltip">${description}</span>
     </button>
   `;
   }).join('');
@@ -621,12 +682,15 @@ function renderUpgradeState(pending: UpgradeDefinition[], installed: UpgradeDefi
       game.chooseUpgrade(button.dataset.upgradeChoice as UpgradeId);
     });
   }
-  installedUpgrades.innerHTML = installed.map((upgrade) => `
-    <span class="installed-upgrade installed-upgrade--${upgrade.tone}" tabindex="0" role="img" aria-label="${upgrade.name}: ${upgrade.description}" title="${upgrade.name}: ${upgrade.description}">
+  installedUpgrades.innerHTML = installed.map((upgrade) => {
+    const description = upgradeDescription(upgrade.id);
+    return `
+    <span class="installed-upgrade installed-upgrade--${upgrade.tone}" tabindex="0" role="img" aria-label="${upgrade.name}: ${description}" title="${upgrade.name}: ${description}">
       <span class="installed-upgrade__icon">${upgradeIcon(upgrade.id)}</span>
       <span class="installed-upgrade__name">${upgrade.name}</span>
     </span>
-  `).join('');
+  `;
+  }).join('');
 }
 
 function rankFromResult(result: RunResult): string {
@@ -649,12 +713,14 @@ function showResults(result: RunResult): void {
   hud.classList.remove('is-active');
   app.classList.remove('is-overheated', 'is-phasing', 'is-low-shield');
   setText('#result-rank', rankFromResult(result));
-  setText('#result-status', result.survived ? 'SIGNAL CONQUERED' : 'HULL SIGNAL LOST');
-  setText('#result-title', result.survived ? 'PULSE COMPLETE' : 'RUN TERMINATED');
+  setText('#result-status', t(result.survived ? 'results.signalConquered' : 'results.hullLost'));
+  setText('#result-title', t(result.survived ? 'results.complete' : 'results.terminated'));
   setText('#result-route', `${result.trackName.toUpperCase()} // SEED ${result.seed.toString(16).toUpperCase().padStart(8, '0')}`);
   setText('#result-score', result.score.toString().padStart(6, '0'));
-  setText('#result-best', wasBest ? 'NEW PERSONAL BEST' : `PERSONAL BEST ${garage.bestScore.toLocaleString('ru-RU')}`);
-  setText('#result-speed', `${Math.round(result.maxSpeed).toLocaleString('ru-RU')} KM/H`);
+  setText('#result-best', wasBest
+    ? t('results.newBest')
+    : t('results.personalBest', { score: garage.bestScore.toLocaleString(getLocaleTag()) }));
+  setText('#result-speed', `${Math.round(result.maxSpeed).toLocaleString(getLocaleTag())} KM/H`);
   setText('#result-accuracy', `${Math.round(result.accuracy * 100)}%`);
   setText('#result-perfects', String(result.perfects));
   setText('#result-near', String(result.nearMisses));
@@ -702,9 +768,9 @@ async function startConfiguredRun(
     hud.classList.remove('is-active');
     menu.classList.remove('is-hidden');
     refreshCoursePreview();
-    setMusicCatalogError('Не удалось начать воспроизведение. Включён синтетический режим.');
+    setMusicCatalogError(t('audio.startFailed'));
     setText('#music-catalog-status', 'SYNTHETIC MODE ONLINE');
-    showToast('AUDIO START ERROR', 'Включён синтетический режим — запустите заезд ещё раз', 'red');
+    showToast('AUDIO START ERROR', t('audio.startRetry'), 'red');
   } finally {
     startButton.disabled = musicLoading || Boolean(onlineRoom);
   }
@@ -765,7 +831,7 @@ for (const button of weaponButtons) {
   button.addEventListener('click', () => {
     selectedWeapon = button.dataset.weapon as WeaponId;
     selectRadio('[data-weapon]', selectedWeapon, 'weapon');
-    setText('#weapon-description', WEAPONS[selectedWeapon].description);
+    setText('#weapon-description', weaponDescription(selectedWeapon));
   });
 }
 installRadioKeyboard(weaponButtons);
@@ -775,7 +841,7 @@ for (const button of abilityButtons) {
   button.addEventListener('click', () => {
     selectedAbility = button.dataset.ability as AbilityId;
     selectRadio('[data-ability]', selectedAbility, 'ability');
-    setText('#ability-description', ABILITIES[selectedAbility].description);
+    setText('#ability-description', abilityDescription(selectedAbility));
     mobileAbilityName.textContent = ABILITIES[selectedAbility].name.split(' ')[0].toUpperCase();
   });
 }
@@ -803,10 +869,14 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(bytes >= 10 * 1024 * 1024 ? 0 : 1)} MB`;
 }
 
+function playlistDisplayName(playlist: MusicPlaylist): string {
+  return playlist.system ? t('playlist.defaultName') : playlist.name;
+}
+
 function renderPlaylistUi(snapshot: MusicLibrarySnapshot = localMusicLibrary.getSnapshot()): void {
   const previousPlaylist = playlistSelect.value;
   playlistSelect.replaceChildren(...snapshot.playlists.map((playlist) => new Option(
-    `${playlist.name} · ${playlist.trackIds.length}`,
+    `${playlistDisplayName(playlist)} · ${playlist.trackIds.length}`,
     playlist.id,
   )));
   playlistSelect.value = snapshot.activePlaylistId ?? snapshot.playlists[0]?.id ?? '';
@@ -818,7 +888,7 @@ function renderPlaylistUi(snapshot: MusicLibrarySnapshot = localMusicLibrary.get
     .filter((track): track is NonNullable<typeof track> => Boolean(track));
   playlistTrackSelect.replaceChildren(
     tracks.length === 0
-      ? new Option('НЕТ СОХРАНЁННЫХ ТРЕКОВ', '')
+      ? new Option(t('library.noTracks'), '')
       : document.createDocumentFragment(),
   );
   if (tracks.length > 0) {
@@ -850,8 +920,8 @@ async function loadStoredTrack(trackId: string): Promise<void> {
     await loadMusicFile(file, trackId);
   } catch (error) {
     console.error(error);
-    setPlaylistStatus('Не удалось открыть сохранённый трек. Добавьте файл заново.');
-    showToast('LOCAL LIBRARY ERROR', 'Аудиоданные трека недоступны', 'red');
+    setPlaylistStatus(t('library.openFailed'));
+    showToast('LOCAL LIBRARY ERROR', t('library.dataUnavailable'), 'red');
   }
 }
 
@@ -910,23 +980,23 @@ function setMusicCatalogError(message: string | null, allowRetry = false): void 
 
 function describeAudioImportError(error: unknown): string {
   if (!(error instanceof AudioImportError)) {
-    return 'Не удалось прочитать аудиофайл. Попробуйте MP3, WAV, OGG, M4A или FLAC.';
+    return t('audio.error.generic');
   }
   switch (error.code) {
     case 'empty':
-      return 'Файл пустой или браузер потерял к нему доступ. Выберите файл ещё раз.';
+      return t('audio.error.empty');
     case 'too-large':
-      return 'Файл больше 48 МБ. Выберите более компактную версию трека.';
+      return t('audio.error.large');
     case 'too-long':
-      return 'Трек длиннее 12 минут. Выберите более короткую композицию.';
+      return t('audio.error.long');
     case 'read':
-      return 'Браузер потерял доступ к файлу. Выберите его ещё раз.';
+      return t('audio.error.access');
     case 'network':
-      return 'Серверный трек не удалось скачать. Проверьте соединение и попробуйте снова.';
+      return t('audio.error.download');
     case 'decode':
-      return 'Браузер не смог прочитать кодек этого файла. Попробуйте MP3, WAV, OGG, M4A или FLAC.';
+      return t('audio.error.codec');
     case 'invalid':
-      return 'В аудиофайле нет корректной звуковой дорожки.';
+      return t('audio.error.invalid');
   }
 }
 
@@ -944,7 +1014,7 @@ function restoreMusicUiAfterError(message: string): void {
     '#music-catalog-status',
     audio.getSourceKind() === 'synthetic'
       ? 'SYNTHETIC MODE ONLINE'
-      : `ACTIVE // ${audio.getProfile().title} // предыдущий трек сохранён`,
+      : t('library.previousSaved', { title: audio.getProfile().title }),
   );
 }
 
@@ -955,7 +1025,7 @@ async function loadMusicCatalog(): Promise<void> {
   musicCatalog.disabled = true;
   musicCatalogRetry.hidden = true;
   setMusicCatalogError(null);
-  setText('#music-catalog-status', 'Сканируем серверную библиотеку…');
+  setText('#music-catalog-status', t('library.scan'));
   try {
     const response = await fetch('/assets/music/manifest.json', { cache: 'no-store' });
     if (!response.ok) throw new Error(`Manifest request failed: ${response.status}`);
@@ -964,7 +1034,10 @@ async function loadMusicCatalog(): Promise<void> {
     musicCatalogLoadFailed = false;
     renderMusicCatalog();
     if (uiEpoch === musicUiEpoch) {
-      setText('#music-catalog-status', `${musicCatalogEntries.length} SERVER TRACK${musicCatalogEntries.length === 1 ? '' : 'S'} ONLINE // трасса выбирается отдельно`);
+      setText('#music-catalog-status', t('library.catalogCount', {
+        count: musicCatalogEntries.length,
+        unit: t(musicCatalogEntries.length === 1 ? 'library.track' : 'library.tracks'),
+      }));
     }
   } catch (error) {
     console.error(error);
@@ -974,7 +1047,7 @@ async function loadMusicCatalog(): Promise<void> {
     renderMusicCatalog();
     if (uiEpoch === musicUiEpoch) {
       setText('#music-catalog-status', 'SYNTHETIC MODE ONLINE');
-      setMusicCatalogError('Каталог музыки недоступен. Можно играть с синтезатором или загрузить свой файл.', true);
+      setMusicCatalogError(t('audio.catalogUnavailable'), true);
     }
   } finally {
     if (uiEpoch === musicUiEpoch && !musicLoading) musicLibrary.setAttribute('aria-busy', 'false');
@@ -988,7 +1061,7 @@ async function loadCatalogTrack(entry: MusicCatalogEntry): Promise<void> {
   setMusicLoading(true);
   setMusicCatalogError(null);
   setText('#music-title', 'LOADING SERVER TRACK…');
-  setText('#music-meta', `${entry.format} · ${formatFileSize(entry.bytes)} · анализируем BPM и спектр`);
+  setText('#music-meta', t('library.analyze', { format: entry.format, size: formatFileSize(entry.bytes) }));
   setText('#music-action', 'WAIT');
   setText('#music-catalog-status', `ANALYZING // ${entry.title}`);
   try {
@@ -1012,7 +1085,7 @@ async function loadCatalogTrack(entry: MusicCatalogEntry): Promise<void> {
     updateMusicUi();
     refreshCoursePreview();
     query<HTMLElement>('#music-drop').classList.remove('has-file');
-    setText('#music-catalog-status', `ACTIVE // ${entry.title} // трасса выбирается отдельно в блоке 01`);
+    setText('#music-catalog-status', t('library.activeCatalog', { title: entry.title }));
   } finally {
     setMusicLoading(false);
   }
@@ -1026,7 +1099,7 @@ async function loadMusicFile(file: File, libraryTrackId: string | null = null): 
   setMusicLoading(true);
   setMusicCatalogError(null);
   setText('#music-title', 'ANALYZING SPECTRUM…');
-  setText('#music-meta', 'Строим energy map, ищем BPM и транзиенты');
+  setText('#music-meta', t('library.energyMap'));
   setText('#music-action', 'WAIT');
   try {
     let preparationFailed = false;
@@ -1055,7 +1128,7 @@ async function loadMusicFile(file: File, libraryTrackId: string | null = null): 
           duration: profile.duration,
           bpm: profile.bpm,
         });
-        setPlaylistStatus(`ACTIVE // ${profile.title} // сохранён в локальной коллекции`);
+        setPlaylistStatus(t('library.activeSaved', { title: profile.title }));
       } else {
         const savedTrack = await localMusicLibrary.addTrack(file, {
           playlistId: localMusicLibrary.getSnapshot().activePlaylistId,
@@ -1073,8 +1146,8 @@ async function loadMusicFile(file: File, libraryTrackId: string | null = null): 
       }
     } catch (error) {
       console.warn('Local music library write failed', error);
-      setPlaylistStatus('Трек играет, но браузер не разрешил сохранить его на этом устройстве.');
-      showToast('LIBRARY STORAGE FULL', 'Музыка загружена только для текущей вкладки', 'gold');
+      setPlaylistStatus(t('library.saveUnavailable'));
+      showToast('LIBRARY STORAGE FULL', t('library.storageFull'), 'gold');
     }
     renderMusicCatalog();
     updateMusicUi();
@@ -1109,14 +1182,14 @@ musicDrop.addEventListener('drop', (event) => {
   const file = event.dataTransfer?.files?.[0];
   if (!file) return;
   if (musicLoading) {
-    showToast('AUDIO BUSY', 'Дождитесь завершения текущего анализа', 'cyan');
+    showToast('AUDIO BUSY', t('audio.busy'), 'cyan');
     return;
   }
   if (isAudioFileCandidate(file)) {
     void loadMusicFile(file);
     return;
   }
-  setMusicCatalogError('Это не аудиофайл. Выберите MP3, WAV, OGG, M4A, AAC, FLAC или WebM.');
+  setMusicCatalogError(t('audio.notAudio'));
 });
 
 musicCatalog.addEventListener('change', () => {
@@ -1130,7 +1203,7 @@ musicCatalog.addEventListener('change', () => {
     refreshCoursePreview();
     musicDrop.classList.remove('has-file');
     setMusicCatalogError(null);
-    setText('#music-catalog-status', 'ACTIVE // EDGE SIGNAL // трасса выбирается отдельно в блоке 01');
+    setText('#music-catalog-status', t('library.activeSynthetic'));
     return;
   }
   if (value === 'local') return;
@@ -1147,8 +1220,8 @@ playlistSelect.addEventListener('change', () => {
   const snapshot = localMusicLibrary.getSnapshot();
   const playlist = snapshot.playlists.find((candidate) => candidate.id === snapshot.activePlaylistId);
   setPlaylistStatus(playlist
-    ? `ACTIVE LIST // ${playlist.name} // ${playlist.trackIds.length} TRACK${playlist.trackIds.length === 1 ? '' : 'S'}`
-    : 'Выберите или создайте список.');
+    ? `ACTIVE LIST // ${playlistDisplayName(playlist)} // ${playlist.trackIds.length} TRACK${playlist.trackIds.length === 1 ? '' : 'S'}`
+    : t('playlist.choose'));
 });
 
 playlistTrackSelect.addEventListener('change', () => {
@@ -1166,14 +1239,15 @@ query<HTMLButtonElement>('#playlist-track-load').addEventListener('click', () =>
 });
 
 query<HTMLButtonElement>('#playlist-create').addEventListener('click', () => {
-  const requested = window.prompt('Название нового плейлиста', `Плейлист ${localMusicLibrary.getSnapshot().playlists.length + 1}`);
+  const count = localMusicLibrary.getSnapshot().playlists.length + 1;
+  const requested = window.prompt(t('playlist.promptCreate'), t('playlist.generatedName', { count }));
   if (requested === null) return;
   try {
     const playlist = localMusicLibrary.createPlaylist(requested);
     renderPlaylistUi();
-    setPlaylistStatus(`CREATED // ${playlist.name} // загружайте треки через LOAD FILE`);
+    setPlaylistStatus(t('playlist.created', { name: playlist.name }));
   } catch {
-    setPlaylistStatus('Название плейлиста не может быть пустым.');
+    setPlaylistStatus(t('playlist.emptyName'));
   }
 });
 
@@ -1181,25 +1255,25 @@ query<HTMLButtonElement>('#playlist-rename').addEventListener('click', () => {
   const snapshot = localMusicLibrary.getSnapshot();
   const playlist = snapshot.playlists.find((candidate) => candidate.id === snapshot.activePlaylistId);
   if (!playlist) return;
-  const requested = window.prompt('Новое название плейлиста', playlist.name);
+  const requested = window.prompt(t('playlist.promptRename'), playlistDisplayName(playlist));
   if (requested === null) return;
   try {
     const renamed = localMusicLibrary.renamePlaylist(playlist.id, requested);
     setPlaylistStatus(`RENAMED // ${renamed.name}`);
   } catch {
-    setPlaylistStatus('Название плейлиста не может быть пустым.');
+    setPlaylistStatus(t('playlist.emptyName'));
   }
 });
 
 query<HTMLButtonElement>('#playlist-delete').addEventListener('click', () => {
   const snapshot = localMusicLibrary.getSnapshot();
   const playlist = snapshot.playlists.find((candidate) => candidate.id === snapshot.activePlaylistId);
-  if (!playlist || !window.confirm(`Удалить плейлист «${playlist.name}»? Уникальные треки этого списка тоже удалятся с устройства.`)) return;
+  if (!playlist || !window.confirm(t('playlist.confirmDelete', { name: playlistDisplayName(playlist) }))) return;
   const removedTrackIds = [...playlist.trackIds];
   localMusicLibrary.deletePlaylist(playlist.id);
   activeLibraryTrackId = null;
   renderPlaylistUi();
-  setPlaylistStatus(`DELETED // ${playlist.name}`);
+  setPlaylistStatus(`DELETED // ${playlistDisplayName(playlist)}`);
   const remaining = localMusicLibrary.getSnapshot();
   const retainedIds = new Set(remaining.playlists.flatMap((candidate) => candidate.trackIds));
   void Promise.all(removedTrackIds
@@ -1219,7 +1293,7 @@ query<HTMLButtonElement>('#playlist-track-remove').addEventListener('click', () 
   renderPlaylistUi();
   const stillUsed = localMusicLibrary.getSnapshot().playlists.some((playlist) => playlist.trackIds.includes(trackId));
   if (!stillUsed) void localMusicLibrary.deleteTrack(trackId).catch((error) => console.warn('Track blob could not be removed', error));
-  setPlaylistStatus(`REMOVED // ${track?.title ?? 'TRACK'}${stillUsed ? ' // сохранён в другом списке' : ' // удалён с устройства'}`);
+  setPlaylistStatus(t(stillUsed ? 'playlist.removedOther' : 'playlist.removedDevice', { title: track?.title ?? 'TRACK' }));
 });
 
 localMusicLibrary.subscribe((snapshot) => renderPlaylistUi(snapshot), true);
@@ -1227,7 +1301,7 @@ void Promise.all([
   localMusicLibrary.pruneMissingTracks(),
   localMusicLibrary.pruneOrphanedBlobs(),
 ]).then(([missing]) => {
-  if (missing.length > 0) setPlaylistStatus(`LIBRARY REPAIRED // удалено потерянных треков: ${missing.length}`);
+  if (missing.length > 0) setPlaylistStatus(t('playlist.repaired', { count: missing.length }));
   renderPlaylistUi();
 }).catch((error) => console.warn('Music library maintenance failed', error));
 
@@ -1284,7 +1358,7 @@ function currentLobbyIdentity(): string {
 function lobbyAction(action: (client: LobbyClient) => void): boolean {
   const client = lobbyClient;
   if (!client || client.connectionState !== 'online') {
-    setOnlineStatus('NETWORK // соединение восстанавливается, попробуйте ещё раз');
+    setOnlineStatus(t('online.reconnecting'));
     return false;
   }
   try {
@@ -1304,10 +1378,10 @@ function renderOnlineRooms(): void {
     const empty = document.createElement('p');
     empty.className = 'online-empty';
     empty.textContent = !lobbyClient
-      ? 'Нажми REFRESH, чтобы увидеть открытые комнаты.'
+      ? t('online.refreshPrompt')
       : lobbyClient.connectionState === 'online'
-      ? 'Открытых комнат пока нет — создай первую.'
-      : 'Подключаемся к сетевому узлу…';
+      ? t('online.noRooms')
+      : t('online.connecting');
     container.append(empty);
     return;
   }
@@ -1356,7 +1430,7 @@ function renderOnlineRoom(room: OnlineRoomSnapshot): void {
   setLoadoutLocked(true);
   startButton.disabled = true;
   setText('#online-room-code', room.code);
-  setText('#online-room-status', room.phase === 'lobby' ? 'WAITING' : 'RACING');
+  setText('#online-room-status', t(room.phase === 'lobby' ? 'online.waiting' : 'online.racingState'));
   setText('#online-player-count', `${room.players.length} / ${room.settings.playerSlots}`);
 
   if (selectedTrack !== room.settings.track && room.phase === 'lobby') {
@@ -1374,7 +1448,7 @@ function renderOnlineRoom(room: OnlineRoomSnapshot): void {
     const name = document.createElement('strong');
     name.textContent = player.name;
     const state = document.createElement('span');
-    state.textContent = player.isHost ? 'HOST' : player.ready ? 'READY' : 'SYNC';
+    state.textContent = t(player.isHost ? 'online.host' : player.ready ? 'online.ready' : 'online.sync');
     row.append(signal, name, state);
     players.append(row);
   }
@@ -1399,18 +1473,18 @@ function renderOnlineRoom(room: OnlineRoomSnapshot): void {
 
   const ready = query<HTMLButtonElement>('#online-ready');
   ready.hidden = isHost;
-  ready.textContent = me?.ready ? 'NOT READY' : 'READY';
+  ready.textContent = t(me?.ready ? 'online.notReady' : 'online.ready');
   ready.disabled = room.phase !== 'lobby';
   const start = query<HTMLButtonElement>('#online-start');
   start.hidden = !isHost;
   start.disabled = room.phase !== 'lobby' || room.players.length < 2;
   setOnlineStatus(room.phase === 'racing'
-    ? 'RACE IN PROGRESS // после финиша комната вернётся в лобби'
+    ? t('online.racing')
     : room.players.length < 2
-      ? 'Для старта нужен ещё один живой пилот.'
+      ? t('online.needPlayer')
       : isHost
-        ? 'Все системы готовы. Хост может запустить заезд в любой момент.'
-        : 'Ожидаем команду хоста. READY показывает твою готовность команде.');
+        ? t('online.hostReady')
+        : t('online.waitHost'));
   renderOnlineChat(room);
 }
 
@@ -1566,13 +1640,13 @@ function bindLobbyClient(client: LobbyClient): void {
   client.on('serverError', ({ code, message }) => {
     if (!isCurrent()) return;
     const labels: Partial<Record<typeof code, string>> = {
-      NOT_ENOUGH_PLAYERS: 'Для старта нужны минимум два игрока.',
-      ROOM_NOT_FOUND: 'Комната не найдена — проверь код.',
-      ROOM_FULL: 'В комнате уже заняты все слоты.',
-      ROOM_RUNNING: 'Заезд уже начался.',
-      HOST_ONLY: 'Эта настройка доступна только хосту.',
-      INVALID_SETTINGS: 'Проверь количество слотов и настройки комнаты.',
-      RATE_LIMITED: 'Слишком быстро — подожди секунду.',
+      NOT_ENOUGH_PLAYERS: t('online.error.NOT_ENOUGH_PLAYERS'),
+      ROOM_NOT_FOUND: t('online.error.ROOM_NOT_FOUND'),
+      ROOM_FULL: t('online.error.ROOM_FULL'),
+      ROOM_RUNNING: t('online.error.ROOM_RUNNING'),
+      HOST_ONLY: t('online.error.HOST_ONLY'),
+      INVALID_SETTINGS: t('online.error.INVALID_SETTINGS'),
+      RATE_LIMITED: t('online.error.RATE_LIMITED'),
     };
     const text = labels[code] ?? message;
     setOnlineStatus(`ERROR // ${text}`);
@@ -1609,7 +1683,7 @@ async function ensureLobbyClient(): Promise<LobbyClient> {
 async function joinOnlineRoom(code: string): Promise<void> {
   const normalized = code.replace(/[^a-z0-9-]/gi, '').toUpperCase().slice(0, 8);
   if (normalized.length < 4) {
-    setOnlineStatus('Введите код комнаты — минимум четыре символа.');
+    setOnlineStatus(t('online.invalidCode'));
     return;
   }
   void audio.unlock().catch(() => undefined);
@@ -1636,7 +1710,7 @@ query<HTMLButtonElement>('#online-create').addEventListener('click', () => {
   void audio.unlock().catch(() => undefined);
   void ensureLobbyClient().then((client) => {
     client.createRoom(currentOnlineSettings());
-    setOnlineStatus('CREATING ROOM // резервируем сетевой туннель…');
+    setOnlineStatus(t('online.creating'));
   }).catch((error) => setOnlineStatus(`NETWORK ERROR // ${error instanceof Error ? error.message : 'connection failed'}`));
 });
 query<HTMLButtonElement>('#online-join').addEventListener('click', () => {
@@ -1672,7 +1746,7 @@ query<HTMLButtonElement>('#online-ready').addEventListener('click', () => {
 });
 query<HTMLButtonElement>('#online-start').addEventListener('click', () => {
   void audio.unlock().catch(() => undefined);
-  if (lobbyAction((client) => client.startRace())) setOnlineStatus('HOST START // синхронизируем часы всех пилотов…');
+  if (lobbyAction((client) => client.startRace())) setOnlineStatus(t('online.hostStarting'));
 });
 query<HTMLButtonElement>('#online-leave').addEventListener('click', () => {
   lobbyClient?.cancelRoomRejoin();
@@ -1698,7 +1772,7 @@ query<HTMLButtonElement>('#settings-open').addEventListener('click', () => {
   syncSettingsUi();
   settingsDialog.showModal();
   setSettingsTab(activeSettingsTab, true);
-  setSettingsStatus('SETTINGS SAVED LOCALLY');
+  setSettingsStatus(t('settings.saved'));
 });
 
 query<HTMLButtonElement>('#settings-close').addEventListener('click', closeSettings);
@@ -1764,6 +1838,14 @@ query<HTMLInputElement>('#audio-muted').addEventListener('change', (event) => {
   audio.setAudioSettings(settings.audio);
 });
 
+query<HTMLSelectElement>('#settings-language').addEventListener('change', (event) => {
+  settings.language = (event.currentTarget as HTMLSelectElement).value === 'ru' ? 'ru' : 'en';
+  setLanguage(settings.language);
+  settings = saveSettings(settings);
+  refreshLocalizedUi();
+  setSettingsStatus(t('settings.saved'));
+});
+
 query<HTMLSelectElement>('#graphics-quality').addEventListener('change', (event) => {
   settings.graphics.quality = (event.currentTarget as HTMLSelectElement).value as typeof settings.graphics.quality;
   persistSettings(`RENDER // ${settings.graphics.quality.toUpperCase()}`);
@@ -1774,11 +1856,12 @@ query<HTMLSelectElement>('#graphics-quality').addEventListener('change', (event)
 const graphicsRanges: Array<{
   selector: string;
   output: string;
-  field: 'bloomIntensity' | 'brightness';
+  field: 'bloomIntensity' | 'brightness' | 'rivalVisibility';
   label: string;
 }> = [
   { selector: '#graphics-bloom-intensity', output: '#graphics-bloom-intensity-value', field: 'bloomIntensity', label: 'BLOOM' },
   { selector: '#graphics-brightness', output: '#graphics-brightness-value', field: 'brightness', label: 'BRIGHTNESS' },
+  { selector: '#graphics-rival-visibility', output: '#graphics-rival-visibility-value', field: 'rivalVisibility', label: 'RIVAL VISIBILITY' },
 ];
 for (const binding of graphicsRanges) {
   const input = query<HTMLInputElement>(binding.selector);
@@ -1787,7 +1870,11 @@ for (const binding of graphicsRanges) {
     settings.graphics[binding.field] = Math.max(0, Math.min(1, percent / 100));
     query<HTMLOutputElement>(binding.output).value = `${percent}%`;
     if (binding.field === 'bloomIntensity') game.setBloomIntensity(settings.graphics.bloomIntensity);
-    else game.setBrightness(settings.graphics.brightness);
+    else if (binding.field === 'brightness') game.setBrightness(settings.graphics.brightness);
+    else {
+      game.setRivalVisibility(settings.graphics.rivalVisibility);
+      document.documentElement.style.setProperty('--rival-visibility', String(settings.graphics.rivalVisibility));
+    }
   });
   input.addEventListener('change', () => {
     persistSettings(`${binding.label} // ${Math.round(settings.graphics[binding.field] * 100)}%`);
@@ -1823,11 +1910,15 @@ query<HTMLButtonElement>('#settings-reset').addEventListener('click', () => {
     settings.graphics = { ...defaults.graphics };
     game.setGraphicsSettings(settings.graphics);
     refreshCoursePreview();
-  } else {
+  } else if (activeSettingsTab === 'controls') {
     settings.controls = Object.fromEntries(
       Object.entries(defaults.controls).map(([action, values]) => [action, [...values]]),
     ) as ControlBindings;
     game.setControlBindings(settings.controls);
+  } else {
+    settings.language = defaults.language;
+    setLanguage(settings.language);
+    refreshLocalizedUi();
   }
   persistSettings(`RESET // ${activeSettingsTab.toUpperCase()}`);
   syncSettingsUi();

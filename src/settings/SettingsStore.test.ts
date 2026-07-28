@@ -38,6 +38,7 @@ describe('SettingsStore', () => {
     first.audio.masterVolume = 0.1;
     first.controls.left[0] = 'KeyZ';
     expect(second.audio.masterVolume).toBe(0.9);
+    expect(second.language).toBe('en');
     expect(second.controls.left[0]).toBe('KeyA');
     expect(Object.isFrozen(DEFAULT_SETTINGS)).toBe(true);
     expect(Object.isFrozen(DEFAULT_SETTINGS.controls.left)).toBe(true);
@@ -58,6 +59,7 @@ describe('SettingsStore', () => {
   it('clamps volumes and sanitizes graphics fields without coercing types', () => {
     const settings = sanitizeSettings({
       version: 1,
+      language: 'xx',
       audio: {
         masterVolume: -0.4,
         musicVolume: 4,
@@ -70,6 +72,7 @@ describe('SettingsStore', () => {
         bloom: false,
         bloomIntensity: 1.8,
         brightness: -0.4,
+        rivalVisibility: 1.6,
         chromaticAberration: 0,
         cameraShake: false,
       },
@@ -82,12 +85,14 @@ describe('SettingsStore', () => {
       effectsVolume: 0.72,
       muted: false,
     });
+    expect(settings.language).toBe('en');
     expect(settings.graphics).toEqual({
       quality: 'quality',
       reducedFlashes: true,
       bloom: false,
       bloomIntensity: 1,
       brightness: 0,
+      rivalVisibility: 1,
       chromaticAberration: true,
       cameraShake: false,
     });
@@ -108,6 +113,7 @@ describe('SettingsStore', () => {
       bloom: true,
       bloomIntensity: DEFAULT_SETTINGS.graphics.bloomIntensity,
       brightness: DEFAULT_SETTINGS.graphics.brightness,
+      rivalVisibility: DEFAULT_SETTINGS.graphics.rivalVisibility,
       chromaticAberration: false,
       cameraShake: false,
     });
@@ -118,10 +124,12 @@ describe('SettingsStore', () => {
       ...DEFAULT_SETTINGS.graphics,
       bloomIntensity: Number.NaN,
       brightness: Number.POSITIVE_INFINITY,
+      rivalVisibility: Number.NEGATIVE_INFINITY,
     });
 
     expect(graphics.bloomIntensity).toBe(DEFAULT_SETTINGS.graphics.bloomIntensity);
     expect(graphics.brightness).toBe(DEFAULT_SETTINGS.graphics.brightness);
+    expect(graphics.rivalVisibility).toBe(DEFAULT_SETTINGS.graphics.rivalVisibility);
   });
 
   it('accepts KeyboardEvent.code values and rejects unsafe or localized key values', () => {
@@ -166,12 +174,14 @@ describe('SettingsStore', () => {
     const storage = new MemoryStorage();
     const source = cloneSettings();
     source.audio = { masterVolume: 0.44, musicVolume: 0.35, effectsVolume: 0.61, muted: true };
+    source.language = 'ru';
     source.graphics = {
       quality: 'balanced',
       reducedFlashes: true,
       bloom: false,
       bloomIntensity: 0.32,
       brightness: 0.71,
+      rivalVisibility: 0.74,
       chromaticAberration: false,
       cameraShake: false,
     };
@@ -182,6 +192,7 @@ describe('SettingsStore', () => {
 
     expect(loaded).toEqual(saved);
     expect(JSON.parse(storage.getItem(SETTINGS_KEY)!)).toEqual(saved);
+    expect(loaded.language).toBe('ru');
   });
 
   it('migrates legacy reduced effects only when the new settings key is absent', () => {
@@ -196,6 +207,7 @@ describe('SettingsStore', () => {
       bloom: true,
       bloomIntensity: 0.6,
       brightness: 0.88,
+      rivalVisibility: 0.85,
       chromaticAberration: false,
       cameraShake: false,
     });

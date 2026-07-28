@@ -152,7 +152,7 @@ export interface UpgradeDefinition {
   tone: 'cyan' | 'gold' | 'red' | 'violet';
 }
 
-export type TrackEventKind = 'gate' | 'halfwall' | 'blade' | 'cross' | 'bastion' | 'shard' | 'boost' | 'coolant';
+export type TrackEventKind = 'gate' | 'aperture' | 'halfwall' | 'blade' | 'cross' | 'bastion' | 'shard' | 'boost' | 'coolant';
 export type TrackEventTrigger = RhythmCue | MusicTransition['kind'];
 
 export interface TrackEvent {
@@ -229,7 +229,7 @@ export const TRACKS: Record<TrackId, TrackTheme> = {
     id: 'aurora',
     name: 'Aurora Spine',
     kicker: 'FLOW / 01',
-    description: 'Ледяная мегаструктура, широкие дуги и длинные окна для разгона.',
+    description: 'An icy megastructure with wide arcs and long acceleration windows.',
     seed: 0xa01a,
     radius: 13.5,
     colors: {
@@ -246,7 +246,7 @@ export const TRACKS: Record<TrackId, TrackTheme> = {
     id: 'reactor',
     name: 'Solar Rupture',
     kicker: 'HEAT / 02',
-    description: 'Реакторная шахта с узкими окнами, горячими секторами и тяжёлыми бронебастионами.',
+    description: 'A reactor shaft with narrow windows, hot sectors, and heavy armored bastions.',
     seed: 0x501a,
     radius: 12.4,
     colors: {
@@ -263,7 +263,7 @@ export const TRACKS: Record<TrackId, TrackTheme> = {
     id: 'void',
     name: 'Null Cathedral',
     kicker: 'VOID / 03',
-    description: 'Открытый каркас над сингулярностью: резкие штопоры и богатые линии Flux.',
+    description: 'An open frame above a singularity: sharp corkscrews and rich Flux lines.',
     seed: 0xc0de,
     radius: 14.2,
     colors: {
@@ -280,7 +280,7 @@ export const TRACKS: Record<TrackId, TrackTheme> = {
     id: 'forge',
     name: 'Pulse Forge',
     kicker: 'INDUSTRIAL / 04',
-    description: 'Раскалённый индустриальный коридор: плотные ворота, вращающиеся паттерны и максимальная плотность событий.',
+    description: 'A scorching industrial corridor with dense gates, rotating patterns, and maximum event density.',
     seed: 0xf0a6e,
     radius: 11.8,
     colors: {
@@ -299,7 +299,7 @@ export const WEAPONS: Record<WeaponId, WeaponDefinition> = {
   pulse: {
     id: 'pulse',
     name: 'Pulse Lance',
-    description: 'Точный импульс. Попадание в бит наносит двойной урон.',
+    description: 'A precise pulse. Beat hits deal double damage.',
     fireRate: 4.4,
     damage: 1,
     projectiles: 1,
@@ -309,7 +309,7 @@ export const WEAPONS: Record<WeaponId, WeaponDefinition> = {
   scatter: {
     id: 'scatter',
     name: 'Arc Scatter',
-    description: 'Три плазменные дуги очищают широкий сектор, но быстро греют реактор.',
+    description: 'Three plasma arcs clear a wide sector, but heat the reactor quickly.',
     fireRate: 1.8,
     damage: 0.8,
     projectiles: 3,
@@ -319,7 +319,7 @@ export const WEAPONS: Record<WeaponId, WeaponDefinition> = {
   rail: {
     id: 'rail',
     name: 'Graviton Rail',
-    description: 'Медленный пробивной снаряд для бронированных ядер бастионов.',
+    description: 'A slow armor-piercing projectile for bastion cores.',
     fireRate: 0.82,
     damage: 3,
     projectiles: 1,
@@ -332,32 +332,32 @@ export const ABILITIES: Record<AbilityId, AbilityDefinition> = {
   phase: {
     id: 'phase',
     name: 'Phase Shift',
-    description: 'На 1,4 сек. отрывает болид от стенки и игнорирует столкновения.',
+    description: 'Detaches the craft from the wall for 1.4 sec and ignores collisions.',
     cooldown: 7,
   },
   emp: {
     id: 'emp',
     name: 'EMP Halo',
-    description: 'Уничтожает бронебастионы впереди в радиусе 190 метров.',
+    description: 'Destroys armored bastions ahead within a 190-meter radius.',
     cooldown: 11,
   },
   overdrive: {
     id: 'overdrive',
     name: 'Redline',
-    description: 'Четыре секунды без нагрева и с максимальной тягой.',
+    description: 'Four seconds without heat buildup and with maximum thrust.',
     cooldown: 14,
   },
 };
 
 export const UPGRADES: UpgradeDefinition[] = [
-  { id: 'cryo-loop', name: 'Cryo Loop', description: 'Perfect-события снимают 7% heat, пассивное охлаждение +18%.', tag: 'COOLING', tone: 'cyan' },
-  { id: 'resonant-chamber', name: 'Resonant Chamber', description: 'Каждый четвёртый ритм-выстрел выпускает бесплатный двойной импульс.', tag: 'WEAPON', tone: 'violet' },
-  { id: 'kinetic-skin', name: 'Kinetic Skin', description: 'Near-miss восстанавливает 18 Flux и даёт короткий импульс скорости.', tag: 'FLOW', tone: 'gold' },
-  { id: 'phase-battery', name: 'Phase Battery', description: 'Способность перезаряжается на 25% быстрее.', tag: 'ABILITY', tone: 'cyan' },
-  { id: 'redline-engine', name: 'Redline Engine', description: '+16% к максимальной скорости, но boost греет сильнее.', tag: 'ENGINE', tone: 'red' },
-  { id: 'glass-cannon', name: 'Glass Cannon', description: '+65% к урону, но максимальный щит уменьшается на один сегмент.', tag: 'RISK', tone: 'red' },
-  { id: 'echo-shield', name: 'Echo Shield', description: 'Каждые 8 успешных ритм-действий восстанавливают сегмент щита.', tag: 'SHIELD', tone: 'violet' },
-  { id: 'afterburner', name: 'Afterburner', description: 'Overdrive и идеальный boost длятся на 1,2 сек. дольше.', tag: 'BOOST', tone: 'gold' },
-  { id: 'flux-magnet', name: 'Flux Magnet', description: 'Удваивает радиус сбора кристаллов и их ценность.', tag: 'ECONOMY', tone: 'cyan' },
-  { id: 'temporal-core', name: 'Temporal Core', description: 'Perfect-синхронизация даёт +35% очков и на 1,2 сек. усиливает управление.', tag: 'RHYTHM', tone: 'gold' },
+  { id: 'cryo-loop', name: 'Cryo Loop', description: 'Perfect events remove 7% heat; passive cooling +18%.', tag: 'COOLING', tone: 'cyan' },
+  { id: 'resonant-chamber', name: 'Resonant Chamber', description: 'Every fourth rhythm shot fires a free double pulse.', tag: 'WEAPON', tone: 'violet' },
+  { id: 'kinetic-skin', name: 'Kinetic Skin', description: 'Near misses restore 18 Flux and grant a short speed pulse.', tag: 'FLOW', tone: 'gold' },
+  { id: 'phase-battery', name: 'Phase Battery', description: 'Ability recharge is 25% faster.', tag: 'ABILITY', tone: 'cyan' },
+  { id: 'redline-engine', name: 'Redline Engine', description: '+16% top speed, but boost generates more heat.', tag: 'ENGINE', tone: 'red' },
+  { id: 'glass-cannon', name: 'Glass Cannon', description: '+65% damage, but maximum shield loses one segment.', tag: 'RISK', tone: 'red' },
+  { id: 'echo-shield', name: 'Echo Shield', description: 'Every 8 successful rhythm actions restore one shield segment.', tag: 'SHIELD', tone: 'violet' },
+  { id: 'afterburner', name: 'Afterburner', description: 'Overdrive and perfect boost last 1.2 sec longer.', tag: 'BOOST', tone: 'gold' },
+  { id: 'flux-magnet', name: 'Flux Magnet', description: 'Doubles crystal pickup radius and value.', tag: 'ECONOMY', tone: 'cyan' },
+  { id: 'temporal-core', name: 'Temporal Core', description: 'Perfect sync grants +35% score and stronger handling for 1.2 sec.', tag: 'RHYTHM', tone: 'gold' },
 ];

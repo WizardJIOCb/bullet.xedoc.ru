@@ -1,5 +1,6 @@
 import type { AudioEngine } from '../audio/AudioEngine';
 import type { MusicProfile } from '../core/types';
+import { t, type TranslationKey } from '../i18n';
 import type {
   TimelinePatternMarker,
   TimelineTransitionMarker,
@@ -21,14 +22,15 @@ interface MusicPreviewCallbacks {
   onMusicVolumeCommit: (volume: number) => void;
 }
 
-const KIND_LABELS: Record<TimelinePatternMarker['kind'], string> = {
-  gate: 'ВОРОТА',
-  halfwall: 'ПОЛУСТЕНА',
-  blade: 'ЛОПАСТИ',
-  cross: 'КРЕСТОВИНЫ',
-  bastion: 'БРОНЕБАСТИОН',
-  boost: 'УСКОРИТЕЛЬ',
-  coolant: 'ОХЛАЖДЕНИЕ',
+const KIND_LABEL_KEYS: Record<TimelinePatternMarker['kind'], TranslationKey> = {
+  gate: 'hazard.gate',
+  aperture: 'hazard.aperture',
+  halfwall: 'hazard.halfwall',
+  blade: 'hazard.blade',
+  cross: 'hazard.cross',
+  bastion: 'hazard.bastion',
+  boost: 'hazard.boost',
+  coolant: 'hazard.coolant',
 };
 
 const TRANSITION_LABELS: Record<TimelineTransitionMarker['kind'], string> = {
@@ -153,7 +155,7 @@ export class MusicPreviewController {
       this.audio.stopPreview();
       this.stopAnimation();
       this.setTransportUi(0, false);
-      this.status.textContent = 'Анализируем музыку и строим карту трассы.';
+      this.status.textContent = t('preview.analyzing');
     }
   }
 
@@ -170,9 +172,18 @@ export class MusicPreviewController {
     this.durationOutput.textContent = formatTime(timeline.duration);
     this.bpmOutput.value = `${timeline.bpm} BPM`;
     this.courseOutput.textContent = `${timeline.patterns.length}P // K${summary.kickCount} · H${summary.hitCount} · T${summary.transitionCount}`;
-    this.courseOutput.title = `${trackName.toUpperCase()} // ${seed} // ${profile.title}: ${summary.hazardCount} препятствий, ${summary.kickCount} под кик, ${summary.hitCount} под удар, ${summary.transitionCount} музыкальных переходов`;
-    this.status.textContent = `Карта трассы для ${profile.title} готова: ${timeline.patterns.length} паттернов и ${summary.hazardCount} препятствий; под кик — ${summary.kickCount}, под удар — ${summary.hitCount}, музыкальных переходов — ${summary.transitionCount}; длительность ${formatTime(timeline.duration)}.`;
-    this.detail.textContent = `COURSE ${formatTime(timeline.duration)} / TRACK ${formatTime(profile.duration)} · выберите препятствие`;
+    this.courseOutput.title = t('preview.readyTitle', {
+      track: trackName.toUpperCase(), seed, title: profile.title, hazards: summary.hazardCount,
+      kicks: summary.kickCount, hits: summary.hitCount, transitions: summary.transitionCount,
+    });
+    this.status.textContent = t('preview.readyStatus', {
+      title: profile.title, patterns: timeline.patterns.length, hazards: summary.hazardCount,
+      kicks: summary.kickCount, hits: summary.hitCount, transitions: summary.transitionCount,
+      duration: formatTime(timeline.duration),
+    });
+    this.detail.textContent = t('preview.detailChoose', {
+      course: formatTime(timeline.duration), track: formatTime(profile.duration),
+    });
     this.renderMarkers();
     this.setTransportUi(playback.currentTime, playback.playing);
     requestAnimationFrame(() => this.drawTimeline());
@@ -190,7 +201,7 @@ export class MusicPreviewController {
     const percent = Math.round(safeVolume * 100);
     this.volumeInput.value = String(percent);
     this.volumeInput.style.setProperty('--volume-level', `${percent}%`);
-    this.volumeInput.setAttribute('aria-valuetext', `${percent} процентов`);
+    this.volumeInput.setAttribute('aria-valuetext', t('preview.volumePercent', { percent }));
     this.volumeOutput.value = `${percent}%`;
     this.root.classList.toggle('has-silent-music', silent || percent === 0);
   }
@@ -227,7 +238,7 @@ export class MusicPreviewController {
       if (next.playing) this.startAnimation();
     } catch (error) {
       console.error(error);
-      this.status.textContent = 'Браузер не разрешил воспроизведение. Нажмите Play ещё раз.';
+      this.status.textContent = t('preview.playBlocked');
     }
   };
 
@@ -247,7 +258,7 @@ export class MusicPreviewController {
       this.resumeAfterScrub = false;
       void this.audio.playPreview().then(() => this.startAnimation()).catch((error) => {
         console.error(error);
-        this.status.textContent = 'Не удалось продолжить предпрослушивание.';
+        this.status.textContent = t('preview.resumeFailed');
       });
     }
   };
@@ -307,8 +318,13 @@ export class MusicPreviewController {
       } else {
         button.dataset.kind = 'transition';
         button.dataset.transition = marker.kind;
-        button.setAttribute('aria-label', `${formatTime(marker.musicTime, true)}, музыкальный переход ${TRANSITION_LABELS[marker.kind]}`);
-        button.title = `${formatTime(marker.musicTime, true)} · ${TRANSITION_LABELS[marker.kind]} · сила ${Math.round(marker.strength * 100)}%`;
+        button.setAttribute('aria-label', t('preview.transitionAria', {
+          time: formatTime(marker.musicTime, true), transition: TRANSITION_LABELS[marker.kind],
+        }));
+        button.title = t('preview.transitionTitle', {
+          time: formatTime(marker.musicTime, true), transition: TRANSITION_LABELS[marker.kind],
+          strength: Math.round(marker.strength * 100),
+        });
       }
       button.addEventListener('click', () => this.selectMarker(marker, button));
       this.markerLayer.append(button);
@@ -326,21 +342,23 @@ export class MusicPreviewController {
     this.setTransportUi(markerTime(marker), this.audio.getPreviewPlaybackState().playing);
     const text = marker.type === 'pattern' ? this.patternDetail(marker) : button.title;
     this.detail.textContent = text;
-    this.status.textContent = `Выбрано: ${text}`;
+    this.status.textContent = t('preview.selected', { detail: text });
   }
 
   private patternDetail(marker: TimelinePatternMarker): string {
-    const label = KIND_LABELS[marker.kind];
-    const pattern = marker.count > 1 ? ` · ПАТТЕРН ×${marker.count}` : '';
+    const label = t(KIND_LABEL_KEYS[marker.kind]);
+    const pattern = marker.count > 1 ? ` · ${t('preview.pattern', { count: marker.count })}` : '';
     const reason = this.markerReason(marker);
     const times = marker.eventTimes.map((time) => formatTime(time, true)).join(' / ');
     return `${times} · ${label}${pattern} · ${reason} ${Math.round(marker.strength * 100)}%`;
   }
 
   private patternAriaLabel(marker: TimelinePatternMarker): string {
-    const count = marker.count > 1 ? `, объектов ${marker.count}` : '';
+    const count = marker.count > 1 ? t('preview.objects', { count: marker.count }) : '';
     const times = marker.eventTimes.map((time) => formatTime(time, true)).join(', ');
-    return `${KIND_LABELS[marker.kind]}${count}, время ${times}, ${this.markerReason(marker)}`;
+    return t('preview.patternAria', {
+      kind: t(KIND_LABEL_KEYS[marker.kind]), count, times, reason: this.markerReason(marker),
+    });
   }
 
   private markerReason(marker: TimelinePatternMarker): string {
@@ -359,10 +377,12 @@ export class MusicPreviewController {
     const progress = duration > 0 ? safeTime / duration : 0;
     if (!this.scrubbing) this.seek.value = String(safeTime);
     this.currentOutput.textContent = formatTime(safeTime);
-    this.seek.setAttribute('aria-valuetext', `${formatTime(safeTime)} из ${formatTime(duration)}`);
+    this.seek.setAttribute('aria-valuetext', t('preview.seekValue', {
+      current: formatTime(safeTime), duration: formatTime(duration),
+    }));
     this.playhead.style.setProperty('--playhead-position', `${progress * 100}%`);
     this.playButton.setAttribute('aria-pressed', String(playing));
-    this.playButton.setAttribute('aria-label', playing ? 'Приостановить предпросмотр музыки' : 'Воспроизвести предпросмотр музыки');
+    this.playButton.setAttribute('aria-label', t(playing ? 'preview.pause' : 'preview.play'));
   }
 
   private startAnimation(): void {

@@ -1,3 +1,5 @@
+import { isLanguage, type Language } from '../i18n';
+
 export interface AudioSettings {
   masterVolume: number;
   musicVolume: number;
@@ -15,6 +17,8 @@ export interface GraphicsSettings {
   bloomIntensity: number;
   /** User-controlled multiplier for tone-mapping exposure, from 0 to 1. */
   brightness: number;
+  /** User-controlled readability of rival craft, from 0 to 1. */
+  rivalVisibility: number;
   chromaticAberration: boolean;
   cameraShake: boolean;
 }
@@ -36,6 +40,7 @@ export type ControlBindings = Record<InputAction, [string, string | null]>;
 
 export interface GameSettings {
   version: 1;
+  language: Language;
   audio: AudioSettings;
   graphics: GraphicsSettings;
   controls: ControlBindings;
@@ -55,6 +60,7 @@ type ReadonlyControlBindings = {
 
 export interface ReadonlyGameSettings {
   readonly version: 1;
+  readonly language: Language;
   readonly audio: Readonly<AudioSettings>;
   readonly graphics: Readonly<GraphicsSettings>;
   readonly controls: ReadonlyControlBindings;
@@ -77,6 +83,7 @@ const BINDABLE_CODE_PATTERN = /^(?:Key[A-Z]|Digit[0-9]|Numpad(?:[0-9]|Add|Subtra
 
 const mutableDefaults: GameSettings = {
   version: 1,
+  language: 'en',
   audio: {
     masterVolume: 0.9,
     musicVolume: 0.82,
@@ -89,6 +96,7 @@ const mutableDefaults: GameSettings = {
     bloom: true,
     bloomIntensity: 0.6,
     brightness: 0.88,
+    rivalVisibility: 0.85,
     chromaticAberration: true,
     cameraShake: true,
   },
@@ -214,6 +222,7 @@ export function cloneSettings(settings: ReadonlyGameSettings = DEFAULT_SETTINGS)
   }
   return {
     version: 1,
+    language: settings.language,
     audio: { ...settings.audio },
     graphics: { ...settings.graphics },
     controls,
@@ -242,6 +251,7 @@ export function sanitizeGraphicsSettings(value: unknown): GraphicsSettings {
     bloom: booleanOrDefault(graphics.bloom, defaults.bloom),
     bloomIntensity: volumeOrDefault(graphics.bloomIntensity, defaults.bloomIntensity),
     brightness: volumeOrDefault(graphics.brightness, defaults.brightness),
+    rivalVisibility: volumeOrDefault(graphics.rivalVisibility, defaults.rivalVisibility),
     chromaticAberration: booleanOrDefault(graphics.chromaticAberration, defaults.chromaticAberration),
     cameraShake: booleanOrDefault(graphics.cameraShake, defaults.cameraShake),
   };
@@ -255,6 +265,7 @@ export function sanitizeSettings(value: unknown): GameSettings {
 
   return {
     version: 1,
+    language: isLanguage(value.language) ? value.language : defaults.language,
     audio: {
       masterVolume: volumeOrDefault(audio.masterVolume, defaults.audio.masterVolume),
       musicVolume: volumeOrDefault(audio.musicVolume, defaults.audio.musicVolume),

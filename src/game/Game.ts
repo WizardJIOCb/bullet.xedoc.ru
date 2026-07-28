@@ -8,6 +8,7 @@ import { RGBShiftShader } from 'three/examples/jsm/shaders/RGBShiftShader.js';
 import type { AudioBands } from '../audio/AudioEngine';
 import { AudioEngine } from '../audio/AudioEngine';
 import { angularDistance, clamp, damp, mulberry32, pickDistinct, TAU, wrapAngle } from '../core/math';
+import { t } from '../i18n';
 import {
   ABILITIES,
   TRACKS,
@@ -32,6 +33,7 @@ import {
 } from '../settings/SettingsStore';
 import type { TouchInputAction } from '../input/TouchInputRouter';
 import { resolveBoostVisualTarget, stepBoostVisualIntensity } from './boost';
+import { getApertureBulkheadLayout } from './aperture';
 import { computeObstacleKnockback, isObstacleCollision } from './collision';
 import { ChaseDeathFx } from './deathFx';
 import { classifyMusicEventTiming, isInsideMusicEventWindow, synchronizeDistanceToMusic } from './rhythm';
@@ -92,10 +94,30 @@ interface Rival {
   mesh: THREE.Group;
   engineGlow: THREE.Group;
   thrustTrails: THREE.Mesh[];
+  visual: OpponentVisual;
   profile: RivalAIProfile;
   ai: RivalAIState;
   lastOutput: RivalAIOutput | null;
   color: number;
+}
+
+type OpponentKind = 'ai' | 'remote';
+
+interface OpponentVisualMaterial {
+  material: THREE.MeshBasicMaterial;
+  baseColor: THREE.Color;
+  baseOpacity: number;
+  surface: boolean;
+  outline: boolean;
+}
+
+interface OpponentVisual {
+  kind: OpponentKind;
+  accent: THREE.Color;
+  materials: OpponentVisualMaterial[];
+  beacon: THREE.Sprite;
+  nameplate: THREE.Sprite | null;
+  nameplateBaseScale: THREE.Vector3 | null;
 }
 
 export interface RunStartOptions {
@@ -118,6 +140,7 @@ interface RemoteRacer {
   name: string;
   colorIndex: number;
   mesh: THREE.Group;
+  visual: OpponentVisual;
   progress: number;
   targetProgress: number;
   angle: number;
@@ -193,7 +216,7 @@ const TEMPORAL_FOCUS_DURATION = 1.2;
 const TEMPORAL_HANDLING_MULTIPLIER = 1.28;
 const TEMPORAL_SCORE_MULTIPLIER = 1.35;
 const MAX_AI_RIVALS = 7;
-const AI_HAZARD_KINDS = new Set<TrackEvent['kind']>(['gate', 'halfwall', 'blade', 'cross', 'bastion']);
+const AI_HAZARD_KINDS = new Set<TrackEvent['kind']>(['gate', 'aperture', 'halfwall', 'blade', 'cross', 'bastion']);
 const AI_RIVAL_OFFSETS = [32, -24, 65, -52, 88, 12, -78] as const;
 const AI_RIVAL_SPEEDS = [0.987, 1.016, 1.004, 0.998, 1.009, 0.992, 1.021] as const;
 const AI_RIVAL_COLORS: ReadonlyArray<readonly [number, number]> = [
@@ -448,13 +471,14 @@ export class BallisticGame {
       let racer = this.remoteRacers.get(id);
       if (!racer) {
         const colorIndex = this.pickRemoteRacerColorIndex(id);
-        const mesh = this.createRemoteRacerMesh(id, name, colorIndex);
-        this.dynamicLayer.add(mesh);
+        const craft = this.createRemoteRacerMesh(id, name, colorIndex);
+        this.dynamicLayer.add(craft.mesh);
         racer = {
           id,
           name,
           colorIndex,
-          mesh,
+          mesh: craft.mesh,
+          visual: craft.visual,
           progress: targetProgress,
           targetProgress,
           angle: targetAngle,
@@ -513,6 +537,7 @@ export class BallisticGame {
   setGraphicsSettings(settings: GraphicsSettings): void {
     this.graphicsSettings = sanitizeGraphicsSettings(settings);
     this.applyPostProcessingSettings();
+    this.applyRivalVisibilitySettings();
     this.resize();
   }
 
@@ -534,11 +559,25 @@ export class BallisticGame {
     this.applyPostProcessingSettings();
   }
 
+  /** Updates opponent contrast, markers and engines without rebuilding their meshes. */
+  setRivalVisibility(visibility: number): void {
+    this.graphicsSettings = sanitizeGraphicsSettings({
+      ...this.graphicsSettings,
+      rivalVisibility: visibility,
+    });
+    this.applyRivalVisibilitySettings();
+  }
+
   private applyPostProcessingSettings(): void {
     this.bloomPass.enabled = this.graphicsSettings.bloom && this.graphicsSettings.bloomIntensity > 0;
     this.bloomPass.strength = this.bloomStrengthSignal * this.graphicsSettings.bloomIntensity;
     this.rgbPass.enabled = this.graphicsSettings.chromaticAberration && !this.graphicsSettings.reducedFlashes;
     this.renderer.toneMappingExposure = this.exposureSignal * this.graphicsSettings.brightness;
+  }
+
+  private applyRivalVisibilitySettings(): void {
+    for (const rival of this.rivals ?? []) this.applyOpponentVisibility(rival.visual);
+    for (const racer of this.remoteRacers?.values() ?? []) this.applyOpponentVisibility(racer.visual);
   }
 
   setControlBindings(bindings: ControlBindings): void {
@@ -609,7 +648,7 @@ export class BallisticGame {
       this.maxShield = Math.max(1, this.maxShield - 1);
       this.shield = Math.min(this.shield, this.maxShield);
     }
-    this.hooks.onToast(UPGRADES.find((upgrade) => upgrade.id === id)?.name || 'MODULE INSTALLED', 'Сборка болида обновлена', 'violet');
+    this.hooks.onToast(UPGRADES.find((upgrade) => upgrade.id === id)?.name || 'MODULE INSTALLED', t('game.upgradeInstalled'), 'violet');
     this.pendingUpgradeOptions = [];
     if (this.queuedUpgradePicks > 0) {
       this.queuedUpgradePicks -= 1;
@@ -653,7 +692,7 @@ export class BallisticGame {
     this.abilityCooldown = ability.cooldown * cooldownFactor;
     if (ability.id === 'phase') {
       this.phaseTimer = this.runUpgrades.has('afterburner') ? 2.6 : 1.4;
-      this.hooks.onToast('PHASE SHIFT', 'Столкновения отключены', 'cyan');
+      this.hooks.onToast('PHASE SHIFT', t('game.phase'), 'cyan');
     } else if (ability.id === 'emp') {
       let destroyed = 0;
       for (const event of this.plan.events) {
@@ -945,15 +984,20 @@ export class BallisticGame {
   }
 
   private createEventWarning(event: TrackEvent): THREE.Object3D | null {
-    if (!['gate', 'halfwall', 'blade', 'cross', 'bastion'].includes(event.kind)) return null;
-    const distance = event.distance - clamp(event.warningDistance * 0.62, 150, 280);
+    if (!['gate', 'aperture', 'halfwall', 'blade', 'cross', 'bastion'].includes(event.kind)) return null;
+    const warningLead = event.kind === 'aperture'
+      ? clamp(event.warningDistance * 0.68, 360, 470)
+      : clamp(event.warningDistance * 0.62, 150, 280);
+    const distance = event.distance - warningLead;
     if (distance < 35) return null;
     const frame = sampleTrackFrame(this.plan, distance / this.plan.length);
     const group = new THREE.Group();
     group.userData.warningFor = event.id;
     group.position.copy(frame.position);
     group.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(frame.normal, frame.binormal, frame.tangent));
-    const warningColor = event.kind === 'gate'
+    const warningColor = event.kind === 'aperture'
+      ? 0xffd35a
+      : event.kind === 'gate'
       ? 0xff315f
       : event.kind === 'bastion'
         ? 0xff9b42
@@ -965,7 +1009,7 @@ export class BallisticGame {
       new THREE.MeshBasicMaterial({ color: warningColor, transparent: true, opacity: 0.48, toneMapped: false }),
     );
     group.add(ring);
-    const safeAngle = event.safeAngle ?? (event.kind === 'gate'
+    const safeAngle = event.safeAngle ?? (event.kind === 'gate' || event.kind === 'aperture'
       ? event.angle
       : event.kind === 'halfwall'
         ? event.angle + Math.PI
@@ -1018,6 +1062,119 @@ export class BallisticGame {
     visual.userData.eventId = event.id;
     visual.userData.baseScale = 1;
     visual.userData.kind = event.kind;
+
+    if (event.kind === 'aperture') {
+      matrix.makeBasis(frame.normal, frame.binormal, frame.tangent);
+      visual.position.copy(frame.position);
+      visual.quaternion.setFromRotationMatrix(matrix);
+
+      const layout = getApertureBulkheadLayout(this.plan.radius, event.angle, event.gapWidth);
+      const blockedEnd = layout.blockedStart + layout.blockedArc;
+      const longitudinalBefore = 7.4;
+      const longitudinalAfter = 2.8;
+      const bulkheadDepth = longitudinalBefore + longitudinalAfter;
+      const bulkheadShape = new THREE.Shape();
+      bulkheadShape.absarc(0, 0, layout.outerRadius, layout.blockedStart, blockedEnd, false);
+      bulkheadShape.lineTo(
+        Math.cos(blockedEnd) * layout.innerRadius,
+        Math.sin(blockedEnd) * layout.innerRadius,
+      );
+      bulkheadShape.absarc(0, 0, layout.innerRadius, blockedEnd, layout.blockedStart, true);
+      bulkheadShape.closePath();
+      const bulkheadGeometry = new THREE.ExtrudeGeometry(bulkheadShape, {
+        depth: bulkheadDepth,
+        bevelEnabled: false,
+        curveSegments: 64,
+      });
+      bulkheadGeometry.translate(0, 0, -longitudinalBefore);
+      const bulkhead = new THREE.Mesh(
+        bulkheadGeometry,
+        new THREE.MeshStandardMaterial({
+          color: 0x160309,
+          emissive: 0xff173f,
+          emissiveIntensity: 0.34,
+          roughness: 0.62,
+          metalness: 0.72,
+          side: THREE.DoubleSide,
+        }),
+      );
+      const outline = new THREE.LineSegments(
+        new THREE.EdgesGeometry(bulkheadGeometry, 14),
+        new THREE.LineBasicMaterial({ color: 0xff5577, transparent: true, opacity: 0.88, toneMapped: false }),
+      );
+      outline.scale.setScalar(1.0015);
+
+      const centerCapGeometry = new THREE.CylinderGeometry(
+        layout.centerCapRadius,
+        layout.centerCapRadius,
+        bulkheadDepth,
+        40,
+      );
+      const centerCap = new THREE.Mesh(
+        centerCapGeometry,
+        new THREE.MeshStandardMaterial({
+          color: 0x09040a,
+          emissive: 0x5d071e,
+          emissiveIntensity: 0.3,
+          roughness: 0.7,
+          metalness: 0.76,
+        }),
+      );
+      centerCap.rotation.x = Math.PI / 2;
+      centerCap.position.z = (longitudinalAfter - longitudinalBefore) * 0.5;
+
+      const portalMaterial = new THREE.MeshBasicMaterial({
+        color: 0x55fff1,
+        transparent: true,
+        opacity: 0.98,
+        toneMapped: false,
+        blending: THREE.AdditiveBlending,
+      });
+      const safeRail = new THREE.Mesh(
+        new THREE.TorusGeometry(layout.routeRadius, 0.22, 6, 48, layout.safeArc),
+        portalMaterial,
+      );
+      safeRail.rotation.z = layout.safeStart;
+      safeRail.position.z = -longitudinalBefore - 0.1;
+
+      const outerWarningRing = new THREE.Mesh(
+        new THREE.TorusGeometry(layout.outerRadius - 0.42, 0.18, 5, 64),
+        new THREE.MeshBasicMaterial({
+          color: 0xffd35a,
+          transparent: true,
+          opacity: 0.86,
+          toneMapped: false,
+          blending: THREE.AdditiveBlending,
+        }),
+      );
+      outerWarningRing.position.z = -longitudinalBefore - 0.04;
+
+      const slotDepth = layout.outerRadius - layout.centerCapRadius;
+      const slotRadius = (layout.outerRadius + layout.centerCapRadius) * 0.5;
+      const boundaryPostGeometry = new THREE.BoxGeometry(0.38, slotDepth, bulkheadDepth + 0.45);
+      const chevronGeometry = new THREE.ConeGeometry(0.5, 1.65, 3);
+      for (const side of [-1, 1]) {
+        const boundaryAngle = event.angle + side * event.gapWidth;
+        const boundaryPost = new THREE.Mesh(boundaryPostGeometry, portalMaterial);
+        boundaryPost.position.set(
+          Math.cos(boundaryAngle) * slotRadius,
+          Math.sin(boundaryAngle) * slotRadius,
+          (longitudinalAfter - longitudinalBefore) * 0.5,
+        );
+        boundaryPost.rotation.z = boundaryAngle - Math.PI / 2;
+        const chevron = new THREE.Mesh(chevronGeometry, portalMaterial);
+        chevron.position.set(
+          Math.cos(boundaryAngle) * layout.routeRadius,
+          Math.sin(boundaryAngle) * layout.routeRadius,
+          -longitudinalBefore - 0.22,
+        );
+        chevron.rotation.z = event.angle + (side > 0 ? Math.PI : 0);
+        visual.add(boundaryPost, chevron);
+      }
+
+      visual.add(bulkhead, outline, centerCap, outerWarningRing, safeRail);
+      return visual;
+    }
 
     if (event.kind === 'gate') {
       matrix.makeBasis(frame.normal, frame.binormal, frame.tangent);
@@ -1340,29 +1497,21 @@ export class BallisticGame {
       };
       const craftParts = this.createCraft(colors[0], colors[1], 0.72);
       const craft = craftParts.group;
-      const fadedMaterials = new Set<THREE.Material>();
-      craft.traverse((object) => {
-        if (!(object instanceof THREE.Mesh)) return;
-        const materials = Array.isArray(object.material) ? object.material : [object.material];
-        for (const material of materials) {
-          if (fadedMaterials.has(material)) continue;
-          fadedMaterials.add(material);
-          material.transparent = true;
-          material.opacity *= 0.58;
-          material.depthWrite = false;
-        }
-      });
       const nameplate = this.createRacerNameplate(
         `${profile.callSign} // ${RIVAL_ARCHETYPE_LABELS[profile.archetype]}`,
         colors[0],
       );
       if (nameplate) craft.add(nameplate);
+      const beacon = this.createRivalBeacon(colors[0]);
+      craft.add(beacon);
+      const visual = this.prepareOpponentVisual(craft, 'ai', colors[0], beacon, nameplate);
       craft.userData.rivalAI = { id: profile.id, callSign: profile.callSign, archetype: profile.archetype };
       this.dynamicLayer.add(craft);
       this.rivals.push({
         mesh: craft,
         engineGlow: craftParts.engineGlow,
         thrustTrails: craftParts.thrustTrails,
+        visual,
         profile,
         ai: createRivalAIState(profile, {
           distance: AI_RIVAL_OFFSETS[index],
@@ -1389,25 +1538,19 @@ export class BallisticGame {
     return start;
   }
 
-  private createRemoteRacerMesh(id: string, name: string, colorIndex: number): THREE.Group {
+  private createRemoteRacerMesh(id: string, name: string, colorIndex: number): {
+    mesh: THREE.Group;
+    visual: OpponentVisual;
+  } {
     const colors = REMOTE_RACER_COLORS[colorIndex % REMOTE_RACER_COLORS.length];
     const craft = this.createCraft(colors[0], colors[1], 0.78).group;
-    const fadedMaterials = new Set<THREE.Material>();
-    craft.traverse((object) => {
-      if (!(object instanceof THREE.Mesh)) return;
-      const materials = Array.isArray(object.material) ? object.material : [object.material];
-      for (const material of materials) {
-        if (fadedMaterials.has(material)) continue;
-        fadedMaterials.add(material);
-        material.transparent = true;
-        material.opacity *= 0.82;
-        material.depthWrite = false;
-      }
-    });
     const nameplate = this.createRacerNameplate(name, colors[0]);
     if (nameplate) craft.add(nameplate);
+    const beacon = this.createRivalBeacon(colors[0]);
+    craft.add(beacon);
+    const visual = this.prepareOpponentVisual(craft, 'remote', colors[0], beacon, nameplate);
     craft.userData.remoteRacer = { id, name, colorIndex };
-    return craft;
+    return { mesh: craft, visual };
   }
 
   private createRacerNameplate(name: string, color: number): THREE.Sprite | null {
@@ -1441,7 +1584,148 @@ export class BallisticGame {
     sprite.position.set(0, 3, 0);
     sprite.scale.set(6.2, 1.16, 1);
     sprite.renderOrder = 8;
+    sprite.userData.opponentVisibilityRole = 'nameplate';
     return sprite;
+  }
+
+  private createRivalBeacon(color: number): THREE.Sprite {
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 256;
+    const context = canvas.getContext('2d');
+    if (context) {
+      const center = canvas.width / 2;
+      const radius = 92;
+      const cssColor = `#${new THREE.Color(color).getHexString()}`;
+      const drawReticle = (strokeStyle: string, lineWidth: number): void => {
+        context.save();
+        context.strokeStyle = strokeStyle;
+        context.lineWidth = lineWidth;
+        context.lineCap = 'square';
+        for (let corner = 0; corner < 4; corner += 1) {
+          const angle = Math.PI * 0.25 + corner * Math.PI * 0.5;
+          context.beginPath();
+          context.arc(center, center, radius, angle - 0.26, angle + 0.26);
+          context.stroke();
+        }
+        for (let axis = 0; axis < 4; axis += 1) {
+          const angle = axis * Math.PI * 0.5;
+          const inner = radius - 13;
+          const outer = radius + 13;
+          context.beginPath();
+          context.moveTo(center + Math.cos(angle) * inner, center + Math.sin(angle) * inner);
+          context.lineTo(center + Math.cos(angle) * outer, center + Math.sin(angle) * outer);
+          context.stroke();
+        }
+        context.restore();
+      };
+      drawReticle('rgba(0, 3, 8, 0.94)', 18);
+      context.shadowColor = cssColor;
+      context.shadowBlur = 18;
+      drawReticle(cssColor, 7);
+      context.shadowBlur = 0;
+      context.fillStyle = 'rgba(0, 3, 8, 0.92)';
+      context.beginPath();
+      context.arc(center, center, 9, 0, TAU);
+      context.fill();
+      context.fillStyle = cssColor;
+      context.beginPath();
+      context.arc(center, center, 4, 0, TAU);
+      context.fill();
+    }
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.minFilter = THREE.LinearFilter;
+    const material = new THREE.SpriteMaterial({
+      map: texture,
+      transparent: true,
+      opacity: 0.7,
+      depthWrite: false,
+      depthTest: true,
+      toneMapped: false,
+    });
+    const beacon = new THREE.Sprite(material);
+    beacon.position.set(0, 0.1, 0.18);
+    beacon.scale.set(7.2, 7.2, 1);
+    beacon.renderOrder = 7;
+    beacon.userData.opponentVisibilityRole = 'beacon';
+    return beacon;
+  }
+
+  private prepareOpponentVisual(
+    craft: THREE.Group,
+    kind: OpponentKind,
+    color: number,
+    beacon: THREE.Sprite,
+    nameplate: THREE.Sprite | null,
+  ): OpponentVisual {
+    const materials: OpponentVisualMaterial[] = [];
+    const seen = new Set<THREE.Material>();
+    craft.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      const objectMaterials = Array.isArray(object.material) ? object.material : [object.material];
+      for (const candidate of objectMaterials) {
+        if (!(candidate instanceof THREE.MeshBasicMaterial) || seen.has(candidate)) continue;
+        seen.add(candidate);
+        const baseOpacity = candidate.opacity;
+        materials.push({
+          material: candidate,
+          baseColor: candidate.color.clone(),
+          baseOpacity,
+          surface: baseOpacity >= 0.95,
+          outline: candidate.side === THREE.BackSide,
+        });
+        // Keep hull and outline meshes in the opaque pass. Sending every craft
+        // surface through transparent sorting is expensive on mobile and makes
+        // the craft lose its own depth cues; only glow layers need blending.
+        candidate.transparent = baseOpacity < 0.95;
+        candidate.depthWrite = baseOpacity >= 0.95;
+        candidate.toneMapped = false;
+        candidate.needsUpdate = true;
+      }
+    });
+    const visual: OpponentVisual = {
+      kind,
+      accent: new THREE.Color(color),
+      materials,
+      beacon,
+      nameplate,
+      nameplateBaseScale: nameplate?.scale.clone() ?? null,
+    };
+    this.applyOpponentVisibility(visual);
+    return visual;
+  }
+
+  private applyOpponentVisibility(visual: OpponentVisual): void {
+    const visibility = clamp(this.graphicsSettings.rivalVisibility, 0, 1);
+    for (const entry of visual.materials) {
+      if (entry.surface) {
+        const tint = entry.outline
+          ? 0.48 + visibility * 0.42
+          : (visual.kind === 'ai' ? 0.08 + visibility * 0.25 : 0.06 + visibility * 0.2);
+        entry.material.color.copy(entry.baseColor).lerp(visual.accent, tint);
+        entry.material.opacity = 1;
+      } else {
+        entry.material.color.copy(entry.baseColor);
+        entry.material.opacity = Math.min(1, entry.baseOpacity * (0.8 + visibility * 1.4));
+      }
+    }
+
+    const beaconSize = 6.5 + visibility * 1.5;
+    visual.beacon.scale.set(beaconSize, beaconSize, 1);
+    visual.beacon.material.opacity = 0.12 + visibility * 0.7;
+    if (visual.nameplate && visual.nameplateBaseScale) {
+      const labelScale = 0.9 + visibility * 0.18;
+      visual.nameplate.scale.copy(visual.nameplateBaseScale).multiplyScalar(labelScale);
+      visual.nameplate.material.opacity = 0.68 + visibility * 0.32;
+    }
+  }
+
+  private pulseOpponentBeacon(visual: OpponentVisual, pulse: number): void {
+    const visibility = clamp(this.graphicsSettings.rivalVisibility, 0, 1);
+    const size = (6.5 + visibility * 1.5) * (1 + clamp(pulse, 0, 1) * 0.08);
+    visual.beacon.scale.set(size, size, 1);
   }
 
   private createCraft(primary: number, secondary: number, scale: number): {
@@ -2150,7 +2434,7 @@ export class BallisticGame {
       this.heat = 78;
       this.speed *= 0.62;
       this.sync = 0;
-      this.hooks.onToast('FORCED VENT', 'Реактор перегрет — тяга отключена', 'red');
+      this.hooks.onToast('FORCED VENT', t('game.overheat'), 'red');
     }
 
     const nextBoostVisualTarget = resolveBoostVisualTarget(
@@ -2211,12 +2495,12 @@ export class BallisticGame {
       }
       const onEventCue = isInsideMusicEventWindow(event.musicTime, audibleTime);
       const delta = angularDistance(this.angle, event.angle);
-      if (event.kind === 'gate') {
+      if (event.kind === 'gate' || event.kind === 'aperture') {
         if (isObstacleCollision(event, this.angle, audibleTime)) this.hitObstacle(event, audibleTime);
         else {
           event.resolved = true;
           if (delta > event.gapWidth * 0.69) this.registerNearMiss();
-          else if (onEventCue) this.registerPerfect('GATE SYNC');
+          else if (onEventCue) this.registerPerfect(event.kind === 'aperture' ? 'APERTURE SYNC' : 'GATE SYNC');
         }
       } else if (event.kind === 'halfwall') {
         if (isObstacleCollision(event, this.angle, audibleTime)) this.hitObstacle(event, audibleTime);
@@ -2281,7 +2565,7 @@ export class BallisticGame {
     event.resolved = true;
     if (this.phaseTimer > 0 || this.invulnerableTimer > 0) {
       this.score += 160;
-      this.hooks.onToast('PHASED', 'Материя пропущена', 'cyan');
+      this.hooks.onToast('PHASED', t('game.phased'), 'cyan');
       return;
     }
     const impactAngle = this.angle;
@@ -2323,7 +2607,7 @@ export class BallisticGame {
       this.spawnBurst(visual.getWorldPosition(new THREE.Vector3()), TRACKS[this.trackId].colors.primary, 12);
       visual.visible = false;
     }
-    this.hooks.onToast(label, 'Ресурс синхронизирован', 'cyan');
+    this.hooks.onToast(label, t('game.resource'), 'cyan');
   }
 
   private spawnBullet(angle: number, damage: number, piercing: number): void {
@@ -2610,7 +2894,7 @@ export class BallisticGame {
     const available = UPGRADES.filter((upgrade) => !this.runUpgrades.has(upgrade.id));
     this.pendingUpgradeOptions = pickDistinct(available, Math.min(3, available.length), random);
     this.emitUpgradeState();
-    this.hooks.onToast('MODULE DROP', 'ВЫБЕРИ МОДУЛЬ СВЕРХУ — ДВИЖЕНИЕ ПРОДОЛЖАЕТСЯ', 'violet');
+    this.hooks.onToast('MODULE DROP', t('game.moduleDrop'), 'violet');
   }
 
   private emitUpgradeState(): void {
@@ -2886,7 +3170,7 @@ export class BallisticGame {
       if (!event.destroyed && !event.resolved) visual.visible = ahead > -45 && ahead < 1100;
       if (!visual.visible) continue;
       const pulse = 1 + this.lastBands.pulse * 0.1 + Math.sin(time * 3.2 + event.id) * 0.035;
-      if (!['gate', 'halfwall', 'blade', 'cross', 'bastion'].includes(event.kind)) visual.scale.setScalar(damp(visual.scale.x, pulse, 8, dt));
+      if (!['gate', 'aperture', 'halfwall', 'blade', 'cross', 'bastion'].includes(event.kind)) visual.scale.setScalar(damp(visual.scale.x, pulse, 8, dt));
       const rotor = visual.userData.rotor as THREE.Group | undefined;
       if (rotor) rotor.rotation.z = event.rotationPhase + event.rotationRate * (transportTime - event.musicTime);
       if (event.kind === 'shard' || event.kind === 'coolant') visual.rotateZ(dt * 2.4);
@@ -2918,17 +3202,19 @@ export class BallisticGame {
       rival.mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(circumferential, radial, frame.tangent));
       const boost = rival.ai.boost;
       const beatGlow = rival.ai.beatImpulse * 7;
+      const visibilityGain = 0.72 + this.graphicsSettings.rivalVisibility * 0.78;
       rival.engineGlow.scale.setScalar(1 + boost * 0.28 + beatGlow * 0.12);
       for (const child of rival.engineGlow.children) {
         if (!(child instanceof THREE.Mesh)) continue;
         const material = child.material as THREE.MeshBasicMaterial;
-        material.opacity = clamp(0.18 + boost * 0.34 + beatGlow * 0.1, 0.12, 0.72);
+        material.opacity = clamp((0.2 + boost * 0.38 + beatGlow * 0.1) * visibilityGain, 0.14, 0.92);
       }
       for (const trail of rival.thrustTrails) {
         const material = trail.material as THREE.MeshBasicMaterial;
-        material.opacity = 0.1 + boost * 0.32;
+        material.opacity = clamp((0.12 + boost * 0.36) * visibilityGain, 0.1, 0.78);
         trail.scale.set(1 + boost * 0.18, 1 + boost * 0.18, 1 + boost * 1.25);
       }
+      this.pulseOpponentBeacon(rival.visual, Math.max(rival.ai.beatImpulse, boost * 0.65));
     }
     const interpolation = 1 - Math.exp(-Math.max(0, dt) * 14);
     for (const racer of this.remoteRacers.values()) {
@@ -2948,6 +3234,8 @@ export class BallisticGame {
         .add(frame.binormal.clone().multiplyScalar(Math.cos(racer.angle))).normalize();
       racer.mesh.position.copy(frame.position).add(radial.clone().multiplyScalar(this.plan.radius - 1.32));
       racer.mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(circumferential, radial, frame.tangent));
+      const speedPulse = clamp(racer.speed / Math.max(1, this.maxRunSpeed || racer.speed), 0, 1);
+      this.pulseOpponentBeacon(racer.visual, 0.16 + speedPulse * 0.42 + this.lastBands.pulse * 0.32);
     }
   }
 

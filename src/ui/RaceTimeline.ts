@@ -1,4 +1,5 @@
 import { clamp } from '../core/math';
+import { t, type TranslationKey } from '../i18n';
 import type { TimelineHazardKind, TrackTimeline } from '../game/timeline';
 
 export interface RaceCourseMarker {
@@ -20,12 +21,13 @@ interface RaceCourseMarkerView {
 const MARKER_LANES = 3;
 const MINIMUM_LANE_GAP = 0.022;
 
-const HAZARD_LABELS: Record<TimelineHazardKind, string> = {
-  gate: 'ворота',
-  halfwall: 'полустена',
-  blade: 'лопасти',
-  cross: 'крестовина',
-  bastion: 'бронебастион',
+const HAZARD_LABEL_KEYS: Record<TimelineHazardKind, TranslationKey> = {
+  gate: 'hazard.gate',
+  aperture: 'hazard.aperture',
+  halfwall: 'hazard.halfwall',
+  blade: 'hazard.blade',
+  cross: 'hazard.cross',
+  bastion: 'hazard.bastion',
 };
 
 export function createRaceCourseMarkers(timeline: TrackTimeline): readonly Readonly<RaceCourseMarker>[] {
@@ -47,7 +49,7 @@ export function createRaceCourseMarkers(timeline: TrackTimeline): readonly Reado
       );
     }
     laneEnds[lane] = endProgress;
-    const countLabel = pattern.count > 1 ? `, серия из ${pattern.count}` : '';
+    const countLabel = pattern.count > 1 ? t('hazard.series', { count: pattern.count }) : '';
     markers.push(Object.freeze({
       id: pattern.id,
       kind: pattern.kind as TimelineHazardKind,
@@ -56,7 +58,7 @@ export function createRaceCourseMarkers(timeline: TrackTimeline): readonly Reado
       strength: clamp(pattern.strength, 0, 1),
       count: pattern.count,
       lane,
-      label: `${HAZARD_LABELS[pattern.kind as TimelineHazardKind]}${countLabel}`,
+      label: `${t(HAZARD_LABEL_KEYS[pattern.kind as TimelineHazardKind])}${countLabel}`,
     }));
   }
 
@@ -98,7 +100,7 @@ export class RaceTimelineController {
     this.root.dataset.count = String(markers.length);
     this.root.parentElement?.setAttribute(
       'aria-label',
-      `Прогресс трассы и карта препятствий: ${markers.length}`,
+      t('timeline.progressCount', { count: markers.length }),
     );
     this.lastProgress = 0;
     this.update(0);

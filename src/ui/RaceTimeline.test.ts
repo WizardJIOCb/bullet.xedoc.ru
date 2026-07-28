@@ -45,16 +45,17 @@ describe('race HUD course markers', () => {
   it('projects every hazard kind while filtering rewards', () => {
     const markers = createRaceCourseMarkers(timeline([
       pattern(1, 'gate', 10),
-      pattern(2, 'halfwall', 20, 21),
-      pattern(3, 'blade', 30, 31),
-      pattern(4, 'cross', 40, 42),
-      pattern(5, 'bastion', 50),
-      pattern(6, 'boost', 60, 60, 'reward'),
+      pattern(2, 'aperture', 20),
+      pattern(3, 'halfwall', 30, 31),
+      pattern(4, 'blade', 40, 41),
+      pattern(5, 'cross', 50, 52),
+      pattern(6, 'bastion', 60),
+      pattern(7, 'boost', 70, 70, 'reward'),
     ]));
 
-    expect(markers.map((marker) => marker.kind)).toEqual(['gate', 'halfwall', 'blade', 'cross', 'bastion']);
-    expect(markers.map((marker) => marker.startProgress)).toEqual([0.1, 0.2, 0.3, 0.4, 0.5]);
-    expect(markers[3]).toMatchObject({ endProgress: 0.42, count: 2, label: 'крестовина, серия из 2' });
+    expect(markers.map((marker) => marker.kind)).toEqual(['gate', 'aperture', 'halfwall', 'blade', 'cross', 'bastion']);
+    expect(markers.map((marker) => marker.startProgress)).toEqual([0.1, 0.2, 0.3, 0.4, 0.5, 0.6]);
+    expect(markers[4]).toMatchObject({ endProgress: 0.52, count: 2, label: 'CROSS, series of 2' });
     expect(Object.isFrozen(markers)).toBe(true);
     expect(markers.every(Object.isFrozen)).toBe(true);
   });

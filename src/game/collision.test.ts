@@ -22,7 +22,7 @@ function eventFixture(
     kind,
     distance: 900,
     angle: 0,
-    gapWidth: kind === 'gate' ? 0.8 : kind === 'halfwall' ? 1.3 : 0.22,
+    gapWidth: kind === 'aperture' ? 0.5 : kind === 'gate' ? 0.8 : kind === 'halfwall' ? 1.3 : 0.22,
     health: 1,
     resolved: false,
     destroyed: false,
@@ -78,6 +78,21 @@ describe('computeObstacleKnockback', () => {
     expect(result?.direction).toBe(-1);
     expect(result?.targetAngle).toBeCloseTo(0.7, 10);
     expect(result?.angularVelocity).toBeCloseTo(-OBSTACLE_KNOCKBACK_ESCAPE_SPEED, 10);
+  });
+
+  it('treats the aperture as one narrow static safe corridor', () => {
+    const event = eventFixture('aperture', {
+      angle: -0.45,
+      gapWidth: 0.5,
+      safeAngle: -0.45,
+    });
+
+    expect(isObstacleCollision(event, -0.45, event.musicTime)).toBe(false);
+    expect(isObstacleCollision(event, 0.06, event.musicTime)).toBe(true);
+    const result = computeObstacleKnockback(event, 1.1, -0.2, event.musicTime);
+    expect(result).not.toBeNull();
+    expect(clearanceAt(event, result?.targetAngle ?? 0)).toBeCloseTo(OBSTACLE_ESCAPE_SAFE_INSET, 10);
+    expectStandardKnockbackBounds(result!);
   });
 
   it('pushes a centered halfwall strike just beyond the panel edge', () => {
@@ -173,6 +188,7 @@ describe('computeObstacleKnockback', () => {
   it('moves every hazard impact closer to free space without teleporting', () => {
     const cases: Array<{ event: TrackEvent; angle: number; time: number }> = [
       { event: eventFixture('gate', { angle: 0.2, gapWidth: 0.8 }), angle: 2.2, time: 10 },
+      { event: eventFixture('aperture', { angle: -0.9, gapWidth: 0.5 }), angle: 0.2, time: 10 },
       { event: eventFixture('halfwall', { angle: -0.3, gapWidth: 1.3 }), angle: -0.1, time: 10 },
       { event: eventFixture('bastion', { angle: 0.7, gapWidth: 0.36 }), angle: 0.72, time: 10 },
       { event: eventFixture('blade', { rotationPhase: 0.4, rotationRate: 0.8, armCount: 3 }), angle: 0.56, time: 10.2 },
@@ -196,6 +212,10 @@ describe('computeObstacleKnockback', () => {
       {
         event: eventFixture('gate', { angle: 0.4, gapWidth: 0.8 }),
         boundary: 1.2,
+      },
+      {
+        event: eventFixture('aperture', { angle: -1.1, gapWidth: 0.5 }),
+        boundary: -0.6,
       },
       {
         event: eventFixture('halfwall', { angle: -0.5, gapWidth: 1.3 }),
@@ -225,15 +245,19 @@ describe('computeObstacleKnockback', () => {
   it('shifts only rotating corridors when transport time advances', () => {
     const blade = eventFixture('blade', { rotationPhase: 0.4, rotationRate: 1.2, armCount: 2 });
     const gate = eventFixture('gate', { angle: -2.9 });
+    const aperture = eventFixture('aperture', { angle: 1.7 });
     const dt = 0.075;
     const bladeAtBeat = getTrackEventSafeCorridors(blade, blade.musicTime);
     const bladeLater = getTrackEventSafeCorridors(blade, blade.musicTime + dt);
     const gateAtBeat = getTrackEventSafeCorridors(gate, gate.musicTime);
     const gateLater = getTrackEventSafeCorridors(gate, gate.musicTime + dt);
+    const apertureAtBeat = getTrackEventSafeCorridors(aperture, aperture.musicTime);
+    const apertureLater = getTrackEventSafeCorridors(aperture, aperture.musicTime + dt);
 
     for (let index = 0; index < bladeAtBeat.length; index += 1) {
       expect(wrapAngle(bladeLater[index].center - bladeAtBeat[index].center)).toBeCloseTo(blade.rotationRate * dt, 10);
     }
     expect(gateLater).toEqual(gateAtBeat);
+    expect(apertureLater).toEqual(apertureAtBeat);
   });
 });

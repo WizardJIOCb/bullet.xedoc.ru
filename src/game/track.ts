@@ -66,6 +66,7 @@ interface EventTuning {
 
 type EncounterPattern =
   | 'gate'
+  | 'aperture'
   | 'halfwall'
   | 'blade'
   | 'cross'
@@ -78,7 +79,7 @@ type EncounterPattern =
 
 const NOMINAL_SPEED = 170;
 const STEERING_SIMULATION_STEP = 1 / 120;
-const HAZARD_KINDS = new Set<TrackEvent['kind']>(['gate', 'halfwall', 'blade', 'cross', 'bastion']);
+const HAZARD_KINDS = new Set<TrackEvent['kind']>(['gate', 'aperture', 'halfwall', 'blade', 'cross', 'bastion']);
 
 export interface TrackSafeCorridor {
   /** Midpoint of a collision-free angular interval at the music hit. */
@@ -96,7 +97,7 @@ export function getTrackEventSafeCorridors(
   event: Readonly<TrackEvent>,
   transportTime = event.musicTime,
 ): TrackSafeCorridor[] {
-  if (event.kind === 'gate') {
+  if (event.kind === 'gate' || event.kind === 'aperture') {
     return [{ center: wrapAngle(event.angle), halfWidth: event.gapWidth }];
   }
   if (event.kind === 'halfwall' || event.kind === 'bastion') {
@@ -623,14 +624,14 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
     const energy = profileValueAtTime(profile, profile.energy, beat.time, runDuration);
     const bass = clamp((beat.bass + profileValueAtTime(profile, profile.bass, beat.time, runDuration)) * 0.5, 0, 1);
     const eventStrength = clamp(tuning.strength ?? beat.strength * 0.58 + energy * 0.25 + bass * 0.17, 0, 1);
-    const hazard = kind === 'gate' || kind === 'halfwall' || kind === 'blade' || kind === 'cross' || kind === 'bastion';
+    const hazard = kind === 'gate' || kind === 'aperture' || kind === 'halfwall' || kind === 'blade' || kind === 'cross' || kind === 'bastion';
     const finalAngle = wrapPositive(angle);
     events.push({
       id: -1,
       kind,
       distance: (beat.time / runDuration) * length,
       angle: finalAngle,
-      gapWidth: tuning.gapWidth ?? (kind === 'gate' ? 0.82 : kind === 'halfwall' ? 1.36 : kind === 'blade' || kind === 'cross' ? 0.2 : kind === 'bastion' ? 0.36 : 0.32),
+      gapWidth: tuning.gapWidth ?? (kind === 'aperture' ? 0.62 : kind === 'gate' ? 0.82 : kind === 'halfwall' ? 1.36 : kind === 'blade' || kind === 'cross' ? 0.2 : kind === 'bastion' ? 0.36 : 0.32),
       health: kind === 'bastion' ? 3 + Math.floor(eventStrength * 3) : 1,
       resolved: false,
       destroyed: false,
@@ -673,11 +674,14 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
   const hazardCadence = Math.max(1, Math.round(1.35 / theme.hazardRate));
   const basePatternGap = clamp(1.05 / theme.hazardRate, 0.78, 1.25);
   const patternRecovery = Math.max(0.22, beatInterval * 0.55);
+  const apertureRecovery = Math.max(1.4, beatInterval * 1.5);
   const patternCycle: readonly EncounterPattern[] = ['gate', 'halfwall', 'blade', 'pickup', 'cross'];
   const accentPatternCycle: readonly EncounterPattern[] = ['gate', 'blade', 'halfwall', 'cross'];
   let accentCycleIndex = Math.floor(
     patternRandom(beats[startIndex]?.beatIndex ?? 0, 0x71ac)() * accentPatternCycle.length,
   );
+  let lastApertureTime = Number.NEGATIVE_INFINITY;
+  let lastEmittedPattern: EncounterPattern | undefined;
   const accentScore = (beat: IndexedBeat): number => Math.max(
     beat.onset ?? 0,
     beat.kick ?? 0,
@@ -791,6 +795,10 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
     if (protectedAnchorSoon) continue;
     if (!nearbyTransition && anchor.time - lastPatternStartTime < Math.max(anchorGap, lastPatternGap)) continue;
     if (!nearbyTransition && anchor.time - lastPatternEndTime < patternRecovery) continue;
+    // Even arrangement transitions must leave room after a nearly closed
+    // aperture; otherwise a musically valid pair can become unreadable at
+    // racing speed.
+    if (anchor.time - lastApertureTime < apertureRecovery) continue;
     const local = localMusic[anchorIndex];
     const hasDetectedPulse = accentScore(anchor) >= accentThresholdAt(anchorIndex);
     const localHazardCadence = Math.max(hazardCadence, Math.round(1 + (1 - local.activity) * 1.7));
@@ -806,6 +814,18 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
     const cue = anchor.cue ?? 'beat';
     const kick = anchor.kick ?? (cue === 'kick' ? anchor.strength : 0);
     const transient = anchor.transient ?? (cue === 'transient' ? anchor.strength : 0);
+    // The aperture is deliberately rare: it is reserved for a decoded,
+    // bass-heavy downbeat with a genuine onset peak. A loud grid estimate by
+    // itself must never create this nearly closed bulkhead.
+    const isApertureAccent = cue === 'kick'
+      && anchor.gridBeat !== false
+      && anchor.barBeat === 0
+      && (anchor.onset ?? 0) >= 0.92
+      && kick >= 0.94
+      && bass >= 0.82
+      && energy >= 0.68
+      && anchor.time - lastPatternEndTime >= apertureRecovery
+      && lastEmittedPattern !== 'aperture';
 
     let pattern: EncounterPattern;
     if (nearbyTransition) {
@@ -819,7 +839,8 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
         pattern = 'pickup';
       }
     } else if (cue === 'kick') {
-      if (kick > 0.88) pattern = 'compression';
+      if (isApertureAccent) pattern = 'aperture';
+      else if (kick > 0.88) pattern = 'compression';
       else if (bass > 0.72 && energy > 0.58) pattern = 'bastion';
       else pattern = bass > 0.58 ? 'gate' : 'halfwall';
     } else if (cue === 'transient') {
@@ -872,7 +893,13 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
       }
       return best;
     };
-    if (pattern === 'compression') {
+    if (pattern === 'aperture') {
+      emit('aperture', anchor, baseAngle, {
+        gapWidth: clamp(0.66 - activity * 0.055, 0.61, 0.66),
+        strength: clamp(Math.max(anchor.strength, kick, anchor.onset ?? 0) + 0.04, 0, 1),
+        warningDistance: 560 + energy * 130,
+      });
+    } else if (pattern === 'compression') {
       const safeStep = direction * clamp(beatInterval * 0.75, 0.18, 0.4);
       const preferredCount = kick > 0.9 && activity > 0.74 ? 3 : 2;
       const secondBeat = at(1);
@@ -1009,7 +1036,11 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
         (latest, event) => Math.max(latest, event.musicTime),
         anchor.time,
       );
-      lastPatternGap = anchorGap;
+      lastPatternGap = pattern === 'aperture'
+        ? Math.max(anchorGap, apertureRecovery)
+        : anchorGap;
+      if (pattern === 'aperture') lastApertureTime = anchor.time;
+      lastEmittedPattern = pattern;
     }
   }
 

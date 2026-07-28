@@ -3,7 +3,8 @@ export const MUSIC_LIBRARY_METADATA_KEY = 'ballistic-edge-music-library-v1';
 export const MUSIC_LIBRARY_DB_NAME = 'ballistic-edge-music-v1';
 export const MUSIC_LIBRARY_BLOB_STORE = 'track-blobs';
 
-const DEFAULT_PLAYLIST_NAME = 'Мои треки';
+const DEFAULT_PLAYLIST_NAME = 'My tracks';
+const LEGACY_DEFAULT_PLAYLIST_NAMES = new Set(['My tracks', 'Мои треки']);
 const MAX_PLAYLIST_NAME_LENGTH = 64;
 const MAX_TRACK_TITLE_LENGTH = 160;
 
@@ -47,6 +48,8 @@ export interface LocalMusicTrack {
 export interface MusicPlaylist {
   id: string;
   name: string;
+  /** Built-in list name is translated at render time; custom names stay untouched. */
+  system?: boolean;
   trackIds: string[];
   createdAt: number;
   updatedAt: number;
@@ -149,7 +152,7 @@ function requireName(value: unknown, label: string, maximum: number): string {
 
 function titleFromFileName(fileName: string): string {
   const withoutExtension = fileName.replace(/\.[a-z0-9]{1,8}$/i, '');
-  return compactText(withoutExtension || fileName, MAX_TRACK_TITLE_LENGTH) || 'Без названия';
+  return compactText(withoutExtension || fileName, MAX_TRACK_TITLE_LENGTH) || 'Untitled';
 }
 
 function fileProperties(blob: Blob): { name?: string; lastModified?: number } {
@@ -226,12 +229,17 @@ function sanitizeSnapshot(value: unknown, now: number): MusicLibrarySnapshot {
       playlists.push({
         id,
         name,
+        system: raw.system === true,
         trackIds: validTrackIds,
         createdAt,
         updatedAt: finiteTimestamp(raw.updatedAt, createdAt),
       });
       playlistIds.add(id);
     }
+  }
+  if (!playlists.some((playlist) => playlist.system)) {
+    const legacyDefault = playlists.find((playlist) => LEGACY_DEFAULT_PLAYLIST_NAMES.has(playlist.name));
+    if (legacyDefault) legacyDefault.system = true;
   }
 
   const requestedPlaylistId = typeof value.activePlaylistId === 'string' ? value.activePlaylistId : null;
@@ -483,6 +491,7 @@ export class MusicLibrary {
       const playlist: MusicPlaylist = {
         id: this.uniqueId('playlist'),
         name: DEFAULT_PLAYLIST_NAME,
+        system: true,
         trackIds: [],
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -540,6 +549,7 @@ export class MusicLibrary {
     this.commit((next) => {
       const playlist = this.requirePlaylist(next, playlistId);
       playlist.name = normalized;
+      playlist.system = false;
       playlist.updatedAt = this.now();
       renamed = clonePlaylist(playlist);
     });
@@ -556,6 +566,7 @@ export class MusicLibrary {
         next.playlists.push({
           id: this.uniqueId('playlist', next),
           name: DEFAULT_PLAYLIST_NAME,
+          system: true,
           trackIds: [],
           createdAt: timestamp,
           updatedAt: timestamp,
