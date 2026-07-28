@@ -23,6 +23,7 @@ interface AiHarness {
   createCraft: Mock;
   createRacerNameplate: Mock;
   createRivalBeacon: Mock;
+  createRivalLocator: Mock;
   prepareOpponentVisual: Mock;
   removeAndDispose: Mock;
 }
@@ -130,6 +131,7 @@ function aiHarness(
     })),
     createRacerNameplate: vi.fn(() => null),
     createRivalBeacon: vi.fn(() => new THREE.Sprite()),
+    createRivalLocator: vi.fn(() => new THREE.Sprite()),
     prepareOpponentVisual: vi.fn(() => ({ kind: 'ai' })),
     removeAndDispose: vi.fn(),
   }) as unknown as AiHarness;

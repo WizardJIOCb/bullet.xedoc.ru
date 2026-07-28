@@ -114,8 +114,12 @@ interface OpponentVisualMaterial {
 interface OpponentVisual {
   kind: OpponentKind;
   accent: THREE.Color;
+  highlight: THREE.Color;
   materials: OpponentVisualMaterial[];
+  craft: THREE.Group;
+  craftBaseScale: THREE.Vector3;
   beacon: THREE.Sprite;
+  locator: THREE.Sprite;
   nameplate: THREE.Sprite | null;
   nameplateBaseScale: THREE.Vector3 | null;
 }
@@ -1495,7 +1499,7 @@ export class BallisticGame {
         id: this.aiRivals[index]?.id || generatedProfile.id,
         callSign: this.aiRivals[index]?.name || generatedProfile.callSign,
       };
-      const craftParts = this.createCraft(colors[0], colors[1], 0.72);
+      const craftParts = this.createCraft(colors[0], colors[1], 0.84);
       const craft = craftParts.group;
       const nameplate = this.createRacerNameplate(
         `${profile.callSign} // ${RIVAL_ARCHETYPE_LABELS[profile.archetype]}`,
@@ -1503,8 +1507,9 @@ export class BallisticGame {
       );
       if (nameplate) craft.add(nameplate);
       const beacon = this.createRivalBeacon(colors[0]);
-      craft.add(beacon);
-      const visual = this.prepareOpponentVisual(craft, 'ai', colors[0], beacon, nameplate);
+      const locator = this.createRivalLocator(colors[0]);
+      craft.add(beacon, locator);
+      const visual = this.prepareOpponentVisual(craft, 'ai', colors[0], beacon, locator, nameplate);
       craft.userData.rivalAI = { id: profile.id, callSign: profile.callSign, archetype: profile.archetype };
       this.dynamicLayer.add(craft);
       this.rivals.push({
@@ -1543,12 +1548,13 @@ export class BallisticGame {
     visual: OpponentVisual;
   } {
     const colors = REMOTE_RACER_COLORS[colorIndex % REMOTE_RACER_COLORS.length];
-    const craft = this.createCraft(colors[0], colors[1], 0.78).group;
+    const craft = this.createCraft(colors[0], colors[1], 0.86).group;
     const nameplate = this.createRacerNameplate(name, colors[0]);
     if (nameplate) craft.add(nameplate);
     const beacon = this.createRivalBeacon(colors[0]);
-    craft.add(beacon);
-    const visual = this.prepareOpponentVisual(craft, 'remote', colors[0], beacon, nameplate);
+    const locator = this.createRivalLocator(colors[0]);
+    craft.add(beacon, locator);
+    const visual = this.prepareOpponentVisual(craft, 'remote', colors[0], beacon, locator, nameplate);
     craft.userData.remoteRacer = { id, name, colorIndex };
     return { mesh: craft, visual };
   }
@@ -1577,7 +1583,7 @@ export class BallisticGame {
       map: texture,
       transparent: true,
       depthWrite: false,
-      depthTest: true,
+      depthTest: false,
       toneMapped: false,
     });
     const sprite = new THREE.Sprite(material);
@@ -1597,6 +1603,13 @@ export class BallisticGame {
       const center = canvas.width / 2;
       const radius = 92;
       const cssColor = `#${new THREE.Color(color).getHexString()}`;
+      const backdrop = context.createRadialGradient(center, center, 10, center, center, 122);
+      backdrop.addColorStop(0, 'rgba(0, 3, 10, 0.76)');
+      backdrop.addColorStop(0.48, 'rgba(0, 3, 10, 0.62)');
+      backdrop.addColorStop(0.76, 'rgba(0, 3, 10, 0.24)');
+      backdrop.addColorStop(1, 'rgba(0, 3, 10, 0)');
+      context.fillStyle = backdrop;
+      context.fillRect(0, 0, canvas.width, canvas.height);
       const drawReticle = (strokeStyle: string, lineWidth: number): void => {
         context.save();
         context.strokeStyle = strokeStyle;
@@ -1620,9 +1633,10 @@ export class BallisticGame {
         context.restore();
       };
       drawReticle('rgba(0, 3, 8, 0.94)', 18);
+      drawReticle('rgba(244, 252, 255, 0.96)', 11);
       context.shadowColor = cssColor;
       context.shadowBlur = 18;
-      drawReticle(cssColor, 7);
+      drawReticle(cssColor, 6);
       context.shadowBlur = 0;
       context.fillStyle = 'rgba(0, 3, 8, 0.92)';
       context.beginPath();
@@ -1653,15 +1667,93 @@ export class BallisticGame {
     return beacon;
   }
 
+  private createRivalLocator(color: number): THREE.Sprite {
+    const canvas = document.createElement('canvas');
+    canvas.width = 256;
+    canvas.height = 256;
+    const context = canvas.getContext('2d');
+    if (context) {
+      const center = canvas.width / 2;
+      const cssColor = `#${new THREE.Color(color).getHexString()}`;
+      const drawCorners = (strokeStyle: string, lineWidth: number, inset: number): void => {
+        context.save();
+        context.strokeStyle = strokeStyle;
+        context.lineWidth = lineWidth;
+        context.lineCap = 'square';
+        const inner = 56 + inset;
+        const outer = 103 - inset;
+        const arm = 24;
+        for (const sx of [-1, 1]) {
+          for (const sy of [-1, 1]) {
+            context.beginPath();
+            context.moveTo(center + sx * outer, center + sy * (outer - arm));
+            context.lineTo(center + sx * outer, center + sy * outer);
+            context.lineTo(center + sx * (outer - arm), center + sy * outer);
+            context.stroke();
+            context.beginPath();
+            context.moveTo(center + sx * inner, center + sy * (inner - 12));
+            context.lineTo(center + sx * inner, center + sy * inner);
+            context.lineTo(center + sx * (inner - 12), center + sy * inner);
+            context.stroke();
+          }
+        }
+        context.restore();
+      };
+      drawCorners('rgba(0, 2, 8, 0.98)', 18, 0);
+      drawCorners('rgba(245, 252, 255, 0.98)', 10, 1);
+      context.shadowColor = cssColor;
+      context.shadowBlur = 16;
+      drawCorners(cssColor, 5, 2);
+      context.shadowBlur = 0;
+
+      context.fillStyle = 'rgba(0, 2, 8, 0.98)';
+      context.beginPath();
+      context.moveTo(center, 8);
+      context.lineTo(center - 18, 38);
+      context.lineTo(center + 18, 38);
+      context.closePath();
+      context.fill();
+      context.fillStyle = '#f5fcff';
+      context.beginPath();
+      context.moveTo(center, 15);
+      context.lineTo(center - 10, 33);
+      context.lineTo(center + 10, 33);
+      context.closePath();
+      context.fill();
+      context.fillStyle = cssColor;
+      context.fillRect(center - 3, 19, 6, 10);
+    }
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.minFilter = THREE.LinearFilter;
+    const material = new THREE.SpriteMaterial({
+      map: texture,
+      transparent: true,
+      opacity: 0.92,
+      depthWrite: false,
+      depthTest: false,
+      toneMapped: false,
+    });
+    const locator = new THREE.Sprite(material);
+    locator.position.set(0, 0.1, -0.2);
+    locator.scale.set(8.6, 8.6, 1);
+    locator.renderOrder = 100;
+    locator.userData.opponentVisibilityRole = 'locator';
+    return locator;
+  }
+
   private prepareOpponentVisual(
     craft: THREE.Group,
     kind: OpponentKind,
     color: number,
     beacon: THREE.Sprite,
+    locator: THREE.Sprite,
     nameplate: THREE.Sprite | null,
   ): OpponentVisual {
     const materials: OpponentVisualMaterial[] = [];
     const seen = new Set<THREE.Material>();
+    const outlineMeshes: THREE.Mesh[] = [];
     craft.traverse((object) => {
       if (!(object instanceof THREE.Mesh)) return;
       const objectMaterials = Array.isArray(object.material) ? object.material : [object.material];
@@ -1684,12 +1776,39 @@ export class BallisticGame {
         candidate.toneMapped = false;
         candidate.needsUpdate = true;
       }
+      if (objectMaterials.some((candidate) => candidate instanceof THREE.MeshBasicMaterial
+        && candidate.side === THREE.BackSide
+        && candidate.opacity >= 0.95)) {
+        outlineMeshes.push(object);
+      }
     });
+    // A dark outer keyline keeps the luminous inner outline readable against
+    // both white bloom and saturated tunnel sections without making hulls
+    // transparent or adding a full-screen post-processing pass.
+    const contrastOutlineMaterial = new THREE.MeshBasicMaterial({
+      color: 0x00030a,
+      side: THREE.BackSide,
+      toneMapped: false,
+    });
+    for (const source of outlineMeshes) {
+      const outline = new THREE.Mesh(source.geometry, contrastOutlineMaterial);
+      outline.position.copy(source.position);
+      outline.quaternion.copy(source.quaternion);
+      outline.scale.copy(source.scale).multiplyScalar(1.12);
+      outline.renderOrder = Math.max(0, source.renderOrder - 1);
+      outline.userData.opponentVisibilityRole = 'contrast-outline';
+      source.parent?.add(outline);
+    }
+    const accent = new THREE.Color(color);
     const visual: OpponentVisual = {
       kind,
-      accent: new THREE.Color(color),
+      accent,
+      highlight: accent.clone().lerp(new THREE.Color(0xffffff), 0.58),
       materials,
+      craft,
+      craftBaseScale: craft.scale.clone(),
       beacon,
+      locator,
       nameplate,
       nameplateBaseScale: nameplate?.scale.clone() ?? null,
     };
@@ -1702,30 +1821,53 @@ export class BallisticGame {
     for (const entry of visual.materials) {
       if (entry.surface) {
         const tint = entry.outline
-          ? 0.48 + visibility * 0.42
-          : (visual.kind === 'ai' ? 0.08 + visibility * 0.25 : 0.06 + visibility * 0.2);
-        entry.material.color.copy(entry.baseColor).lerp(visual.accent, tint);
+          ? 0.72 + visibility * 0.28
+          : (visual.kind === 'ai' ? 0.18 + visibility * 0.56 : 0.16 + visibility * 0.52);
+        entry.material.color.copy(entry.baseColor).lerp(
+          entry.outline ? visual.highlight : visual.accent,
+          tint,
+        );
         entry.material.opacity = 1;
       } else {
-        entry.material.color.copy(entry.baseColor);
-        entry.material.opacity = Math.min(1, entry.baseOpacity * (0.8 + visibility * 1.4));
+        entry.material.color.copy(entry.baseColor).lerp(visual.highlight, 0.08 + visibility * 0.18);
+        entry.material.opacity = Math.min(1, entry.baseOpacity * (1 + visibility * 1.75));
       }
     }
 
-    const beaconSize = 6.5 + visibility * 1.5;
+    const beaconSize = 7.4 + visibility * 2.6;
     visual.beacon.scale.set(beaconSize, beaconSize, 1);
-    visual.beacon.material.opacity = 0.12 + visibility * 0.7;
+    visual.beacon.material.opacity = 0.34 + visibility * 0.62;
+    const locatorSize = 8.2 + visibility * 2.8;
+    visual.locator.scale.set(locatorSize, locatorSize, 1);
+    visual.locator.material.opacity = 0.42 + visibility * 0.58;
     if (visual.nameplate && visual.nameplateBaseScale) {
-      const labelScale = 0.9 + visibility * 0.18;
+      const labelScale = 0.94 + visibility * 0.24;
       visual.nameplate.scale.copy(visual.nameplateBaseScale).multiplyScalar(labelScale);
-      visual.nameplate.material.opacity = 0.68 + visibility * 0.32;
+      visual.nameplate.material.opacity = 0.74 + visibility * 0.26;
     }
   }
 
-  private pulseOpponentBeacon(visual: OpponentVisual, pulse: number): void {
+  private pulseOpponentBeacon(visual: OpponentVisual, pulse: number, ahead = 0): void {
     const visibility = clamp(this.graphicsSettings.rivalVisibility, 0, 1);
-    const size = (6.5 + visibility * 1.5) * (1 + clamp(pulse, 0, 1) * 0.08);
-    visual.beacon.scale.set(size, size, 1);
+    // Sprites are world-sized, so compensate for the chase camera distance to
+    // keep their projected size readable instead of filling the screen during
+    // contact or collapsing into a few pixels farther down the tunnel.
+    const screenAssist = clamp((Math.abs(ahead) + 10) / 52, 0.24, 2.05);
+    const pulseAmount = clamp(pulse, 0, 1);
+    const beaconSize = (7.4 + visibility * 2.6) * screenAssist * (1 + pulseAmount * 0.1);
+    const locatorSize = (8.2 + visibility * 2.8) * screenAssist * (1 + pulseAmount * 0.14);
+    visual.beacon.scale.set(beaconSize, beaconSize, 1);
+    visual.locator.scale.set(locatorSize, locatorSize, 1);
+    const behindCameraFade = ahead < -1 ? clamp((ahead + 8) / 7, 0, 1) : 1;
+    visual.beacon.material.opacity = (0.34 + visibility * 0.62) * behindCameraFade;
+    visual.locator.material.opacity = (0.42 + visibility * 0.58) * behindCameraFade;
+    const craftAssist = 1 + clamp((Math.abs(ahead) - 28) / 180, 0, 1) * (0.12 + visibility * 0.24);
+    visual.craft.scale.copy(visual.craftBaseScale).multiplyScalar(craftAssist);
+    if (visual.nameplate && visual.nameplateBaseScale) {
+      const labelScale = (0.94 + visibility * 0.24) * screenAssist;
+      visual.nameplate.scale.copy(visual.nameplateBaseScale).multiplyScalar(labelScale);
+      visual.nameplate.material.opacity = (0.74 + visibility * 0.26) * behindCameraFade;
+    }
   }
 
   private createCraft(primary: number, secondary: number, scale: number): {
@@ -3202,19 +3344,19 @@ export class BallisticGame {
       rival.mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(circumferential, radial, frame.tangent));
       const boost = rival.ai.boost;
       const beatGlow = rival.ai.beatImpulse * 7;
-      const visibilityGain = 0.72 + this.graphicsSettings.rivalVisibility * 0.78;
-      rival.engineGlow.scale.setScalar(1 + boost * 0.28 + beatGlow * 0.12);
+      const visibilityGain = 0.9 + this.graphicsSettings.rivalVisibility * 1.08;
+      rival.engineGlow.scale.setScalar(1.14 + boost * 0.34 + beatGlow * 0.14);
       for (const child of rival.engineGlow.children) {
         if (!(child instanceof THREE.Mesh)) continue;
         const material = child.material as THREE.MeshBasicMaterial;
-        material.opacity = clamp((0.2 + boost * 0.38 + beatGlow * 0.1) * visibilityGain, 0.14, 0.92);
+        material.opacity = clamp((0.26 + boost * 0.4 + beatGlow * 0.1) * visibilityGain, 0.24, 0.96);
       }
       for (const trail of rival.thrustTrails) {
         const material = trail.material as THREE.MeshBasicMaterial;
-        material.opacity = clamp((0.12 + boost * 0.36) * visibilityGain, 0.1, 0.78);
+        material.opacity = clamp((0.16 + boost * 0.38) * visibilityGain, 0.16, 0.84);
         trail.scale.set(1 + boost * 0.18, 1 + boost * 0.18, 1 + boost * 1.25);
       }
-      this.pulseOpponentBeacon(rival.visual, Math.max(rival.ai.beatImpulse, boost * 0.65));
+      this.pulseOpponentBeacon(rival.visual, Math.max(rival.ai.beatImpulse, boost * 0.65), ahead);
     }
     const interpolation = 1 - Math.exp(-Math.max(0, dt) * 14);
     for (const racer of this.remoteRacers.values()) {
@@ -3235,7 +3377,7 @@ export class BallisticGame {
       racer.mesh.position.copy(frame.position).add(radial.clone().multiplyScalar(this.plan.radius - 1.32));
       racer.mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(circumferential, radial, frame.tangent));
       const speedPulse = clamp(racer.speed / Math.max(1, this.maxRunSpeed || racer.speed), 0, 1);
-      this.pulseOpponentBeacon(racer.visual, 0.16 + speedPulse * 0.42 + this.lastBands.pulse * 0.32);
+      this.pulseOpponentBeacon(racer.visual, 0.16 + speedPulse * 0.42 + this.lastBands.pulse * 0.32, ahead);
     }
   }
 
