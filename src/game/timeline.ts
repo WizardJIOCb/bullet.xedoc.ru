@@ -1,5 +1,5 @@
 import { clamp } from '../core/math';
-import type { MusicProfile, MusicTransition, TrackEvent, TrackEventKind } from '../core/types';
+import type { MusicProfile, MusicTransition, RhythmCue, TrackEvent, TrackEventKind, TrackEventTrigger } from '../core/types';
 import type { TrackPlan } from './track';
 
 export type TimelineHazardKind = Extract<TrackEventKind, 'gate' | 'halfwall' | 'blade' | 'cross' | 'drone'>;
@@ -19,6 +19,8 @@ export interface TimelinePatternMarker {
   readonly strength: number;
   readonly count: number;
   readonly beatIndex: number;
+  readonly cue: RhythmCue;
+  readonly trigger: TrackEventTrigger;
 }
 
 export interface TimelineTransitionMarker {
@@ -46,6 +48,9 @@ export interface TimelineEnergySample {
   readonly bass: number;
   readonly mids: number;
   readonly highs: number;
+  readonly onset: number;
+  readonly kick: number;
+  readonly transient: number;
 }
 
 export interface TrackTimeline {
@@ -91,13 +96,20 @@ function createEnergySamples(profile: MusicProfile, duration: number): readonly 
   if (sampleCount === 0) return Object.freeze([]);
   const samples: TimelineEnergySample[] = [];
   for (let index = 0; index < sampleCount; index += 1) {
-    const progress = sampleCount === 1 ? 0 : index / (sampleCount - 1);
+    const courseProgress = sampleCount === 1 ? 0 : index / (sampleCount - 1);
+    const musicTime = courseProgress * duration;
+    const sourceDuration = clamp(profile.duration || duration, 0.001, duration);
+    const sourceTime = sourceDuration < duration ? musicTime % sourceDuration : musicTime;
+    const progress = clamp(sourceTime / sourceDuration, 0, 1);
     samples.push({
-      musicTime: progress * duration,
+      musicTime,
       energy: sampleSeries(profile.energy, progress),
       bass: sampleSeries(profile.bass, progress),
       mids: sampleSeries(profile.mids, progress),
       highs: sampleSeries(profile.highs, progress),
+      onset: sampleSeries(profile.onsets ?? [], progress),
+      kick: sampleSeries(profile.kicks ?? [], progress),
+      transient: sampleSeries(profile.transients ?? [], progress),
     });
   }
   return freezeItems(samples);
@@ -150,6 +162,8 @@ function createPatternMarkers(
       strength: markerEvents.reduce((maximum, event) => Math.max(maximum, event.strength), 0),
       count: markerEvents.length,
       beatIndex: markerEvents[0].beatIndex,
+      cue: plan.beatDistances[markerEvents[0].beatIndex]?.cue ?? 'beat',
+      trigger: markerEvents[0].trigger,
     });
   }
 
@@ -172,7 +186,7 @@ function createTransitionMarkers(plan: TrackPlan): readonly TimelineTransitionMa
 function createDownbeats(plan: TrackPlan): readonly TimelineBeat[] {
   const seed = seedLabel(plan.seed);
   return freezeItems(plan.beatDistances
-    .filter((beat): beat is typeof beat & { barBeat: 0 } => beat.barBeat === 0)
+    .filter((beat): beat is typeof beat & { barBeat: 0 } => beat.gridBeat !== false && beat.barBeat === 0)
     .map((beat) => ({
       id: `${seed}:beat:${beat.beatIndex}`,
       beatIndex: beat.beatIndex,

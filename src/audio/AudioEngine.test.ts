@@ -14,7 +14,13 @@ interface RhythmMapBuilder {
     frameDuration: number,
     bpm: number,
     beatOffset: number,
-  ): { beats: RhythmBeat[]; transitions: MusicTransition[] };
+  ): {
+    beats: RhythmBeat[];
+    transitions: MusicTransition[];
+    onsets: number[];
+    kicks: number[];
+    transients: number[];
+  };
 }
 
 interface BeatWindowHarness {
@@ -24,6 +30,21 @@ interface BeatWindowHarness {
   transportMode: 'idle' | 'preview' | 'game';
   beatAnchor: number;
   lastBeatAt: number;
+}
+
+interface DecodedUpdateHarness {
+  context: AudioContext;
+  analyser: AnalyserNode;
+  profile: MusicProfile;
+  usingFile: boolean;
+  running: boolean;
+  startedAt: number;
+  transportMode: 'idle' | 'preview' | 'game';
+  lastBeatAt: number;
+  beatAnchor: number;
+  lastObservedTime: number;
+  beatPulse: number;
+  smoothedBass: number;
 }
 
 class FakeBufferSource {
@@ -135,10 +156,34 @@ describe('decoded audio rhythm map', () => {
     const buildRhythmMap = (engine as unknown as RhythmMapBuilder).buildRhythmMap.bind(engine);
     const map = buildRhythmMap(energy, bass, mids, highs, 4, 4, frameDuration, 120, 0);
 
-    expect(map.beats[0].time).toBeCloseTo(0.043, 3);
-    expect(map.beats[1].time).toBeCloseTo(0.457, 3);
-    expect(map.beats[2].time).toBeCloseTo(1.086, 3);
+    expect(map.beats[0].time).toBeCloseTo(0.075, 3);
+    expect(map.beats[1].time).toBeCloseTo(0.475, 3);
+    expect(map.beats[2].time).toBeCloseTo(1.125, 3);
     expect(map.beats.some((beat, index) => index > 0 && Math.abs(beat.time - index * 0.5) > 0.035)).toBe(true);
+  });
+
+  it('keeps strong off-grid drum hits as independent musical anchors', () => {
+    const frameDuration = 0.025;
+    const frameCount = 121;
+    const energy = new Array<number>(frameCount).fill(0.05);
+    const bass = new Array<number>(frameCount).fill(0.04);
+    const mids = new Array<number>(frameCount).fill(0.05);
+    const highs = new Array<number>(frameCount).fill(0.04);
+    energy[10] = 0.96;
+    bass[10] = 1;
+    energy[30] = 0.88;
+    mids[30] = 0.96;
+    highs[30] = 1;
+
+    const engine = new AudioEngine();
+    const buildRhythmMap = (engine as unknown as RhythmMapBuilder).buildRhythmMap.bind(engine);
+    const map = buildRhythmMap(energy, bass, mids, highs, 3, 3, frameDuration, 120, 0);
+    const kick = map.beats.find((beat) => Math.abs(beat.time - 0.2625) < 0.03);
+    const transient = map.beats.find((beat) => Math.abs(beat.time - 0.7625) < 0.03);
+
+    expect(kick).toMatchObject({ cue: 'kick' });
+    expect(transient).toMatchObject({ cue: 'transient' });
+    expect(map.onsets.some((value) => value > 0.5)).toBe(true);
   });
 
   it('scores against the explicit onset map before falling back to the average BPM grid', () => {
@@ -161,6 +206,61 @@ describe('decoded audio rhythm map', () => {
     expect(engine.isInsideBeatWindow(0.04)).toBe(true);
     harness.context = { currentTime: 1.17 };
     expect(engine.isInsideBeatWindow(0.04)).toBe(false);
+  });
+
+  it('falls back to both processing and device latency when output timestamps are unavailable', () => {
+    const engine = new AudioEngine();
+    const harness = engine as unknown as BeatWindowHarness;
+    harness.context = {
+      currentTime: 20,
+      baseLatency: 0.04,
+      outputLatency: 0.22,
+    } as unknown as Pick<AudioContext, 'currentTime'>;
+    harness.startedAt = 10;
+    harness.transportMode = 'game';
+
+    expect(engine.getTransportTime()).toBeCloseTo(9.74, 8);
+  });
+
+  it('drives decoded-track effects from the audible profile instead of a future analyser quantum', () => {
+    const engine = new AudioEngine();
+    const harness = engine as unknown as DecodedUpdateHarness;
+    harness.context = {
+      currentTime: 11,
+      getOutputTimestamp: () => ({ contextTime: 10.5, performanceTime: 0 }),
+    } as unknown as AudioContext;
+    harness.analyser = {
+      getByteFrequencyData: (values: Uint8Array<ArrayBuffer>) => values.fill(255),
+    } as unknown as AnalyserNode;
+    harness.profile = {
+      ...createDefaultMusicProfile(),
+      duration: 58,
+      runDuration: 58,
+      energy: [0.42],
+      bass: [0.2],
+      mids: [0.3],
+      highs: [0.1],
+      beats: [{ time: 10.5, strength: 1, bass: 0.8, highs: 0.4, barBeat: 0, cue: 'kick' }],
+    };
+    harness.usingFile = true;
+    harness.running = true;
+    harness.startedAt = 0;
+    harness.transportMode = 'game';
+    harness.lastBeatAt = -10;
+    harness.beatAnchor = 0;
+    harness.lastObservedTime = 0;
+    harness.beatPulse = 0;
+    harness.smoothedBass = 0;
+
+    const bands = engine.update(1 / 60);
+    expect(bands).toMatchObject({
+      bass: 0.2,
+      mids: 0.3,
+      highs: 0.1,
+      overall: 0.42,
+      onBeat: true,
+    });
+    expect(bands.pulse).toBeGreaterThan(0.85);
   });
 });
 

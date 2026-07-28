@@ -1,9 +1,34 @@
 import { describe, expect, it } from 'vitest';
 import {
+  classifyMusicEventTiming,
+  isInsideMusicEventWindow,
+  MUSIC_EVENT_CONTACT_LEAD_SECONDS,
+  MUSIC_EVENT_STALE_SECONDS,
   MUSIC_SYNC_MAX_LAG_SECONDS,
   MUSIC_SYNC_MAX_LEAD_SECONDS,
   synchronizeDistanceToMusic,
 } from './rhythm';
+
+describe('music event contact timing', () => {
+  it('opens a narrow contact window around audible music time', () => {
+    const eventTime = 10;
+    expect(classifyMusicEventTiming(eventTime, eventTime - MUSIC_EVENT_CONTACT_LEAD_SECONDS - 0.001)).toBe('future');
+    expect(classifyMusicEventTiming(eventTime, eventTime - MUSIC_EVENT_CONTACT_LEAD_SECONDS)).toBe('active');
+    expect(classifyMusicEventTiming(eventTime, eventTime + MUSIC_EVENT_STALE_SECONDS)).toBe('active');
+    expect(classifyMusicEventTiming(eventTime, eventTime + MUSIC_EVENT_STALE_SECONDS + 0.001)).toBe('stale');
+  });
+
+  it('sweeps across an event instead of dropping it after a long rendered frame', () => {
+    const eventTime = 10;
+    expect(classifyMusicEventTiming(eventTime, 10.13, 9.87)).toBe('active');
+    expect(classifyMusicEventTiming(eventTime, 10.13, 10.125)).toBe('stale');
+  });
+
+  it('scores the exact obstacle cue even when it is off the regular beat grid', () => {
+    expect(isInsideMusicEventWindow(10.137, 10.18)).toBe(true);
+    expect(isInsideMusicEventWindow(10.137, 10.23)).toBe(false);
+  });
+});
 
 describe('music-distance synchronization', () => {
   const nominalSpeed = 170;

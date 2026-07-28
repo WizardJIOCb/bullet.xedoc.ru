@@ -22,7 +22,7 @@ import {
   type UpgradeId,
 } from '../core/types';
 import type { ControlBindings, GraphicsSettings, InputAction, SettingsState } from '../settings/SettingsStore';
-import { synchronizeDistanceToMusic } from './rhythm';
+import { classifyMusicEventTiming, isInsideMusicEventWindow, synchronizeDistanceToMusic } from './rhythm';
 import { generateTrack, radialAt, sampleTrackFrame, type TrackFrame, type TrackPlan } from './track';
 import { createTrackTimeline, type TrackTimeline } from './timeline';
 
@@ -110,7 +110,6 @@ export class BallisticGame {
   private countdown = 0;
   private demoDistance = 0;
   private distance = 0;
-  private previousDistance = 0;
   private speed = 0;
   private maxRunSpeed = 0;
   private angle = 0;
@@ -138,6 +137,7 @@ export class BallisticGame {
   private pendingUpgradeOptions: UpgradeDefinition[] = [];
   private queuedUpgradePicks = 0;
   private lastCollisionCursor = 0;
+  private lastCollisionAudioTime = 0;
   private runUpgrades = new Set<UpgradeId>();
   private lastBands: AudioBands = { bass: 0, mids: 0, highs: 0, overall: 0, pulse: 0, onBeat: false };
   private cameraRadial = 0;
@@ -963,7 +963,6 @@ export class BallisticGame {
     this.bursts.length = 0;
     const baseSpeed = this.plan.length / this.plan.runDuration;
     this.distance = 0;
-    this.previousDistance = 0;
     this.speed = baseSpeed * 0.72;
     this.maxRunSpeed = this.speed;
     this.angle = 0;
@@ -991,6 +990,7 @@ export class BallisticGame {
     this.pendingUpgradeOptions = [];
     this.queuedUpgradePicks = 0;
     this.lastCollisionCursor = 0;
+    this.lastCollisionAudioTime = 0;
     this.runUpgrades.clear();
     this.emitUpgradeState();
     for (let index = 0; index < this.rivals.length; index += 1) {
@@ -1112,7 +1112,6 @@ export class BallisticGame {
       this.hooks.onToast('FORCED VENT', 'Реактор перегрет — тяга отключена', 'red');
     }
 
-    this.previousDistance = this.distance;
     const proposedDistance = this.distance + this.speed * dt;
     this.distance = Math.min(
       this.plan.length,
@@ -1140,27 +1139,40 @@ export class BallisticGame {
   }
 
   private processCollisions(): void {
-    while (this.lastCollisionCursor < this.plan.events.length && this.plan.events[this.lastCollisionCursor].distance < this.previousDistance - 8) {
+    const audibleTime = this.audio.getTransportTime();
+    const previousAudibleTime = Math.min(this.lastCollisionAudioTime, audibleTime);
+    this.lastCollisionAudioTime = audibleTime;
+    while (this.lastCollisionCursor < this.plan.events.length) {
+      const event = this.plan.events[this.lastCollisionCursor];
+      const timing = classifyMusicEventTiming(event.musicTime, audibleTime, previousAudibleTime);
+      if (!event.resolved && !event.destroyed && timing !== 'stale') break;
+      if (timing === 'stale') event.resolved = true;
       this.lastCollisionCursor += 1;
     }
     for (let index = this.lastCollisionCursor; index < this.plan.events.length; index += 1) {
       const event = this.plan.events[index];
-      if (event.distance > this.distance + 7) break;
-      if (event.resolved || event.destroyed || event.distance < this.previousDistance - 7) continue;
+      const timing = classifyMusicEventTiming(event.musicTime, audibleTime, previousAudibleTime);
+      if (timing === 'future') break;
+      if (event.resolved || event.destroyed) continue;
+      if (timing === 'stale') {
+        event.resolved = true;
+        continue;
+      }
+      const onEventCue = isInsideMusicEventWindow(event.musicTime, audibleTime);
       const delta = angularDistance(this.angle, event.angle);
       if (event.kind === 'gate') {
         if (delta > event.gapWidth) this.hitObstacle(event);
         else {
           event.resolved = true;
           if (delta > event.gapWidth * 0.69) this.registerNearMiss();
-          else if (this.audio.isInsideBeatWindow()) this.registerPerfect('GATE SYNC');
+          else if (onEventCue) this.registerPerfect('GATE SYNC');
         }
       } else if (event.kind === 'halfwall') {
         if (delta < event.gapWidth) this.hitObstacle(event);
         else {
           event.resolved = true;
           if (delta < event.gapWidth + 0.16) this.registerNearMiss();
-          else if (this.audio.isInsideBeatWindow()) this.registerPerfect('WALL SYNC');
+          else if (onEventCue) this.registerPerfect('WALL SYNC');
         }
       } else if (event.kind === 'blade' || event.kind === 'cross') {
         const bladeDelta = this.rotorAngularDistance(event, this.audio.getTransportTime());
@@ -1168,7 +1180,7 @@ export class BallisticGame {
         else {
           event.resolved = true;
           if (bladeDelta < event.gapWidth + 0.14) this.registerNearMiss();
-          else if (this.audio.isInsideBeatWindow()) this.registerPerfect(event.kind === 'cross' ? 'CROSS SYNC' : 'BLADE SYNC');
+          else if (onEventCue) this.registerPerfect(event.kind === 'cross' ? 'CROSS SYNC' : 'BLADE SYNC');
         }
       } else if (event.kind === 'drone') {
         const threshold = 0.45;
@@ -1192,7 +1204,7 @@ export class BallisticGame {
           this.flux = Math.min(100, this.flux + 22);
           this.overdriveTimer = Math.max(this.overdriveTimer, this.runUpgrades.has('afterburner') ? 2.4 : 1.2);
           this.collectEvent(event, 'SLIPSTREAM');
-          if (this.audio.isInsideBeatWindow()) this.registerPerfect('BOOST SYNC');
+          if (onEventCue) this.registerPerfect('BOOST SYNC');
         } else event.resolved = true;
       } else {
         if (delta < 0.48) {

@@ -260,6 +260,8 @@ export class MusicPreviewController {
         previousPatternPosition = position;
         button.style.top = `${3 + patternLane * 16}px`;
         button.dataset.kind = marker.kind;
+        button.dataset.cue = marker.cue;
+        button.dataset.trigger = marker.trigger;
         button.setAttribute('aria-label', this.patternAriaLabel(marker));
         button.title = this.patternDetail(marker);
       } else {
@@ -302,10 +304,12 @@ export class MusicPreviewController {
   }
 
   private markerReason(marker: TimelinePatternMarker): string {
-    if (!this.timeline) return 'BEAT';
-    const transition = this.timeline.transitions.find((candidate) => Math.abs(candidate.musicTime - marker.musicTime) <= 0.55);
-    if (transition) return TRANSITION_LABELS[transition.kind];
-    if (marker.beatIndex % 4 === 0) return 'DOWNBEAT';
+    if (marker.trigger === 'build' || marker.trigger === 'drop' || marker.trigger === 'break' || marker.trigger === 'fill') {
+      return TRANSITION_LABELS[marker.trigger];
+    }
+    if (marker.trigger === 'kick') return 'KICK';
+    if (marker.trigger === 'transient') return 'TRANSIENT';
+    if (marker.trigger === 'transition') return 'TRANSITION';
     return marker.strength >= 0.74 ? 'PEAK' : 'BEAT';
   }
 
@@ -382,6 +386,37 @@ export class MusicPreviewController {
       }
       context.strokeStyle = 'rgba(83, 255, 211, 0.68)';
       context.lineWidth = 1;
+      context.stroke();
+    }
+
+    for (let index = 0; index < this.timeline.samples.length; index += 1) {
+      const sample = this.timeline.samples[index];
+      const accent = Math.max(sample.onset, sample.kick, sample.transient);
+      const previousAccent = index > 0
+        ? Math.max(
+          this.timeline.samples[index - 1].onset,
+          this.timeline.samples[index - 1].kick,
+          this.timeline.samples[index - 1].transient,
+        )
+        : 0;
+      const nextAccent = index + 1 < this.timeline.samples.length
+        ? Math.max(
+          this.timeline.samples[index + 1].onset,
+          this.timeline.samples[index + 1].kick,
+          this.timeline.samples[index + 1].transient,
+        )
+        : 0;
+      if (accent < 0.28 || accent < previousAccent || accent <= nextAccent) continue;
+      const x = (sample.musicTime / this.timeline.duration) * bounds.width;
+      const height = (0.025 + accent * 0.145) * bounds.height;
+      const kickDominant = sample.kick >= sample.transient;
+      context.beginPath();
+      context.moveTo(x, bounds.height - 2);
+      context.lineTo(x, bounds.height - 2 - height);
+      context.strokeStyle = kickDominant
+        ? `rgba(255, 212, 94, ${0.18 + accent * 0.42})`
+        : `rgba(187, 111, 255, ${0.16 + accent * 0.4})`;
+      context.lineWidth = accent > 0.78 ? 1.4 : 1;
       context.stroke();
     }
 

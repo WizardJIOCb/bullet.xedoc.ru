@@ -97,18 +97,21 @@ describe('track timeline snapshots', () => {
       bass: [0.2],
       mids: [0.3, 0.7],
       highs: [0.4, 0.6, 0.8],
+      onsets: [0, 0.5, 0],
+      kicks: [0, 0.8, 0],
+      transients: [0, 0.3, 0],
     };
     const plan = generateTrack(TRACKS.void, profile, 42);
     const timeline = createTrackTimeline(plan, profile);
 
     expect(timeline.duration).toBe(plan.runDuration);
     expect(timeline.samples).toEqual([
-      { musicTime: 0, energy: 0.1, bass: 0.2, mids: 0.3, highs: 0.4 },
-      { musicTime: plan.runDuration / 2, energy: 0.5, bass: 0.2, mids: 0.5, highs: 0.6 },
-      { musicTime: plan.runDuration, energy: 0.9, bass: 0.2, mids: 0.7, highs: 0.8 },
+      { musicTime: 0, energy: 0.1, bass: 0.2, mids: 0.3, highs: 0.4, onset: 0, kick: 0, transient: 0 },
+      { musicTime: plan.runDuration / 2, energy: 0.5, bass: 0.2, mids: 0.5, highs: 0.6, onset: 0.5, kick: 0.8, transient: 0.3 },
+      { musicTime: plan.runDuration, energy: 0.9, bass: 0.2, mids: 0.7, highs: 0.8, onset: 0, kick: 0, transient: 0 },
     ]);
     expect(timeline.downbeats).toEqual(plan.beatDistances
-      .filter((beat) => beat.barBeat === 0)
+      .filter((beat) => beat.gridBeat !== false && beat.barBeat === 0)
       .map((beat) => ({
         id: `${plan.seed.toString(16).padStart(8, '0')}:beat:${beat.beatIndex}`,
         beatIndex: beat.beatIndex,
@@ -158,5 +161,19 @@ describe('track timeline snapshots', () => {
     const plan = generateTrack(TRACKS.reactor, profile, 8080);
 
     expect(createTrackTimeline(plan, profile)).toEqual(createTrackTimeline(plan, profile));
+  });
+
+  it('preserves the detected musical cue behind every pattern marker', () => {
+    const profile = createDefaultMusicProfile();
+    const plan = generateTrack(TRACKS.reactor, profile, 505);
+    const timeline = createTrackTimeline(plan, profile);
+
+    expect(timeline.patterns.some((marker) => marker.cue === 'kick')).toBe(true);
+    expect(timeline.patterns.some((marker) => marker.cue === 'transient')).toBe(true);
+    for (const marker of timeline.patterns) {
+      expect(marker.cue).toBe(plan.beatDistances[marker.beatIndex]?.cue ?? 'beat');
+      expect(marker.trigger).toBe(plan.events.find((event) => event.patternId === marker.patternId && event.kind === marker.kind)?.trigger);
+    }
+    expect(timeline.patterns.some((marker) => marker.trigger === 'drop')).toBe(true);
   });
 });

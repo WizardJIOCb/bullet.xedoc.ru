@@ -2,6 +2,7 @@ import { clamp, hashString } from '../core/math';
 import type { MusicProfile, MusicTransition, RhythmBeat } from '../core/types';
 import { createDefaultMusicProfile } from '../game/track';
 import type { AudioSettings } from '../settings/SettingsStore';
+import { analyzeMusicNovelty, normalizeMusicBands, poolMusicCurve } from './musicAnalysis';
 
 export interface AudioBands {
   bass: number;
@@ -299,7 +300,24 @@ export class AudioEngine {
     if (!this.previewPlaying || this.transportMode !== 'preview' || !this.context) {
       return clamp(this.previewOffset, 0, duration);
     }
-    return clamp(this.context.currentTime - this.previewStartedAt, 0, duration);
+    return clamp(this.getPresentedContextTime() - this.previewStartedAt, 0, duration);
+  }
+
+  private getPresentedContextTime(): number {
+    if (!this.context) return 0;
+    const timestamp = typeof this.context.getOutputTimestamp === 'function'
+      ? this.context.getOutputTimestamp()
+      : null;
+    const timestampContextTime = timestamp?.contextTime;
+    if (typeof timestampContextTime === 'number' && Number.isFinite(timestampContextTime) && timestampContextTime >= 0) {
+      return timestampContextTime;
+    }
+    const contextWithLatency = this.context as AudioContext & { outputLatency?: number; baseLatency?: number };
+    const outputLatency = Number(contextWithLatency.outputLatency);
+    const baseLatency = Number(contextWithLatency.baseLatency);
+    const latency = clamp(Number.isFinite(baseLatency) ? baseLatency : 0, 0, 1)
+      + clamp(Number.isFinite(outputLatency) ? outputLatency : 0, 0, 1);
+    return Math.max(0, this.context.currentTime - latency);
   }
 
   private resetRhythmTransport(time: number): void {
@@ -486,7 +504,7 @@ export class AudioEngine {
     if (!this.context) return 0;
     if (this.transportMode === 'preview') return this.getPreviewTime();
     if (this.transportMode !== 'game') return 0;
-    return Math.max(0, this.context.currentTime - this.startedAt);
+    return Math.max(0, this.getPresentedContextTime() - this.startedAt);
   }
 
   update(dt: number): AudioBands {
@@ -498,31 +516,43 @@ export class AudioEngine {
 
     if (this.running && !this.usingFile) this.scheduleSynth();
     this.analyser.getByteFrequencyData(this.frequencyData);
-    const bass = this.averageBins(1, 10);
-    const mids = this.averageBins(11, 64);
-    const highs = this.averageBins(65, 180);
-    const overall = clamp(bass * 0.46 + mids * 0.36 + highs * 0.18, 0, 1);
+    const liveBass = this.averageBins(1, 10);
+    const liveMids = this.averageBins(11, 64);
+    const liveHighs = this.averageBins(65, 180);
     const now = this.getTime();
-    if (this.usingFile && now + 0.12 < this.lastObservedTime) {
+    const transportTime = this.getTransportTime();
+    const rhythmTime = this.usingFile ? transportTime : now;
+    const bass = this.usingFile ? this.sampleProfileCurve(this.profile.bass, now) : liveBass;
+    const mids = this.usingFile ? this.sampleProfileCurve(this.profile.mids, now) : liveMids;
+    const highs = this.usingFile ? this.sampleProfileCurve(this.profile.highs, now) : liveHighs;
+    const overall = this.usingFile
+      ? this.sampleProfileCurve(this.profile.energy, now)
+      : clamp(bass * 0.46 + mids * 0.36 + highs * 0.18, 0, 1);
+    if (this.usingFile && rhythmTime + 0.12 < this.lastObservedTime) {
       this.lastBeatAt = -10;
       this.beatAnchor = this.profile.beatOffset || 0;
       this.beatPulse = 0;
     }
-    this.lastObservedTime = now;
+    this.lastObservedTime = rhythmTime;
     const interval = 60 / this.profile.bpm;
     const beatPhase = ((((now - this.beatAnchor) % interval) + interval) % interval);
-    const timedPulse = Math.exp(-(beatPhase / interval) * 8.5);
+    const mappedBeatTime = this.usingFile ? this.mappedBeatAtOrBefore(transportTime) : undefined;
+    const sinceMappedBeat = mappedBeatTime === undefined ? Number.POSITIVE_INFINITY : transportTime - mappedBeatTime;
+    const timedPulse = mappedBeatTime === undefined
+      ? Math.exp(-(beatPhase / interval) * 8.5)
+      : Math.exp(-(Math.max(0, sinceMappedBeat) / interval) * 8.5);
     this.smoothedBass += (bass - this.smoothedBass) * Math.min(1, dt * 4.5);
-    const detected = bass > Math.max(0.34, this.smoothedBass * 1.22) && now - this.lastBeatAt > 0.23;
-    const gridBeat = beatPhase < Math.min(0.055, interval * 0.14) && now - this.lastBeatAt > interval * 0.62;
+    const detected = !this.usingFile
+      && bass > Math.max(0.34, this.smoothedBass * 1.22)
+      && rhythmTime - this.lastBeatAt > 0.23;
+    const gridBeat = this.usingFile
+      ? sinceMappedBeat >= 0
+        && sinceMappedBeat < Math.min(0.055, interval * 0.14)
+        && rhythmTime - this.lastBeatAt > Math.max(0.08, interval * 0.2)
+      : beatPhase < Math.min(0.055, interval * 0.14) && rhythmTime - this.lastBeatAt > interval * 0.62;
     const onBeat = this.running && (detected || gridBeat);
     if (onBeat) {
-      if (detected && this.usingFile) {
-        const nearestBeat = this.beatAnchor + Math.round((now - this.beatAnchor) / interval) * interval;
-        const phaseError = now - nearestBeat;
-        if (Math.abs(phaseError) < interval * 0.42) this.beatAnchor += clamp(phaseError, -0.09, 0.09) * 0.24;
-      }
-      this.lastBeatAt = now;
+      this.lastBeatAt = rhythmTime;
       this.beatPulse = 1;
     }
     this.beatPulse = Math.max(timedPulse * 0.72, this.beatPulse * Math.exp(-dt * 9));
@@ -559,6 +589,31 @@ export class AudioEngine {
     let total = 0;
     for (let index = start; index < safeEnd; index += 1) total += this.frequencyData[index];
     return total / Math.max(1, safeEnd - start) / 255;
+  }
+
+  private sampleProfileCurve(values: readonly number[], time: number): number {
+    if (values.length === 0) return 0;
+    if (values.length === 1) return clamp(values[0], 0, 1);
+    const duration = Math.max(0.001, Math.min(this.profile.duration || MAX_PLAYBACK_DURATION, MAX_PLAYBACK_DURATION));
+    const loopTime = ((time % duration) + duration) % duration;
+    const scaled = clamp(loopTime / duration, 0, 0.999999) * (values.length - 1);
+    const left = Math.floor(scaled);
+    const right = Math.min(left + 1, values.length - 1);
+    const mix = scaled - left;
+    return clamp(values[left] + (values[right] - values[left]) * mix, 0, 1);
+  }
+
+  private mappedBeatAtOrBefore(time: number): number | undefined {
+    const beats = this.profile.beats || [];
+    if (beats.length === 0 || time < beats[0].time) return undefined;
+    let left = 0;
+    let right = beats.length;
+    while (left < right) {
+      const middle = Math.floor((left + right) / 2);
+      if (beats[middle].time <= time) left = middle + 1;
+      else right = middle;
+    }
+    return beats[Math.max(0, left - 1)]?.time;
   }
 
   private createNoiseBuffer(context: AudioContext): AudioBuffer {
@@ -723,7 +778,7 @@ export class AudioEngine {
   private analyzeBuffer(buffer: AudioBuffer, key: string, title: string): MusicProfile {
     const maxDuration = Math.min(buffer.duration, 108);
     const maxSamples = Math.floor(maxDuration * buffer.sampleRate);
-    const hop = 2048;
+    const hop = 1024;
     const stride = 4;
     const sampleRate = buffer.sampleRate / stride;
     const frameCount = Math.max(1, Math.ceil(maxSamples / hop));
@@ -766,30 +821,19 @@ export class AudioEngine {
       highsRaw.push(Math.sqrt(highEnergy / Math.max(1, count)));
     }
 
-    const normalize = (values: number[]): number[] => {
-      const sorted = [...values].sort((a, b) => a - b);
-      const ceiling = sorted[Math.floor(sorted.length * 0.94)] || 1;
-      return values.map((value) => clamp(value / ceiling, 0, 1));
-    };
-    const energyNorm = normalize(energyRaw);
-    const bassNorm = normalize(bassRaw);
-    const midsNorm = normalize(midsRaw);
-    const highsNorm = normalize(highsRaw);
+    const normalized = normalizeMusicBands(energyRaw, bassRaw, midsRaw, highsRaw);
+    const energyNorm = normalized.energy;
+    const bassNorm = normalized.bass;
+    const midsNorm = normalized.mids;
+    const highsNorm = normalized.highs;
     const tempo = this.estimateTempo(energyNorm, bassNorm, hop / buffer.sampleRate);
     const bins = 384;
-    const compress = (values: number[]): number[] => Array.from({ length: bins }, (_, index) => {
-      const start = Math.floor((index / bins) * values.length);
-      const end = Math.max(start + 1, Math.floor(((index + 1) / bins) * values.length));
-      let total = 0;
-      for (let cursor = start; cursor < Math.min(end, values.length); cursor += 1) total += values[cursor];
-      return total / Math.max(1, Math.min(end, values.length) - start);
-    });
     const cleanTitle = title.replace(/\.[^/.]+$/, '').slice(0, 48).toUpperCase();
     const runDuration = clamp(buffer.duration, 58, 108);
-    const energy = compress(energyNorm);
-    const bass = compress(bassNorm);
-    const mids = compress(midsNorm);
-    const highs = compress(highsNorm);
+    const energy = poolMusicCurve(energyNorm, bins);
+    const bass = poolMusicCurve(bassNorm, bins);
+    const mids = poolMusicCurve(midsNorm, bins);
+    const highs = poolMusicCurve(highsNorm, bins);
     const rhythm = this.buildRhythmMap(
       energyNorm,
       bassNorm,
@@ -819,6 +863,9 @@ export class AudioEngine {
       bass,
       mids,
       highs,
+      onsets: poolMusicCurve(rhythm.onsets, bins, 'peak'),
+      kicks: poolMusicCurve(rhythm.kicks, bins, 'peak'),
+      transients: poolMusicCurve(rhythm.transients, bins, 'peak'),
       beats: rhythm.beats,
       transitions: rhythm.transitions,
       seed: hashString(contentFingerprint),
@@ -835,50 +882,126 @@ export class AudioEngine {
     frameDuration: number,
     bpm: number,
     beatOffset: number,
-  ): { beats: RhythmBeat[]; transitions: MusicTransition[] } {
-    const onset = energy.map((value, index) => {
-      if (index === 0) return 0;
-      const energyRise = Math.max(0, value - energy[index - 1]);
-      const bassRise = Math.max(0, bass[index] - bass[index - 1]);
-      const spectralChange = Math.abs(mids[index] - mids[index - 1]) + Math.abs(highs[index] - highs[index - 1]);
-      return energyRise * 0.42 + bassRise * 0.42 + spectralChange * 0.16;
-    });
-    const sortedOnsets = [...onset].sort((a, b) => a - b);
-    const onsetCeiling = sortedOnsets[Math.floor(sortedOnsets.length * 0.94)] || 1;
+  ): {
+    beats: RhythmBeat[];
+    transitions: MusicTransition[];
+    onsets: number[];
+    kicks: number[];
+    transients: number[];
+  } {
+    const novelty = analyzeMusicNovelty(energy, bass, mids, highs, frameDuration);
+    const onsets = novelty.frames.map((frame) => frame.onset);
+    const kicks = novelty.frames.map((frame) => frame.kick);
+    const transients = novelty.frames.map((frame) => frame.transient);
     const interval = 60 / bpm;
     const beats: RhythmBeat[] = [];
     const sourceFrames = Math.max(1, energy.length - 1);
     const frameAt = (time: number): number => {
       const loopTime = sourceDuration > 0 ? ((time % sourceDuration) + sourceDuration) % sourceDuration : time;
-      return clamp(Math.round(loopTime / Math.max(frameDuration, sourceDuration / sourceFrames)), 0, sourceFrames);
+      const effectiveFrameDuration = Math.max(frameDuration, sourceDuration / Math.max(1, energy.length));
+      return clamp(Math.round(loopTime / effectiveFrameDuration - 0.5), 0, sourceFrames);
     };
+    const frameTime = (index: number): number => Math.min(sourceDuration, (index + 0.5) * frameDuration);
     let barBeat: 0 | 1 | 2 | 3 = 0;
     for (let time = Math.max(0, beatOffset); time <= runDuration + 0.0001; time += interval) {
       const center = frameAt(time);
       let peakIndex = center;
-      for (let offset = -2; offset <= 2; offset += 1) {
+      const searchRadius = Math.max(2, Math.round(Math.min(0.14, interval * 0.28) / frameDuration));
+      for (let offset = -searchRadius; offset <= searchRadius; offset += 1) {
         const candidate = clamp(center + offset, 0, sourceFrames);
-        if ((onset[candidate] || 0) > (onset[peakIndex] || 0)) peakIndex = candidate;
+        const candidateScore = Math.max(kicks[candidate] || 0, transients[candidate] || 0, (onsets[candidate] || 0) * 0.78);
+        const peakScore = Math.max(kicks[peakIndex] || 0, transients[peakIndex] || 0, (onsets[peakIndex] || 0) * 0.78);
+        if (candidateScore > peakScore) peakIndex = candidate;
       }
-      const onsetStrength = clamp((onset[peakIndex] || 0) / onsetCeiling, 0, 1);
+      const onsetStrength = onsets[peakIndex] || 0;
+      const kickStrength = kicks[peakIndex] || 0;
+      const transientStrength = transients[peakIndex] || 0;
       const loopTime = sourceDuration > 0 ? ((time % sourceDuration) + sourceDuration) % sourceDuration : time;
-      let alignment = peakIndex * frameDuration - loopTime;
+      let alignment = frameTime(peakIndex) - loopTime;
       if (sourceDuration > 0 && alignment > sourceDuration * 0.5) alignment -= sourceDuration;
       if (sourceDuration > 0 && alignment < -sourceDuration * 0.5) alignment += sourceDuration;
-      const maximumShift = Math.min(0.11, interval * 0.22);
-      const onsetShift = onsetStrength > 0.16 ? clamp(alignment, -maximumShift, maximumShift) * 0.86 : 0;
+      const maximumShift = Math.min(0.14, interval * 0.28);
+      const accentStrength = Math.max(kickStrength, transientStrength, onsetStrength * 0.78);
+      const onsetShift = accentStrength > 0.2 ? clamp(alignment, -maximumShift, maximumShift) : 0;
       const previousBeat = beats[beats.length - 1];
       const minimumTime = previousBeat ? previousBeat.time + interval * 0.5 : 0;
       const alignedTime = clamp(Math.max(minimumTime, time + onsetShift), 0, runDuration);
+      const cue = kickStrength >= Math.max(0.48, transientStrength * 0.9)
+        ? 'kick'
+        : transientStrength >= 0.52
+          ? 'transient'
+          : 'beat';
+      const localEnergy = energy[peakIndex] || 0;
       beats.push({
         time: Number(alignedTime.toFixed(4)),
-        strength: clamp(0.28 + onsetStrength * 0.58 + (barBeat === 0 ? 0.14 : 0), 0, 1),
+        strength: clamp(
+          0.12
+          + onsetStrength * 0.3
+          + kickStrength * 0.34
+          + transientStrength * 0.25
+          + localEnergy * 0.1
+          + (barBeat === 0 && kickStrength > 0.34 ? 0.08 : 0),
+          0,
+          1,
+        ),
         bass: bass[peakIndex] || 0,
         highs: highs[peakIndex] || 0,
         barBeat,
+        gridBeat: true,
+        cue,
+        onset: onsetStrength,
+        kick: kickStrength,
+        transient: transientStrength,
       });
       barBeat = ((barBeat + 1) % 4) as 0 | 1 | 2 | 3;
     }
+
+    // Preserve strong syncopated hits that live between the estimated BPM beats.
+    // They become first-class anchors instead of being discarded by the grid.
+    for (let loopStart = 0; loopStart < runDuration; loopStart += Math.max(sourceDuration, 0.1)) {
+      for (const accent of novelty.accents) {
+        const time = accent.time + loopStart;
+        if (time < 0 || time > runDuration + 0.0001) continue;
+        let nearest: RhythmBeat | undefined;
+        let nearestDelta = Number.POSITIVE_INFINITY;
+        for (const beat of beats) {
+          const delta = Math.abs(beat.time - time);
+          if (delta < nearestDelta) {
+            nearest = beat;
+            nearestDelta = delta;
+          }
+          if (beat.time > time + interval) break;
+        }
+        const sameHitWindow = Math.min(0.045, Math.max(0.025, frameDuration * 1.5), interval * 0.12);
+        if (nearest && nearestDelta <= sameHitWindow) {
+          if (accent.strength > (nearest.onset ?? 0)) {
+            nearest.time = Number(time.toFixed(4));
+            nearest.cue = accent.cue;
+            nearest.onset = Math.max(nearest.onset ?? 0, accent.onset);
+            nearest.kick = Math.max(nearest.kick ?? 0, accent.kick);
+            nearest.transient = Math.max(nearest.transient ?? 0, accent.transient);
+            nearest.strength = Math.max(nearest.strength, clamp(0.2 + accent.strength * 0.76, 0, 1));
+          }
+          continue;
+        }
+
+        const sourceFrame = clamp(accent.frame, 0, sourceFrames);
+        const gridOrdinal = Math.max(0, Math.round((time - Math.max(0, beatOffset)) / interval));
+        beats.push({
+          time: Number(time.toFixed(4)),
+          strength: clamp(0.2 + accent.strength * 0.76 + (energy[sourceFrame] || 0) * 0.04, 0, 1),
+          bass: bass[sourceFrame] || 0,
+          highs: highs[sourceFrame] || 0,
+          barBeat: (gridOrdinal % 4) as RhythmBeat['barBeat'],
+          gridBeat: false,
+          cue: accent.cue,
+          onset: accent.onset,
+          kick: accent.kick,
+          transient: accent.transient,
+        });
+      }
+    }
+    beats.sort((left, right) => left.time - right.time || right.strength - left.strength);
 
     const sourceCandidates: MusicTransition[] = [];
     const average = (values: number[], start: number, end: number): number => {
@@ -918,8 +1041,16 @@ export class AudioEngine {
         strength = Math.abs(highDelta) * 2.4 + Math.abs(bassDelta);
       }
       if (!kind || strength < 0.38) continue;
+      let peakIndex = index;
+      const snapRadius = Math.max(1, Math.round(Math.min(0.16, interval * 0.32) / frameDuration));
+      for (let offset = -snapRadius; offset <= snapRadius; offset += 1) {
+        const candidate = clamp(index + offset, 0, sourceFrames);
+        const candidateScore = Math.max(kicks[candidate] || 0, transients[candidate] || 0, (onsets[candidate] || 0) * 0.78);
+        const peakScore = Math.max(kicks[peakIndex] || 0, transients[peakIndex] || 0, (onsets[peakIndex] || 0) * 0.78);
+        if (candidateScore > peakScore) peakIndex = candidate;
+      }
       sourceCandidates.push({
-        time: Number(Math.min(sourceDuration, index * frameDuration).toFixed(4)),
+        time: Number(frameTime(peakIndex).toFixed(4)),
         strength: clamp(strength, 0, 1),
         kind,
       });
@@ -932,12 +1063,6 @@ export class AudioEngine {
       selected.push(candidate);
       if (selected.length >= 16) break;
     }
-    if (selected.length === 0 && runDuration > 20) {
-      selected.push(
-        { time: Number((runDuration * 0.36).toFixed(4)), strength: 0.58, kind: 'build' },
-        { time: Number((runDuration * 0.62).toFixed(4)), strength: 0.78, kind: 'drop' },
-      );
-    }
     const transitions: MusicTransition[] = [];
     for (let loopStart = 0; loopStart < runDuration; loopStart += Math.max(sourceDuration, 0.1)) {
       for (const transition of selected) {
@@ -946,7 +1071,7 @@ export class AudioEngine {
       }
     }
     transitions.sort((a, b) => a.time - b.time);
-    return { beats, transitions };
+    return { beats, transitions, onsets, kicks, transients };
   }
 
   private estimateTempo(energy: number[], bass: number[], frameDuration: number): { bpm: number; beatOffset: number } {

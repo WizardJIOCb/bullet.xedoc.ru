@@ -59,10 +59,15 @@ export interface MusicProfile {
   bass: number[];
   mids: number[];
   highs: number[];
+  onsets?: number[];
+  kicks?: number[];
+  transients?: number[];
   beats: RhythmBeat[];
   transitions: MusicTransition[];
   seed: number;
 }
+
+export type RhythmCue = 'beat' | 'kick' | 'transient' | 'transition';
 
 export interface RhythmBeat {
   time: number;
@@ -70,6 +75,11 @@ export interface RhythmBeat {
   bass: number;
   highs: number;
   barBeat: 0 | 1 | 2 | 3;
+  gridBeat?: boolean;
+  cue?: RhythmCue;
+  onset?: number;
+  kick?: number;
+  transient?: number;
 }
 
 export interface MusicTransition {
@@ -105,6 +115,7 @@ export interface UpgradeDefinition {
 }
 
 export type TrackEventKind = 'gate' | 'halfwall' | 'blade' | 'cross' | 'shard' | 'boost' | 'drone' | 'coolant';
+export type TrackEventTrigger = RhythmCue | MusicTransition['kind'];
 
 export interface TrackEvent {
   id: number;
@@ -117,6 +128,7 @@ export interface TrackEvent {
   destroyed: boolean;
   beatIndex: number;
   musicTime: number;
+  trigger: TrackEventTrigger;
   strength: number;
   rotationRate: number;
   rotationPhase: number;

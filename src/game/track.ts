@@ -5,6 +5,7 @@ import type {
   MusicTransition,
   RhythmBeat,
   TrackEvent,
+  TrackEventTrigger,
   TrackTheme,
 } from '../core/types';
 
@@ -59,6 +60,7 @@ interface EventTuning {
   armCount?: number;
   strength?: number;
   warningDistance?: number;
+  trigger?: TrackEventTrigger;
 }
 
 const NOMINAL_SPEED = 170;
@@ -75,8 +77,12 @@ function wrapPositive(angle: number): number {
   return ((angle % TAU) + TAU) % TAU;
 }
 
-function profileValueAtTime(values: number[], time: number, runDuration: number): number {
-  return sampleProfile(values, time / Math.max(0.001, runDuration));
+function profileValueAtTime(profile: MusicProfile, values: number[], time: number, runDuration: number): number {
+  const sourceDuration = clamp(profile.duration || runDuration, 0.001, runDuration);
+  const sourceTime = sourceDuration < runDuration
+    ? ((time % sourceDuration) + sourceDuration) % sourceDuration
+    : time;
+  return sampleProfile(values, sourceTime / sourceDuration);
 }
 
 function createBeatGrid(profile: MusicProfile, runDuration: number): IndexedBeat[] {
@@ -86,10 +92,9 @@ function createBeatGrid(profile: MusicProfile, runDuration: number): IndexedBeat
   const beats: IndexedBeat[] = [];
   let beatIndex = 0;
   for (let time = offset; time <= runDuration + 0.0001; time += interval) {
-    const progress = time / runDuration;
-    const bass = sampleProfile(profile.bass, progress);
-    const highs = sampleProfile(profile.highs, progress);
-    const energy = sampleProfile(profile.energy, progress);
+    const bass = profileValueAtTime(profile, profile.bass, time, runDuration);
+    const highs = profileValueAtTime(profile, profile.highs, time, runDuration);
+    const energy = profileValueAtTime(profile, profile.energy, time, runDuration);
     const barBeat = (beatIndex % 4) as RhythmBeat['barBeat'];
     beats.push({
       beatIndex,
@@ -97,6 +102,11 @@ function createBeatGrid(profile: MusicProfile, runDuration: number): IndexedBeat
       bass,
       highs,
       barBeat,
+      gridBeat: true,
+      cue: 'beat',
+      onset: 0,
+      kick: 0,
+      transient: 0,
       strength: clamp(energy * 0.46 + bass * 0.34 + highs * 0.08 + (barBeat === 0 ? 0.2 : 0.05), 0, 1),
     });
     beatIndex += 1;
@@ -132,6 +142,11 @@ function buildBeatTimeline(profile: MusicProfile, runDuration: number): IndexedB
     bass: clamp(beat.bass, 0, 1),
     highs: clamp(beat.highs, 0, 1),
     barBeat: beat.barBeat,
+    gridBeat: beat.gridBeat !== false,
+    cue: beat.cue ?? 'beat',
+    onset: clamp(beat.onset ?? 0, 0, 1),
+    kick: clamp(beat.kick ?? 0, 0, 1),
+    transient: clamp(beat.transient ?? 0, 0, 1),
   }));
 
   // Some decoders can stop reporting peaks shortly before the trimmed playback
@@ -141,15 +156,20 @@ function buildBeatTimeline(profile: MusicProfile, runDuration: number): IndexedB
   let time = last.time + interval;
   let barBeat = ((last.barBeat + 1) % 4) as RhythmBeat['barBeat'];
   while (time <= runDuration + 0.0001) {
-    const energy = profileValueAtTime(profile.energy, time, runDuration);
-    const bass = profileValueAtTime(profile.bass, time, runDuration);
-    const highs = profileValueAtTime(profile.highs, time, runDuration);
+    const energy = profileValueAtTime(profile, profile.energy, time, runDuration);
+    const bass = profileValueAtTime(profile, profile.bass, time, runDuration);
+    const highs = profileValueAtTime(profile, profile.highs, time, runDuration);
     beats.push({
       beatIndex: beats.length,
       time,
       bass,
       highs,
       barBeat,
+      gridBeat: true,
+      cue: 'beat',
+      onset: 0,
+      kick: 0,
+      transient: 0,
       strength: clamp(energy * 0.48 + bass * 0.34 + (barBeat === 0 ? 0.18 : 0.04), 0, 1),
     });
     time += interval;
@@ -170,6 +190,41 @@ function buildTransitionTimeline(profile: MusicProfile, runDuration: number): In
     }));
 }
 
+function mergeTransitionAnchors(
+  sourceBeats: IndexedBeat[],
+  transitions: IndexedTransition[],
+  profile: MusicProfile,
+  runDuration: number,
+): IndexedBeat[] {
+  const interval = 60 / clamp(profile.bpm || 140, 72, 200);
+  const beats = sourceBeats.map((beat) => ({ ...beat }));
+  for (const transition of transitions) {
+    const nearestDelta = beats.reduce(
+      (minimum, beat) => Math.min(minimum, Math.abs(beat.time - transition.time)),
+      Number.POSITIVE_INFINITY,
+    );
+    if (nearestDelta <= Math.min(0.08, interval * 0.18)) continue;
+    const gridOrdinal = Math.max(0, Math.round((transition.time - Math.max(0, profile.beatOffset)) / interval));
+    const bass = profileValueAtTime(profile, profile.bass, transition.time, runDuration);
+    const highs = profileValueAtTime(profile, profile.highs, transition.time, runDuration);
+    beats.push({
+      beatIndex: -1,
+      time: transition.time,
+      strength: transition.strength,
+      bass,
+      highs,
+      barBeat: (gridOrdinal % 4) as RhythmBeat['barBeat'],
+      gridBeat: false,
+      cue: 'transition',
+      onset: transition.strength,
+      kick: transition.kind === 'drop' ? transition.strength : 0,
+      transient: transition.kind === 'fill' || transition.kind === 'build' ? transition.strength : 0,
+    });
+  }
+  beats.sort((left, right) => left.time - right.time || right.strength - left.strength);
+  return beats.map((beat, beatIndex) => ({ ...beat, beatIndex }));
+}
+
 export function createDefaultMusicProfile(): MusicProfile {
   const count = 192;
   const duration = 82;
@@ -179,6 +234,9 @@ export function createDefaultMusicProfile(): MusicProfile {
   const bass: number[] = [];
   const mids: number[] = [];
   const highs: number[] = [];
+  const onsets: number[] = [];
+  const kicks: number[] = [];
+  const transients: number[] = [];
   for (let index = 0; index < count; index += 1) {
     const t = index / (count - 1);
     const build = 0.42 + t * 0.34 + Math.sin(t * Math.PI * 6) * 0.08;
@@ -187,6 +245,15 @@ export function createDefaultMusicProfile(): MusicProfile {
     bass.push(clamp(0.5 + Math.sin(index * 0.42) * 0.28 + drop, 0, 1));
     mids.push(clamp(0.46 + Math.sin(index * 0.21 + 1.4) * 0.25, 0, 1));
     highs.push(clamp(0.43 + Math.sin(index * 0.91 + 0.7) * 0.32, 0, 1));
+  }
+  for (let index = 0; index < count; index += 1) {
+    const energyRise = index > 0 ? Math.max(0, energy[index] - energy[index - 1]) : 0;
+    const bassRise = index > 0 ? Math.max(0, bass[index] - bass[index - 1]) : 0;
+    const midsRise = index > 0 ? Math.max(0, mids[index] - mids[index - 1]) : 0;
+    const highsRise = index > 0 ? Math.max(0, highs[index] - highs[index - 1]) : 0;
+    onsets.push(clamp(energyRise * 1.7 + bassRise * 1.45 + midsRise * 0.9 + highsRise * 0.65, 0, 1));
+    kicks.push(clamp(bassRise * 2.5 + energyRise * 0.75 - highsRise * 0.2, 0, 1));
+    transients.push(clamp(midsRise * 1.7 + highsRise * 1.55 + energyRise * 0.55 - bassRise * 0.18, 0, 1));
   }
 
   const beats: RhythmBeat[] = [];
@@ -198,12 +265,20 @@ export function createDefaultMusicProfile(): MusicProfile {
     const beatHighs = sampleProfile(highs, progress);
     const beatEnergy = sampleProfile(energy, progress);
     const barBeat = (beatIndex % 4) as RhythmBeat['barBeat'];
+    const kick = barBeat === 0 || barBeat === 2 ? clamp(0.5 + beatBass * 0.46, 0, 1) : 0.12;
+    const transient = barBeat === 1 || barBeat === 3 ? clamp(0.46 + beatHighs * 0.42, 0, 1) : 0.16;
+    const onset = Math.max(kick, transient);
     beats.push({
       time,
       bass: beatBass,
       highs: beatHighs,
       barBeat,
-      strength: clamp(beatEnergy * 0.48 + beatBass * 0.34 + beatHighs * 0.06 + (barBeat === 0 ? 0.2 : 0.04), 0, 1),
+      gridBeat: true,
+      strength: clamp(beatEnergy * 0.22 + onset * 0.68 + (barBeat === 0 ? 0.1 : 0), 0, 1),
+      cue: kick >= transient ? 'kick' : 'transient',
+      onset,
+      kick,
+      transient,
     });
     beatIndex += 1;
   }
@@ -228,6 +303,9 @@ export function createDefaultMusicProfile(): MusicProfile {
     bass,
     mids,
     highs,
+    onsets,
+    kicks,
+    transients,
     beats,
     transitions,
     seed: 0xed6e,
@@ -295,8 +373,8 @@ export function radialAt(frame: TrackFrame, angle: number): THREE.Vector3 {
 export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed: number): TrackPlan {
   const seed = (theme.seed ^ profile.seed ^ runSeed) >>> 0;
   const runDuration = clamp(profile.runDuration || profile.duration, 58, 108);
-  const beats = buildBeatTimeline(profile, runDuration);
   const transitions = buildTransitionTimeline(profile, runDuration);
+  const beats = mergeTransitionAnchors(buildBeatTimeline(profile, runDuration), transitions, profile, runDuration);
   const targetLength = runDuration * NOMINAL_SPEED;
   const beatInterval = 60 / clamp(profile.bpm || 140, 72, 200);
   const controlDuration = clamp(beatInterval * 2.5, 0.85, 1.35);
@@ -321,11 +399,10 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
   const position = new THREE.Vector3();
   for (let index = 1; index <= pointCount; index += 1) {
     const time = (index / pointCount) * runDuration;
-    const progress = time / runDuration;
-    const energy = sampleProfile(profile.energy, progress);
-    const bass = sampleProfile(profile.bass, progress);
-    const mids = sampleProfile(profile.mids, progress);
-    const highs = sampleProfile(profile.highs, progress);
+    const energy = profileValueAtTime(profile, profile.energy, time, runDuration);
+    const bass = profileValueAtTime(profile, profile.bass, time, runDuration);
+    const mids = profileValueAtTime(profile, profile.mids, time, runDuration);
+    const highs = profileValueAtTime(profile, profile.highs, time, runDuration);
     const safeRampRaw = clamp((time - beatInterval * 5) / Math.max(2.2, beatInterval * 5), 0, 1);
     const safeRamp = safeRampRaw * safeRampRaw * (3 - 2 * safeRampRaw);
     let transitionCurve = 0;
@@ -400,8 +477,8 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
     tuning: EventTuning = {},
   ): void => {
     if (!beat || beat.time < 0.7 || beat.time > lastEventTime) return;
-    const energy = profileValueAtTime(profile.energy, beat.time, runDuration);
-    const bass = clamp((beat.bass + profileValueAtTime(profile.bass, beat.time, runDuration)) * 0.5, 0, 1);
+    const energy = profileValueAtTime(profile, profile.energy, beat.time, runDuration);
+    const bass = clamp((beat.bass + profileValueAtTime(profile, profile.bass, beat.time, runDuration)) * 0.5, 0, 1);
     const eventStrength = clamp(tuning.strength ?? beat.strength * 0.58 + energy * 0.25 + bass * 0.17, 0, 1);
     const hazard = kind === 'gate' || kind === 'halfwall' || kind === 'blade' || kind === 'cross' || kind === 'drone';
     const finalAngle = wrapPositive(angle);
@@ -416,6 +493,7 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
       destroyed: false,
       beatIndex: beat.beatIndex,
       musicTime: beat.time,
+      trigger: tuning.trigger ?? beat.cue ?? 'beat',
       strength: eventStrength,
       rotationRate: tuning.rotationRate ?? 0,
       rotationPhase: finalAngle,
@@ -443,24 +521,31 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
 
   const startIndex = Math.max(0, beats.findIndex((beat) => beat.time >= safeStartTime));
   let barOrdinal = 0;
-  let baseCycleIndex = 0;
-  let reservedThroughIndex = startIndex - 1;
+  let fallbackCycleIndex = 0;
   let lastPatternStartTime = Number.NEGATIVE_INFINITY;
+  let lastPatternEndTime = Number.NEGATIVE_INFINITY;
   const hazardCadence = Math.max(1, Math.round(1.35 / theme.hazardRate));
   const minimumPatternGap = clamp(1.05 / theme.hazardRate, 0.78, 1.25);
+  const patternRecovery = Math.max(0.22, beatInterval * 0.55);
   const patternCycle = ['gate', 'halfwall', 'blade', 'pickup', 'cross', 'drone'] as const;
   const accentPatternCycle = ['gate', 'blade', 'halfwall', 'cross', 'drone'] as const;
   let accentCycleIndex = Math.floor(
     patternRandom(beats[startIndex]?.beatIndex ?? 0, 0x71ac)() * accentPatternCycle.length,
   );
+  const accentScore = (beat: IndexedBeat): number => Math.max(
+    beat.onset ?? 0,
+    beat.kick ?? 0,
+    beat.transient ?? 0,
+    beat.strength * ((beat.cue ?? 'beat') === 'beat' ? 0.78 : 1),
+  );
   const courseStrengths = beats
     .slice(startIndex)
     .filter((beat) => beat.time <= lastEventTime)
-    .map((beat) => beat.strength)
+    .map(accentScore)
     .sort((a, b) => a - b);
   const accentThreshold = Math.max(
-    0.64,
-    courseStrengths[Math.floor(Math.max(0, courseStrengths.length - 1) * 0.72)] ?? 0.72,
+    0.54,
+    courseStrengths[Math.floor(Math.max(0, courseStrengths.length - 1) * 0.7)] ?? 0.68,
   );
   const transitionByBeat = new Map<number, IndexedTransition>();
   for (const transition of transitions) {
@@ -474,28 +559,40 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
       }
       if (beats[beatIndex].time > transition.time + beatInterval) break;
     }
-    if (nearestIndex < 0 || nearestDelta > beatInterval * 0.62) continue;
+    if (nearestIndex < 0 || nearestDelta > Math.min(0.16, beatInterval * 0.38)) continue;
     const existing = transitionByBeat.get(nearestIndex);
     if (!existing || transition.strength > existing.strength) transitionByBeat.set(nearestIndex, transition);
   }
-  const localAccentIndexes = new Set<number>();
+  const accentCandidates: number[] = [];
   for (let beatIndex = startIndex; beatIndex < beats.length; beatIndex += 1) {
     const beat = beats[beatIndex];
     if (beat.time > lastEventTime) break;
-    const previousStrength = beats[beatIndex - 1]?.strength ?? -1;
-    const nextStrength = beats[beatIndex + 1]?.strength ?? -1;
+    const score = accentScore(beat);
+    const previousStrength = beats[beatIndex - 1] ? accentScore(beats[beatIndex - 1]) : -1;
+    const nextStrength = beats[beatIndex + 1] ? accentScore(beats[beatIndex + 1]) : -1;
+    const detectedCue = (beat.cue ?? 'beat') === 'kick' || (beat.cue ?? 'beat') === 'transient';
     if (
-      beat.strength >= accentThreshold
-      && beat.strength >= previousStrength + 0.035
-      && beat.strength >= nextStrength + 0.015
-    ) localAccentIndexes.add(beatIndex);
+      score >= (detectedCue ? Math.min(0.58, accentThreshold) : accentThreshold)
+      && score >= previousStrength - (detectedCue ? 0.04 : -0.025)
+      && score >= nextStrength - (detectedCue ? 0.015 : -0.01)
+    ) accentCandidates.push(beatIndex);
+  }
+  const transitionAnchorTimes = [...transitionByBeat.keys()].map((index) => beats[index].time);
+  const localAccentIndexes = new Set<number>();
+  for (const beatIndex of accentCandidates.sort((left, right) => (
+    accentScore(beats[right]) - accentScore(beats[left]) || beats[left].time - beats[right].time
+  ))) {
+    const time = beats[beatIndex].time;
+    if (transitionAnchorTimes.some((transitionTime) => Math.abs(transitionTime - time) < minimumPatternGap * 0.72)) continue;
+    if ([...localAccentIndexes].some((selectedIndex) => Math.abs(beats[selectedIndex].time - time) < minimumPatternGap)) continue;
+    localAccentIndexes.add(beatIndex);
   }
   const protectedAnchorIndexes = [...new Set([...transitionByBeat.keys(), ...localAccentIndexes])].sort((a, b) => a - b);
 
   for (let anchorIndex = startIndex; anchorIndex < beats.length; anchorIndex += 1) {
     const anchor = beats[anchorIndex];
     if (anchor.time > lastEventTime) break;
-    const isDownbeat = anchor.barBeat === 0;
+    const isDownbeat = anchor.gridBeat !== false && anchor.barBeat === 0;
     const currentBarOrdinal = barOrdinal;
     if (isDownbeat) barOrdinal += 1;
     const isLocalAccent = localAccentIndexes.has(anchorIndex);
@@ -508,19 +605,23 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
       && beats[nextProtectedIndex].time - anchor.time < minimumPatternGap;
     if (protectedAnchorSoon) continue;
     if (!nearbyTransition && anchor.time - lastPatternStartTime < minimumPatternGap) continue;
-    const keepDownbeat = baseCycleIndex < patternCycle.length
-      || Boolean(nearbyTransition)
+    if (!nearbyTransition && anchor.time - lastPatternEndTime < patternRecovery) continue;
+    const hasDetectedPulse = (anchor.cue ?? 'beat') !== 'beat'
+      || Math.max(anchor.onset ?? 0, anchor.kick ?? 0, anchor.transient ?? 0) >= 0.5;
+    const keepDownbeat = Boolean(nearbyTransition)
       || isLocalAccent
-      || currentBarOrdinal % hazardCadence === 0;
+      || (hasDetectedPulse && currentBarOrdinal % hazardCadence === 0);
     if (isDownbeat && !keepDownbeat) continue;
-    if (anchorIndex <= reservedThroughIndex) continue;
 
     const random = patternRandom(anchor.beatIndex, 0xa53c);
     const baseAngle = random() * TAU;
     const direction = random() > 0.5 ? 1 : -1;
-    const energy = profileValueAtTime(profile.energy, anchor.time, runDuration);
-    const bass = clamp((anchor.bass + profileValueAtTime(profile.bass, anchor.time, runDuration)) * 0.5, 0, 1);
-    const highs = clamp((anchor.highs + profileValueAtTime(profile.highs, anchor.time, runDuration)) * 0.5, 0, 1);
+    const energy = profileValueAtTime(profile, profile.energy, anchor.time, runDuration);
+    const bass = clamp((anchor.bass + profileValueAtTime(profile, profile.bass, anchor.time, runDuration)) * 0.5, 0, 1);
+    const highs = clamp((anchor.highs + profileValueAtTime(profile, profile.highs, anchor.time, runDuration)) * 0.5, 0, 1);
+    const cue = anchor.cue ?? 'beat';
+    const kick = anchor.kick ?? (cue === 'kick' ? anchor.strength : 0);
+    const transient = anchor.transient ?? (cue === 'transient' ? anchor.strength : 0);
 
     let pattern: typeof patternCycle[number];
     if (nearbyTransition) {
@@ -528,12 +629,14 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
       else if (nearbyTransition.kind === 'build') pattern = 'halfwall';
       else if (nearbyTransition.kind === 'fill') pattern = 'blade';
       else pattern = 'pickup';
+    } else if (cue === 'kick') {
+      if (kick > 0.82 && energy > 0.58) pattern = random() > 0.58 ? 'cross' : 'gate';
+      else pattern = random() > 0.48 ? 'gate' : 'halfwall';
+    } else if (cue === 'transient') {
+      pattern = transient > 0.78 || highs > 0.64 ? 'blade' : random() > 0.55 ? 'halfwall' : 'drone';
     } else if (isLocalAccent && !isDownbeat) {
       pattern = accentPatternCycle[accentCycleIndex % accentPatternCycle.length];
       accentCycleIndex += 1;
-    } else if (baseCycleIndex < patternCycle.length) {
-      pattern = patternCycle[baseCycleIndex];
-      baseCycleIndex += 1;
     } else if (highs > 0.72) {
       pattern = 'blade';
     } else if (bass > 0.7 && energy > 0.6) {
@@ -541,82 +644,108 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
     } else if (energy < 0.48) {
       pattern = 'pickup';
     } else {
-      pattern = patternCycle[Math.floor(random() * patternCycle.length)];
+      pattern = patternCycle[fallbackCycleIndex % patternCycle.length];
+      fallbackCycleIndex += 1;
     }
 
     const patternId = nextPatternId;
     nextPatternId += 1;
-    const at = (offset: number): IndexedBeat | undefined => beats[anchorIndex + offset];
-    const maxPatternSpan = nextProtectedIndex === undefined
-      ? Number.POSITIVE_INFINITY
-      : Math.max(0, nextProtectedIndex - anchorIndex - 1);
-    let patternSpan = 0;
+    const trigger: TrackEventTrigger = nearbyTransition?.kind ?? cue;
+    const patternEventStart = events.length;
+    const emit = (
+      kind: TrackEvent['kind'],
+      beat: IndexedBeat | undefined,
+      angle: number,
+      tuning: EventTuning = {},
+    ): void => pushEvent(kind, beat, angle, patternId, { ...tuning, trigger });
+    const at = (offset: number): IndexedBeat | undefined => {
+      if (offset === 0) return anchor;
+      const targetTime = anchor.time + beatInterval * offset;
+      const tolerance = Math.min(0.2, beatInterval * 0.46);
+      const nextProtectedTime = nextProtectedIndex === undefined
+        ? Number.POSITIVE_INFINITY
+        : beats[nextProtectedIndex].time;
+      let best: IndexedBeat | undefined;
+      let bestDelta = Number.POSITIVE_INFINITY;
+      for (let candidateIndex = anchorIndex + 1; candidateIndex < beats.length; candidateIndex += 1) {
+        if (nextProtectedIndex !== undefined && candidateIndex >= nextProtectedIndex) break;
+        const candidate = beats[candidateIndex];
+        if (candidate.time < targetTime - tolerance) continue;
+        if (candidate.time > targetTime + tolerance) break;
+        if (candidate.time > nextProtectedTime - patternRecovery) break;
+        if (candidate.gridBeat === false) continue;
+        const delta = Math.abs(candidate.time - targetTime);
+        if (delta < bestDelta) {
+          best = candidate;
+          bestDelta = delta;
+        }
+      }
+      return best;
+    };
     if (pattern === 'gate') {
-      pushEvent('gate', anchor, baseAngle, patternId, {
+      emit('gate', anchor, baseAngle, {
         gapWidth: 0.78 + (1 - energy) * 0.24,
         strength: clamp(anchor.strength + 0.08, 0, 1),
       });
     } else if (pattern === 'halfwall') {
       const turn = direction * (0.38 + highs * 0.16);
-      pushEvent('halfwall', anchor, baseAngle, patternId, { gapWidth: 1.28 + energy * 0.12 });
-      if (maxPatternSpan >= 2) {
-        pushEvent('halfwall', at(2), baseAngle + turn, patternId, { gapWidth: 1.26 + energy * 0.12 });
-        patternSpan = 2;
-      }
+      emit('halfwall', anchor, baseAngle, { gapWidth: 1.28 + energy * 0.12 });
+      emit('halfwall', at(2), baseAngle + turn, { gapWidth: 1.26 + energy * 0.12 });
     } else if (pattern === 'blade') {
       const preferredCount = nearbyTransition?.kind === 'fill' ? 4 : 3;
-      const count = Math.max(1, Math.min(preferredCount, maxPatternSpan + 1));
       const twist = direction * (0.27 + highs * 0.17);
-      for (let step = 0; step < count; step += 1) {
-        pushEvent('blade', at(step), baseAngle + twist * step, patternId, {
+      for (let step = 0; step < preferredCount; step += 1) {
+        const eventBeat = at(step);
+        if (!eventBeat) break;
+        emit('blade', eventBeat, baseAngle + twist * step, {
           gapWidth: 0.17 + energy * 0.055,
           rotationRate: direction * (0.08 + highs * 0.15),
           armCount: 2,
         });
       }
-      patternSpan = count - 1;
     } else if (pattern === 'cross') {
       const spiral = direction * (0.16 + highs * 0.1);
       const preferredCount = nearbyTransition?.kind === 'drop' ? 3 : 2;
-      const count = Math.max(1, Math.min(preferredCount, maxPatternSpan + 1));
-      for (let step = 0; step < count; step += 1) {
-        pushEvent('cross', at(step), baseAngle + spiral * step, patternId, {
+      for (let step = 0; step < preferredCount; step += 1) {
+        const eventBeat = at(step);
+        if (!eventBeat) break;
+        emit('cross', eventBeat, baseAngle + spiral * step, {
           gapWidth: 0.16 + energy * 0.05,
           rotationRate: direction * (0.06 + anchor.strength * 0.1),
           armCount: 4,
           strength: clamp(anchor.strength + step * 0.035, 0, 1),
         });
       }
-      patternSpan = count - 1;
     } else if (pattern === 'drone') {
-      pushEvent('drone', anchor, baseAngle, patternId, { warningDistance: 300 + energy * 150 });
-      if (maxPatternSpan >= 1) {
-        pushEvent('shard', at(1), baseAngle + direction * 0.22, patternId);
-        patternSpan = 1;
-      }
+      emit('drone', anchor, baseAngle, { warningDistance: 300 + energy * 150 });
+      emit('shard', at(1), baseAngle + direction * 0.22);
     } else {
       const rewardKind: TrackEvent['kind'] = nearbyTransition?.kind === 'break' ? 'coolant' : random() > 0.52 ? 'boost' : 'shard';
-      pushEvent(rewardKind, anchor, baseAngle, patternId);
-      if (maxPatternSpan >= 1) {
-        pushEvent('shard', at(1), baseAngle + direction * 0.17, patternId);
-        patternSpan = 1;
-      }
-      if (maxPatternSpan >= 2) {
-        pushEvent('shard', at(2), baseAngle + direction * 0.32, patternId);
-        patternSpan = 2;
-      }
+      emit(rewardKind, anchor, baseAngle);
+      emit('shard', at(1), baseAngle + direction * 0.17);
+      emit('shard', at(2), baseAngle + direction * 0.32);
     }
-    // Reserve every beat occupied by the pattern plus one readable reaction beat.
-    const readablePadding = nextProtectedIndex === anchorIndex + patternSpan + 1 ? 0 : 1;
-    reservedThroughIndex = Math.max(reservedThroughIndex, anchorIndex + patternSpan + readablePadding);
-    lastPatternStartTime = anchor.time;
+    const emittedPattern = events.slice(patternEventStart);
+    if (emittedPattern.length > 0) {
+      lastPatternStartTime = anchor.time;
+      lastPatternEndTime = emittedPattern.reduce(
+        (latest, event) => Math.max(latest, event.musicTime),
+        anchor.time,
+      );
+    }
   }
 
-  // Profiles with very sparse detected peaks still receive a complete course.
+  // Sparse music gets a light reward layer, never synthetic hazards. Keeping
+  // this budget duration-based avoids filling every quiet beat with a marker.
   const occupiedTimes = new Set(events.map((event) => Math.round(event.musicTime * 1000)));
-  for (let index = startIndex; events.length < 40 && index < beats.length; index += 1) {
+  const minimumCourseEvents = Math.max(18, Math.round(runDuration * 0.34));
+  for (let index = startIndex; events.length < minimumCourseEvents && index < beats.length; index += 1) {
     const beat = beats[index];
-    if (beat.time > lastEventTime || occupiedTimes.has(Math.round(beat.time * 1000))) continue;
+    if (
+      beat.time > lastEventTime
+      || beat.barBeat !== 0
+      || occupiedTimes.has(Math.round(beat.time * 1000))
+    ) continue;
     const random = patternRandom(beat.beatIndex, 0xf111);
     const patternId = nextPatternId;
     nextPatternId += 1;

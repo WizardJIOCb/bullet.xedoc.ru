@@ -11,6 +11,7 @@ function immutableEventPlan(profile: MusicProfile, seed = 1337) {
     gapWidth: event.gapWidth,
     beatIndex: event.beatIndex,
     musicTime: event.musicTime,
+    trigger: event.trigger,
     strength: event.strength,
     rotationRate: event.rotationRate,
     rotationPhase: event.rotationPhase,
@@ -60,7 +61,7 @@ describe('procedural track generation', () => {
     const profile = createDefaultMusicProfile();
     const plan = generateTrack(TRACKS.reactor, profile, 91);
 
-    expect(plan.beatDistances.length).toBe(profile.beats.length);
+    expect(plan.beatDistances.length).toBeGreaterThanOrEqual(profile.beats.length);
     expect(plan.transitionDistances.length).toBe(profile.transitions.length);
     for (const beat of plan.beatDistances) {
       expect((beat.distance / plan.length) * plan.runDuration).toBeCloseTo(beat.time, 8);
@@ -131,6 +132,161 @@ describe('procedural track generation', () => {
     expect(plan.events.some((event) => event.beatIndex === accentIndex && largeKinds.has(event.kind))).toBe(true);
   });
 
+  it('turns detected kicks and transients into hazards at their exact hit times', () => {
+    const runDuration = 58;
+    const kickIndex = 21;
+    const transientIndex = 29;
+    const weakIndex = 23;
+    const beats: RhythmBeat[] = Array.from({ length: 116 }, (_, index) => ({
+      time: 0.25 + index * 0.5,
+      strength: index === kickIndex || index === transientIndex ? 0.96 : 0.24,
+      bass: index === kickIndex ? 0.98 : 0.28,
+      highs: index === transientIndex ? 0.98 : 0.25,
+      barBeat: (index % 4) as RhythmBeat['barBeat'],
+      cue: index === kickIndex ? 'kick' as const : index === transientIndex ? 'transient' as const : 'beat' as const,
+      onset: index === kickIndex || index === transientIndex ? 1 : 0.08,
+      kick: index === kickIndex ? 1 : 0,
+      transient: index === transientIndex ? 1 : 0,
+    })).filter((beat) => beat.time <= runDuration);
+    const profile: MusicProfile = {
+      ...createDefaultMusicProfile(),
+      duration: runDuration,
+      runDuration,
+      bpm: 120,
+      beatOffset: 0.25,
+      energy: Array(192).fill(0.58),
+      bass: Array(192).fill(0.48),
+      mids: Array(192).fill(0.44),
+      highs: Array(192).fill(0.42),
+      beats,
+      transitions: [],
+    };
+    const plan = generateTrack(TRACKS.aurora, profile, 2048);
+    const kickHazards = new Set(['gate', 'halfwall', 'cross']);
+    const transientHazards = new Set(['blade', 'halfwall', 'drone']);
+
+    expect(plan.events.some((event) => event.musicTime === beats[kickIndex].time && kickHazards.has(event.kind))).toBe(true);
+    expect(plan.events.some((event) => event.musicTime === beats[transientIndex].time && transientHazards.has(event.kind))).toBe(true);
+    expect(plan.events.some((event) => event.musicTime === beats[weakIndex].time && kickHazards.has(event.kind))).toBe(false);
+  });
+
+  it('keeps multi-part patterns on readable grid beats when an off-grid hit is nearby', () => {
+    const runDuration = 58;
+    const grid: RhythmBeat[] = Array.from({ length: 116 }, (_, index) => ({
+      time: 0.25 + index * 0.5,
+      strength: index === 20 ? 1 : 0.2,
+      bass: 0.24,
+      highs: index === 20 ? 1 : 0.24,
+      barBeat: (index % 4) as RhythmBeat['barBeat'],
+      gridBeat: true,
+      cue: index === 20 ? 'transient' as const : 'beat' as const,
+      onset: index === 20 ? 1 : 0,
+      kick: 0,
+      transient: index === 20 ? 1 : 0,
+    })).filter((beat) => beat.time <= runDuration);
+    grid.push({
+      time: 10.32,
+      strength: 0.24,
+      bass: 0.2,
+      highs: 0.26,
+      barBeat: 0,
+      gridBeat: false,
+      cue: 'beat' as const,
+      onset: 0.08,
+      kick: 0,
+      transient: 0,
+    });
+    const profile: MusicProfile = {
+      ...createDefaultMusicProfile(),
+      duration: runDuration,
+      runDuration,
+      bpm: 120,
+      beatOffset: 0.25,
+      energy: Array(192).fill(0.52),
+      bass: Array(192).fill(0.32),
+      mids: Array(192).fill(0.44),
+      highs: Array(192).fill(0.48),
+      beats: grid,
+      transitions: [],
+    };
+    const plan = generateTrack(TRACKS.aurora, profile, 606);
+    const firstBlade = plan.events.find((event) => event.musicTime === 10.25 && event.kind === 'blade');
+    const pattern = plan.events
+      .filter((event) => event.patternId === firstBlade?.patternId && event.kind === 'blade')
+      .sort((left, right) => left.musicTime - right.musicTime);
+
+    expect(pattern.length).toBeGreaterThanOrEqual(2);
+    expect(pattern.some((event) => event.musicTime === 10.32)).toBe(false);
+    expect(pattern.every((event, index) => index === 0 || event.musicTime - pattern[index - 1].musicTime >= 0.3)).toBe(true);
+  });
+
+  it('leaves a loud but rhythmically flat section free of synthetic hazards', () => {
+    const runDuration = 58;
+    const beats: RhythmBeat[] = Array.from({ length: 116 }, (_, index) => ({
+      time: 0.25 + index * 0.5,
+      strength: 0.28,
+      bass: 0.58,
+      highs: 0.52,
+      barBeat: (index % 4) as RhythmBeat['barBeat'],
+      gridBeat: true,
+      cue: 'beat' as const,
+      onset: 0,
+      kick: 0,
+      transient: 0,
+    })).filter((beat) => beat.time <= runDuration);
+    const profile: MusicProfile = {
+      ...createDefaultMusicProfile(),
+      duration: runDuration,
+      runDuration,
+      bpm: 120,
+      energy: Array(192).fill(0.88),
+      bass: Array(192).fill(0.76),
+      mids: Array(192).fill(0.7),
+      highs: Array(192).fill(0.66),
+      beats,
+      transitions: [],
+    };
+    const hazards = new Set(['gate', 'halfwall', 'blade', 'cross', 'drone']);
+
+    expect(generateTrack(TRACKS.reactor, profile, 707).events.some((event) => hazards.has(event.kind))).toBe(false);
+  });
+
+  it('leaves recovery space between a pattern tail and the next exact transition', () => {
+    const runDuration = 58;
+    const beats: RhythmBeat[] = Array.from({ length: 116 }, (_, index) => ({
+      time: 0.25 + index * 0.5,
+      strength: index === 20 ? 1 : 0.2,
+      bass: 0.3,
+      highs: index === 20 ? 1 : 0.24,
+      barBeat: (index % 4) as RhythmBeat['barBeat'],
+      gridBeat: true,
+      cue: index === 20 ? 'transient' as const : 'beat' as const,
+      onset: index === 20 ? 1 : 0,
+      kick: 0,
+      transient: index === 20 ? 1 : 0,
+    })).filter((beat) => beat.time <= runDuration);
+    const profile: MusicProfile = {
+      ...createDefaultMusicProfile(),
+      duration: runDuration,
+      runDuration,
+      bpm: 120,
+      beatOffset: 0.25,
+      beats,
+      transitions: [{ time: 11.35, strength: 1, kind: 'drop' }],
+    };
+    const plan = generateTrack(TRACKS.reactor, profile, 909);
+    const sourcePattern = plan.events.find((event) => event.musicTime === 10.25 && event.kind === 'blade');
+    const sourceTail = Math.max(...plan.events
+      .filter((event) => event.patternId === sourcePattern?.patternId)
+      .map((event) => event.musicTime));
+    const dropStart = Math.min(...plan.events
+      .filter((event) => event.trigger === 'drop')
+      .map((event) => event.musicTime));
+
+    expect(sourceTail).toBeLessThanOrEqual(10.75);
+    expect(dropStart - sourceTail).toBeGreaterThanOrEqual(0.275 - 1e-8);
+  });
+
   it('anchors a drop pattern to the nearest detected beat instead of a distant downbeat', () => {
     const runDuration = 58;
     const beats: RhythmBeat[] = Array.from({ length: 116 }, (_, index) => ({
@@ -162,7 +318,12 @@ describe('procedural track generation', () => {
 
     for (const targetIndex of targetIndexes) {
       expect(beats[targetIndex].barBeat).not.toBe(0);
-      expect(plan.events.some((event) => event.beatIndex === targetIndex && event.kind === 'cross')).toBe(true);
+      const transitionTime = beats[targetIndex].time + 0.12;
+      expect(plan.events.some((event) => (
+        event.musicTime === transitionTime
+        && event.kind === 'cross'
+        && event.trigger === 'drop'
+      ))).toBe(true);
     }
   });
 
@@ -194,7 +355,7 @@ describe('procedural track generation', () => {
     const hazardKinds = new Set(['gate', 'halfwall', 'blade', 'cross', 'drone']);
 
     expect(plan.events.some((event) => event.beatIndex === accentIndex && hazardKinds.has(event.kind))).toBe(false);
-    expect(plan.events.some((event) => event.beatIndex === dropIndex && event.kind === 'cross')).toBe(true);
+    expect(plan.events.some((event) => event.musicTime === beats[dropIndex].time + 0.12 && event.kind === 'cross')).toBe(true);
   });
 
   it('keeps high-BPM syncopated accents readable while preserving route density and variety', () => {
@@ -280,10 +441,12 @@ describe('procedural track generation', () => {
     };
     const plan = generateTrack(TRACKS.reactor, profile, 77);
 
-    expect(plan.beatDistances.slice(0, realBeats.length).map((beat) => beat.time))
-      .toEqual(realBeats.map((beat) => beat.time));
+    expect(realBeats.every((beat) => plan.beatDistances.some((mapped) => mapped.time === beat.time))).toBe(true);
     expect(plan.transitionDistances[0]).toMatchObject({ time: 21.37, strength: 1, kind: 'drop' });
-    expect(plan.events.every((event) => realBeats.some((beat) => Math.abs(beat.time - event.musicTime) < 1e-8))).toBe(true);
+    expect(plan.events.every((event) => (
+      realBeats.some((beat) => Math.abs(beat.time - event.musicTime) < 1e-8)
+      || Math.abs(event.musicTime - 21.37) < 1e-8
+    ))).toBe(true);
   });
 
   it('makes the route react spatially to energy and transitions', () => {

@@ -1254,6 +1254,14 @@ label:focus-within {
   --marker-color: #72ffc2;
 }
 
+.music-preview__marker[data-cue="kick"] {
+  filter: drop-shadow(0 0 4px rgba(255, 212, 94, 0.62));
+}
+
+.music-preview__marker[data-cue="transient"] {
+  filter: drop-shadow(0 0 4px rgba(183, 103, 255, 0.62));
+}
+
 .music-preview__marker[data-kind="boost"]::before,
 .music-preview__marker[data-kind="coolant"]::before {
   width: 9px;
@@ -1408,8 +1416,8 @@ label:focus-within {
 .music-preview__legend-icon--rotor { color: var(--violet); }
 .music-preview__legend-icon--drone { color: var(--gold); }
 .music-preview__legend-icon--reward { color: #72ffc2; }
-.music-preview__legend-icon--transition,
-.music-preview__legend-icon--beat { color: var(--cyan); }
+.music-preview__legend-icon--transition { color: var(--cyan); }
+.music-preview__legend-icon--beat { color: var(--gold); }
 
 .selector-block {
   margin-top: 15px;
