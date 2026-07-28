@@ -22,6 +22,7 @@ import {
   type UpgradeId,
 } from '../core/types';
 import type { ControlBindings, GraphicsSettings, InputAction, SettingsState } from '../settings/SettingsStore';
+import { computeObstacleKnockback, isObstacleCollision } from './collision';
 import { classifyMusicEventTiming, isInsideMusicEventWindow, synchronizeDistanceToMusic } from './rhythm';
 import { stepWallRideSteering, type SteeringInput } from './steering';
 import {
@@ -44,6 +45,7 @@ interface GameHooks {
   onFinish: (result: RunResult) => void;
   onCountdown: (value: string | null) => void;
   onSection: (name: string, index: number) => void;
+  onImpact: (direction: -1 | 1) => void;
 }
 
 interface Bullet {
@@ -69,6 +71,25 @@ interface Burst {
   velocities: THREE.Vector3[];
   life: number;
   maxLife: number;
+  drag: number;
+}
+
+interface BurstOptions {
+  direction?: THREE.Vector3;
+  speed?: number;
+  spread?: number;
+  size?: number;
+  life?: number;
+  drag?: number;
+}
+
+interface ChaseImpactEffect {
+  sparks: THREE.LineSegments;
+  wave: THREE.Mesh;
+  velocities: THREE.Vector3[];
+  life: number;
+  maxLife: number;
+  sparkPeakOpacity: number;
 }
 
 interface StreakSpec {
@@ -100,9 +121,12 @@ export class BallisticGame {
   private readonly mobileInput = new Map<string, boolean>();
   private readonly bullets: Bullet[] = [];
   private readonly bursts: Burst[] = [];
+  private readonly chaseImpactEffects: ChaseImpactEffect[] = [];
   private readonly rivals: Rival[] = [];
   private readonly vehicle: THREE.Group;
   private readonly engineGlow: THREE.Group;
+  private readonly vehicleImpactGlow: THREE.Group;
+  private readonly vehicleImpactMaterial: THREE.MeshBasicMaterial;
   private streakGeometry: THREE.BufferGeometry | null = null;
   private streakLines: THREE.LineSegments | null = null;
   private streaks: StreakSpec[] = [];
@@ -151,6 +175,8 @@ export class BallisticGame {
   private lastBands: AudioBands = { bass: 0, mids: 0, highs: 0, overall: 0, pulse: 0, onBeat: false };
   private cameraRadial = 0;
   private damageKick = 0;
+  private impactFlashTimer = 0;
+  private impactSlide = 0;
   private graphicsSettings: GraphicsSettings;
   private controlBindings: ControlBindings;
   private inputCapture = false;
@@ -192,6 +218,8 @@ export class BallisticGame {
     const craft = this.createCraft(0x37f6ff, 0xa55cff, 1.16);
     this.vehicle = craft.group;
     this.engineGlow = craft.engineGlow;
+    this.vehicleImpactGlow = craft.impactGlow;
+    this.vehicleImpactMaterial = craft.impactMaterial;
     this.vehicle.traverse((object) => {
       if (!(object instanceof THREE.Mesh)) return;
       const materials = Array.isArray(object.material) ? object.material : [object.material];
@@ -942,7 +970,12 @@ export class BallisticGame {
     }
   }
 
-  private createCraft(primary: number, secondary: number, scale: number): { group: THREE.Group; engineGlow: THREE.Group } {
+  private createCraft(primary: number, secondary: number, scale: number): {
+    group: THREE.Group;
+    engineGlow: THREE.Group;
+    impactGlow: THREE.Group;
+    impactMaterial: THREE.MeshBasicMaterial;
+  } {
     const group = new THREE.Group();
     group.scale.setScalar(scale);
     const shellMaterial = new THREE.MeshBasicMaterial({ color: 0x010309, toneMapped: false });
@@ -1076,8 +1109,47 @@ export class BallisticGame {
     const reactor = new THREE.Mesh(new THREE.CircleGeometry(0.14, 14), reactorMaterial);
     engineGlow.add(reactor);
 
-    group.add(bodyOutline, wingOutline, body, rearHull, canopy, wings, sternPlate, leftFacet, rightFacet, wingEdge, engineGlow);
-    return { group, engineGlow };
+    const impactMaterial = new THREE.MeshBasicMaterial({
+      color: 0xff6a38,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthTest: false,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      toneMapped: false,
+    });
+    const impactGlow = new THREE.Group();
+    impactGlow.visible = false;
+    const impactBody = new THREE.Mesh(bodyGeometry, impactMaterial);
+    impactBody.position.copy(body.position);
+    impactBody.scale.setScalar(1.06);
+    const impactRear = new THREE.Mesh(rearHull.geometry, impactMaterial);
+    impactRear.position.copy(rearHull.position);
+    impactRear.scale.copy(rearHull.scale).multiplyScalar(1.055);
+    const impactWings = new THREE.Mesh(wingGeometry, impactMaterial);
+    impactWings.position.copy(wings.position);
+    impactWings.scale.setScalar(1.055);
+    const impactStern = new THREE.Mesh(sternPlate.geometry, impactMaterial);
+    impactStern.position.z = sternPlate.position.z + 0.01;
+    for (const mesh of [impactBody, impactRear, impactWings, impactStern]) mesh.userData.chaseLayer = 39;
+    impactGlow.add(impactBody, impactRear, impactWings, impactStern);
+
+    group.add(
+      bodyOutline,
+      wingOutline,
+      body,
+      rearHull,
+      canopy,
+      wings,
+      sternPlate,
+      leftFacet,
+      rightFacet,
+      wingEdge,
+      engineGlow,
+      impactGlow,
+    );
+    return { group, engineGlow, impactGlow, impactMaterial };
   }
 
   private resetRun(): void {
@@ -1096,6 +1168,11 @@ export class BallisticGame {
     this.bullets.length = 0;
     for (const burst of this.bursts) this.removeAndDispose(burst.points);
     this.bursts.length = 0;
+    for (const effect of this.chaseImpactEffects) {
+      this.removeAndDispose(effect.sparks);
+      this.removeAndDispose(effect.wave);
+    }
+    this.chaseImpactEffects.length = 0;
     const baseSpeed = this.plan.length / this.plan.runDuration;
     this.distance = 0;
     this.speed = baseSpeed * 0.72;
@@ -1114,6 +1191,10 @@ export class BallisticGame {
     this.overdriveTimer = 0;
     this.overheatTimer = 0;
     this.invulnerableTimer = 0;
+    this.impactFlashTimer = 0;
+    this.impactSlide = 0;
+    this.vehicleImpactGlow.visible = false;
+    this.vehicleImpactMaterial.opacity = 0;
     this.perfects = 0;
     this.nearMisses = 0;
     this.kills = 0;
@@ -1158,7 +1239,10 @@ export class BallisticGame {
         this.stepSimulation(FIXED_STEP);
         this.fixedAccumulator -= FIXED_STEP;
       }
-    } else if (this.state === 'menu' || this.state === 'finished') {
+    } else if (
+      this.state === 'menu'
+      || (this.state === 'finished' && this.impactFlashTimer <= 0 && this.chaseImpactEffects.length === 0)
+    ) {
       this.demoDistance = (this.demoDistance + dt * 74) % Math.max(1, this.plan.length - 100);
       this.angle = wrapAngle(this.angle + dt * 0.12);
     }
@@ -1170,7 +1254,7 @@ export class BallisticGame {
       if (this.state === 'playing' || this.state === 'countdown') this.hooks.onHud(this.getStats());
     }
     this.composer.render(dt);
-    if (this.vehicle.visible) {
+    if (this.vehicle.visible || this.chaseImpactEffects.length > 0) {
       const autoClear = this.renderer.autoClear;
       this.renderer.autoClear = false;
       this.renderer.clearDepth();
@@ -1300,29 +1384,29 @@ export class BallisticGame {
       const onEventCue = isInsideMusicEventWindow(event.musicTime, audibleTime);
       const delta = angularDistance(this.angle, event.angle);
       if (event.kind === 'gate') {
-        if (delta > event.gapWidth) this.hitObstacle(event);
+        if (isObstacleCollision(event, this.angle, audibleTime)) this.hitObstacle(event, audibleTime);
         else {
           event.resolved = true;
           if (delta > event.gapWidth * 0.69) this.registerNearMiss();
           else if (onEventCue) this.registerPerfect('GATE SYNC');
         }
       } else if (event.kind === 'halfwall') {
-        if (delta < event.gapWidth) this.hitObstacle(event);
+        if (isObstacleCollision(event, this.angle, audibleTime)) this.hitObstacle(event, audibleTime);
         else {
           event.resolved = true;
           if (delta < event.gapWidth + 0.16) this.registerNearMiss();
           else if (onEventCue) this.registerPerfect('WALL SYNC');
         }
       } else if (event.kind === 'blade' || event.kind === 'cross') {
-        const bladeDelta = this.rotorAngularDistance(event, this.audio.getTransportTime());
-        if (bladeDelta < event.gapWidth) this.hitObstacle(event);
+        const bladeDelta = this.rotorAngularDistance(event, audibleTime);
+        if (isObstacleCollision(event, this.angle, audibleTime)) this.hitObstacle(event, audibleTime);
         else {
           event.resolved = true;
           if (bladeDelta < event.gapWidth + 0.14) this.registerNearMiss();
           else if (onEventCue) this.registerPerfect(event.kind === 'cross' ? 'CROSS SYNC' : 'BLADE SYNC');
         }
       } else if (event.kind === 'bastion') {
-        if (delta < event.gapWidth) this.hitObstacle(event);
+        if (isObstacleCollision(event, this.angle, audibleTime)) this.hitObstacle(event, audibleTime);
         else {
           event.resolved = true;
           if (delta < event.gapWidth + 0.18) this.registerNearMiss();
@@ -1356,7 +1440,7 @@ export class BallisticGame {
 
   private rotorAngularDistance(event: TrackEvent, transportTime: number): number {
     const phase = event.rotationPhase + event.rotationRate * (transportTime - event.musicTime);
-    const armCount = Math.max(1, event.armCount);
+    const armCount = Math.max(2, event.armCount);
     let closest = Math.PI;
     for (let arm = 0; arm < armCount; arm += 1) {
       closest = Math.min(closest, angularDistance(this.angle, phase + (arm / armCount) * TAU));
@@ -1364,23 +1448,41 @@ export class BallisticGame {
     return closest;
   }
 
-  private hitObstacle(event: TrackEvent): void {
+  private hitObstacle(event: TrackEvent, transportTime: number): void {
     event.resolved = true;
     if (this.phaseTimer > 0 || this.invulnerableTimer > 0) {
       this.score += 160;
       this.hooks.onToast('PHASED', 'Материя пропущена', 'cyan');
       return;
     }
+    const impactAngle = this.angle;
+    const knockback = computeObstacleKnockback(
+      event,
+      impactAngle,
+      this.angularVelocity,
+      transportTime,
+    );
+    const impactDirection = knockback?.direction ?? 1;
+    if (knockback) {
+      this.angle = knockback.angle;
+      this.angularVelocity = knockback.angularVelocity;
+    }
     this.shield -= 1;
-    this.speed *= 0.58;
+    this.speed *= 0.72;
     this.heat = clamp(this.heat + 21, 0, 100);
     this.sync = 0;
     this.invulnerableTimer = 0.9;
     this.damageKick = 1;
+    this.impactFlashTimer = 0.46;
+    this.impactSlide = impactDirection;
     this.audio.playEffect('impact');
-    const visual = this.eventVisuals.get(event.id);
-    if (visual) this.spawnBurst(visual.getWorldPosition(new THREE.Vector3()), TRACKS[this.trackId].colors.danger, 22);
-    this.hooks.onToast('IMPACT', this.shield > 0 ? `SHIELD ${this.shield}/${this.maxShield}` : 'HULL FAILURE', 'red');
+    this.spawnImpactEffects(event, impactAngle, impactDirection);
+    this.hooks.onImpact(impactDirection);
+    this.hooks.onToast(
+      'IMPACT // DEFLECT',
+      this.shield > 0 ? `AUTO-SLIDE // SHIELD ${this.shield}/${this.maxShield}` : 'HULL FAILURE',
+      'red',
+    );
     if (this.shield <= 0) this.finishRun(false);
   }
 
@@ -1520,7 +1622,11 @@ export class BallisticGame {
   }
 
   private updateVisuals(dt: number): void {
-    const activeDistance = this.state === 'menu' || this.state === 'finished' ? this.demoDistance : this.distance;
+    const holdingFinalImpact = this.state === 'finished'
+      && (this.impactFlashTimer > 0 || this.chaseImpactEffects.length > 0);
+    const activeDistance = this.state === 'menu' || (this.state === 'finished' && !holdingFinalImpact)
+      ? this.demoDistance
+      : this.distance;
     const progress = clamp(activeDistance / this.plan.length, 0, 0.9998);
     const frame = sampleTrackFrame(this.plan, progress);
     const lookFrame = sampleTrackFrame(this.plan, clamp((activeDistance + 52) / this.plan.length, 0, 0.9999));
@@ -1529,12 +1635,20 @@ export class BallisticGame {
     const phaseTarget = this.phaseTimer > 0 ? this.plan.radius * 0.22 : this.plan.radius - 1.15;
     this.cameraRadial = damp(this.cameraRadial || phaseTarget, phaseTarget, this.phaseTimer > 0 ? 7 : 4, dt);
     const craftLean = clamp(this.angularVelocity * 0.045, -0.24, 0.24);
-    this.vehicle.position.x = damp(this.vehicle.position.x, -craftLean * 1.35, 7, dt);
+    this.impactFlashTimer = Math.max(0, this.impactFlashTimer - dt);
+    const impactEnvelope = clamp(this.impactFlashTimer / 0.46, 0, 1);
+    const impactRecoil = this.impactSlide * impactEnvelope;
+    this.vehicle.position.x = damp(this.vehicle.position.x, -craftLean * 1.35 - impactRecoil * 0.82, 10, dt);
     this.vehicle.position.y = damp(this.vehicle.position.y, -2.7, 7, dt);
     this.vehicle.position.z = damp(this.vehicle.position.z || -8.6, -8.6, 9, dt);
-    this.vehicle.rotation.set(-0.06, Math.PI, craftLean);
-    this.vehicle.visible = this.state !== 'menu' && this.state !== 'finished';
+    this.vehicle.rotation.set(-0.06 + impactEnvelope * 0.035, Math.PI, craftLean + impactRecoil * 0.16);
+    this.vehicle.visible = this.state !== 'menu' && (this.state !== 'finished' || holdingFinalImpact);
     this.engineGlow.scale.setScalar(0.75 + this.lastBands.bass * 0.8 + (this.overdriveTimer > 0 ? 1.1 : 0));
+    this.vehicleImpactGlow.visible = impactEnvelope > 0.001;
+    this.vehicleImpactGlow.scale.setScalar(1 + (1 - impactEnvelope) * 0.09);
+    this.vehicleImpactMaterial.opacity = (
+      this.graphicsSettings.reducedFlashes ? 0.18 : 0.52
+    ) * impactEnvelope * (0.76 + Math.sin(performance.now() * 0.075) * 0.24);
 
     const speedRatio = this.config ? clamp(this.speed / (this.plan.length / this.plan.runDuration * 1.55), 0, 1.25) : 0.34;
     const cameraRadialDistance = Math.max(0.6, this.cameraRadial - 3.35);
@@ -1545,6 +1659,7 @@ export class BallisticGame {
       : (speedRatio * 0.025 + this.damageKick * 0.16) * (0.3 + this.lastBands.bass);
     cameraTarget.add(circumferential.clone().multiplyScalar(Math.sin(performance.now() * 0.037) * shake));
     cameraTarget.add(inward.clone().multiplyScalar(Math.cos(performance.now() * 0.031) * shake));
+    cameraTarget.add(circumferential.clone().multiplyScalar(-impactRecoil * 0.28));
     if (this.camera.position.lengthSq() === 0) this.camera.position.copy(cameraTarget);
     this.camera.position.lerp(cameraTarget, 1 - Math.exp(-dt * 10));
     this.camera.up.lerp(inward, 1 - Math.exp(-dt * 7)).normalize();
@@ -1563,19 +1678,25 @@ export class BallisticGame {
       this.tunnelMaterial.uniforms.uSpeed.value = speedRatio;
     }
     this.bloomPass.enabled = this.graphicsSettings.bloom;
-    this.bloomPass.strength = this.graphicsSettings.reducedFlashes ? 0.62 : 0.92 + this.lastBands.pulse * 0.58 + speedRatio * 0.25;
+    this.bloomPass.strength = this.graphicsSettings.reducedFlashes
+      ? 0.62 + this.damageKick * 0.12
+      : 0.92 + this.lastBands.pulse * 0.58 + speedRatio * 0.25 + this.damageKick * 0.38;
     this.bloomPass.radius = 0.48 + this.lastBands.highs * 0.22;
     this.rgbPass.enabled = this.graphicsSettings.chromaticAberration && !this.graphicsSettings.reducedFlashes;
     this.rgbPass.uniforms.amount.value = this.rgbPass.enabled
       ? 0.00015 + speedRatio * 0.00055 + (this.overdriveTimer > 0 ? 0.0012 : 0) + this.damageKick * 0.0018
       : 0;
-    this.renderer.toneMappingExposure = 0.98 + this.lastBands.pulse * 0.15;
+    this.renderer.toneMappingExposure = 0.98
+      + this.lastBands.pulse * 0.15
+      + this.damageKick * (this.graphicsSettings.reducedFlashes ? 0.025 : 0.08);
 
     this.updateEventVisuals(dt, activeDistance);
     this.updateBulletVisuals();
     this.updateRivalVisuals();
     this.updateStreaks(activeDistance, speedRatio);
     this.updateBursts(dt);
+    this.updateChaseImpactEffects(dt);
+    this.impactSlide *= Math.exp(-dt * 6.5);
   }
 
   private updateEventVisuals(dt: number, activeDistance: number): void {
@@ -1644,24 +1765,155 @@ export class BallisticGame {
     attribute.needsUpdate = true;
   }
 
-  private spawnBurst(position: THREE.Vector3, color: number, count: number): void {
+  private spawnImpactEffects(
+    event: TrackEvent,
+    impactAngle: number,
+    direction: -1 | 1,
+  ): void {
+    const progress = clamp(this.distance / this.plan.length, 0, 0.9999);
+    const frame = sampleTrackFrame(this.plan, progress);
+    const radial = radialAt(frame, impactAngle);
+    const circumferential = frame.normal.clone()
+      .multiplyScalar(-Math.sin(impactAngle))
+      .add(frame.binormal.clone().multiplyScalar(Math.cos(impactAngle)))
+      .normalize();
+    const contact = frame.position.clone()
+      .add(radial.clone().multiplyScalar(this.plan.radius - 1.15))
+      .add(circumferential.clone().multiplyScalar(-direction * 0.72));
+    const backwardSpray = frame.tangent.clone().multiplyScalar(-0.86)
+      .add(circumferential.clone().multiplyScalar(-direction * 0.66))
+      .add(radial.clone().multiplyScalar(-0.18))
+      .normalize();
+    const qualityScale = this.graphicsSettings.quality === 'performance'
+      ? 0.68
+      : this.graphicsSettings.quality === 'quality'
+        ? 1.18
+        : 1;
+    const flashScale = this.graphicsSettings.reducedFlashes ? 0.58 : 1;
+    const dangerColor = event.kind === 'blade' || event.kind === 'cross' ? 0xffc14d : 0xff315f;
+
+    this.spawnBurst(contact, dangerColor, Math.round(30 * qualityScale * flashScale), {
+      direction: backwardSpray,
+      speed: 25,
+      spread: 11,
+      size: this.graphicsSettings.reducedFlashes ? 0.3 : 0.48,
+      life: 0.78,
+      drag: 2.25,
+    });
+    this.spawnBurst(contact, 0xfff2c0, Math.round(14 * qualityScale * flashScale), {
+      direction: backwardSpray,
+      speed: 34,
+      spread: 7,
+      size: this.graphicsSettings.reducedFlashes ? 0.2 : 0.28,
+      life: 0.48,
+      drag: 3.1,
+    });
+    this.spawnChaseImpactEffect(direction);
+  }
+
+  private spawnChaseImpactEffect(direction: -1 | 1): void {
+    const random = mulberry32((this.plan.seed ^ Math.imul(this.score + this.shield * 97 + 1, 0x9e3779b9)) >>> 0);
+    const qualityCount = this.graphicsSettings.quality === 'performance'
+      ? 9
+      : this.graphicsSettings.quality === 'quality'
+        ? 22
+        : 15;
+    const count = Math.max(7, Math.round(qualityCount * (this.graphicsSettings.reducedFlashes ? 0.62 : 1)));
+    const contact = this.vehicle.position.clone().add(new THREE.Vector3(direction * 1.55, 0.08, 0.42));
+    const positions = new Float32Array(count * 6);
+    const colors = new Float32Array(count * 6);
+    const velocities: THREE.Vector3[] = [];
+    const hot = new THREE.Color(0xfff4ce);
+    const ember = new THREE.Color(0xff542e);
+
+    for (let index = 0; index < count; index += 1) {
+      const jitter = new THREE.Vector3((random() - 0.5) * 0.18, (random() - 0.5) * 0.18, (random() - 0.5) * 0.12);
+      const start = contact.clone().add(jitter);
+      positions.set([start.x, start.y, start.z, start.x, start.y, start.z], index * 6);
+      colors.set([hot.r, hot.g, hot.b, ember.r, ember.g, ember.b], index * 6);
+      velocities.push(new THREE.Vector3(
+        direction * (3.5 + random() * 9) + (random() - 0.5) * 5,
+        (random() - 0.5) * 11,
+        9 + random() * 19,
+      ));
+    }
+
+    const sparkGeometry = new THREE.BufferGeometry();
+    sparkGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    sparkGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    const sparkMaterial = new THREE.LineBasicMaterial({
+      vertexColors: true,
+      transparent: true,
+      opacity: this.graphicsSettings.reducedFlashes ? 0.64 : 1,
+      blending: THREE.AdditiveBlending,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+    });
+    const sparks = new THREE.LineSegments(sparkGeometry, sparkMaterial);
+    sparks.renderOrder = 48;
+
+    const waveMaterial = new THREE.MeshBasicMaterial({
+      color: 0xff8a4a,
+      transparent: true,
+      opacity: this.graphicsSettings.reducedFlashes ? 0.24 : 0.66,
+      blending: THREE.AdditiveBlending,
+      depthTest: false,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      toneMapped: false,
+    });
+    const wave = new THREE.Mesh(new THREE.RingGeometry(0.24, 0.42, 32), waveMaterial);
+    wave.position.copy(contact);
+    wave.renderOrder = 47;
+    this.chaseScene.add(sparks, wave);
+    this.chaseImpactEffects.push({
+      sparks,
+      wave,
+      velocities,
+      life: 0.58,
+      maxLife: 0.58,
+      sparkPeakOpacity: sparkMaterial.opacity,
+    });
+  }
+
+  private spawnBurst(
+    position: THREE.Vector3,
+    color: number,
+    count: number,
+    options: Readonly<BurstOptions> = {},
+  ): void {
     const random = mulberry32((this.plan.seed + this.bursts.length * 101 + Math.floor(this.distance)) >>> 0);
     const positions = new Float32Array(count * 3);
     const velocities: THREE.Vector3[] = [];
+    const direction = options.direction?.clone().normalize();
     for (let index = 0; index < count; index += 1) {
       positions[index * 3] = position.x;
       positions[index * 3 + 1] = position.y;
       positions[index * 3 + 2] = position.z;
-      velocities.push(new THREE.Vector3(random() - 0.5, random() - 0.5, random() - 0.5).normalize().multiplyScalar(5 + random() * 16));
+      const scatter = new THREE.Vector3(random() - 0.5, random() - 0.5, random() - 0.5).normalize();
+      velocities.push(direction
+        ? direction.clone()
+          .multiplyScalar((options.speed ?? 20) * (0.62 + random() * 0.76))
+          .addScaledVector(scatter, (options.spread ?? 8) * (0.35 + random() * 0.65))
+        : scatter.multiplyScalar(5 + random() * 16));
     }
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     const points = new THREE.Points(
       geometry,
-      new THREE.PointsMaterial({ color, size: 0.34, transparent: true, opacity: 1, blending: THREE.AdditiveBlending, depthWrite: false }),
+      new THREE.PointsMaterial({
+        color,
+        size: options.size ?? 0.34,
+        transparent: true,
+        opacity: 1,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      }),
     );
     this.dynamicLayer.add(points);
-    this.bursts.push({ points, velocities, life: 0.8, maxLife: 0.8 });
+    const life = options.life ?? 0.8;
+    this.bursts.push({ points, velocities, life, maxLife: life, drag: options.drag ?? 2 });
   }
 
   private updateBursts(dt: number): void {
@@ -1676,13 +1928,54 @@ export class BallisticGame {
           attribute.getY(index) + burst.velocities[index].y * dt,
           attribute.getZ(index) + burst.velocities[index].z * dt,
         );
-        burst.velocities[index].multiplyScalar(Math.exp(-dt * 2));
+        burst.velocities[index].multiplyScalar(Math.exp(-dt * burst.drag));
       }
       attribute.needsUpdate = true;
       (burst.points.material as THREE.PointsMaterial).opacity = clamp(burst.life / burst.maxLife, 0, 1);
       if (burst.life <= 0) {
         this.removeAndDispose(burst.points);
         this.bursts.splice(burstIndex, 1);
+      }
+    }
+  }
+
+  private updateChaseImpactEffects(dt: number): void {
+    for (let effectIndex = this.chaseImpactEffects.length - 1; effectIndex >= 0; effectIndex -= 1) {
+      const effect = this.chaseImpactEffects[effectIndex];
+      effect.life -= dt;
+      const lifeRatio = clamp(effect.life / effect.maxLife, 0, 1);
+      const progress = 1 - lifeRatio;
+      const attribute = effect.sparks.geometry.getAttribute('position') as THREE.BufferAttribute;
+      for (let index = 0; index < effect.velocities.length; index += 1) {
+        const velocity = effect.velocities[index];
+        const startOffset = index * 2;
+        attribute.setXYZ(
+          startOffset,
+          attribute.getX(startOffset) + velocity.x * dt * 0.34,
+          attribute.getY(startOffset) + velocity.y * dt * 0.34,
+          attribute.getZ(startOffset) + velocity.z * dt * 0.34,
+        );
+        attribute.setXYZ(
+          startOffset + 1,
+          attribute.getX(startOffset + 1) + velocity.x * dt,
+          attribute.getY(startOffset + 1) + velocity.y * dt,
+          attribute.getZ(startOffset + 1) + velocity.z * dt,
+        );
+        velocity.multiplyScalar(Math.exp(-dt * 3.2));
+      }
+      attribute.needsUpdate = true;
+      (effect.sparks.material as THREE.LineBasicMaterial).opacity = (
+        effect.sparkPeakOpacity * lifeRatio * lifeRatio
+      );
+      effect.wave.scale.setScalar(0.72 + progress * 4.8);
+      (effect.wave.material as THREE.MeshBasicMaterial).opacity = (
+        this.graphicsSettings.reducedFlashes ? 0.2 : 0.58
+      ) * lifeRatio * lifeRatio;
+
+      if (effect.life <= 0) {
+        this.removeAndDispose(effect.sparks);
+        this.removeAndDispose(effect.wave);
+        this.chaseImpactEffects.splice(effectIndex, 1);
       }
     }
   }
@@ -1748,6 +2041,11 @@ export class BallisticGame {
     this.canvas.removeEventListener('pointerdown', this.handleCanvasPointerDown);
     this.disposeGroup(this.world);
     this.disposeGroup(this.dynamicLayer);
+    for (const effect of this.chaseImpactEffects) {
+      this.removeAndDispose(effect.sparks);
+      this.removeAndDispose(effect.wave);
+    }
+    this.chaseImpactEffects.length = 0;
     this.removeAndDispose(this.vehicle);
     this.composer.dispose();
     this.renderer.dispose();

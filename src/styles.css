@@ -93,6 +93,8 @@ label:focus-within {
   opacity: 0;
   box-shadow: inset 0 0 14vw rgba(255, 28, 75, 0.9);
   transition: opacity 180ms ease;
+  mix-blend-mode: screen;
+  will-change: opacity;
 }
 
 .is-low-shield #damage-flash {

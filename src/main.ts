@@ -65,6 +65,7 @@ function randomSeed(): number {
 const app = query<HTMLElement>('#app');
 const menu = query<HTMLElement>('#menu');
 const hud = query<HTMLElement>('#hud');
+const damageFlash = query<HTMLElement>('#damage-flash');
 const upgradeDraft = query<HTMLElement>('#upgrade-draft');
 const upgradeOptions = query<HTMLElement>('#upgrade-options');
 const installedUpgrades = query<HTMLElement>('#installed-upgrades');
@@ -91,6 +92,7 @@ let musicCatalogLoadFailed = false;
 let musicCatalogEntries: MusicCatalogEntry[] = [];
 let selectedMusicId = 'synthetic';
 let musicUiEpoch = 0;
+let damageFlashAnimation: Animation | null = null;
 
 const game = new BallisticGame(query<HTMLCanvasElement>('#game-canvas'), audio, {
   onHud: updateHud,
@@ -99,6 +101,7 @@ const game = new BallisticGame(query<HTMLCanvasElement>('#game-canvas'), audio, 
   onUpgradeState: renderUpgradeState,
   onFinish: showResults,
   onCountdown: showCountdown,
+  onImpact: showImpactFlash,
   onSection: (name, index) => {
     setText('#section-label', `SECTOR 0${index} // ${name}`);
     showToast(`SECTOR 0${index}`, name, index === 3 ? 'gold' : 'cyan');
@@ -418,6 +421,27 @@ function updateHud(stats: RunStats): void {
   app.classList.toggle('is-low-shield', stats.shield <= 1);
   const pips = query<HTMLElement>('#shield-pips');
   pips.innerHTML = Array.from({ length: stats.maxShield }, (_, index) => `<i class="${index < stats.shield ? 'is-active' : ''}"></i>`).join('');
+}
+
+function showImpactFlash(direction: -1 | 1): void {
+  damageFlashAnimation?.cancel();
+  const peakOpacity = settings.graphics.reducedFlashes ? 0.15 : 0.46;
+  const contactSide = direction > 0 ? 'right' : 'left';
+  damageFlash.style.background = `linear-gradient(to ${contactSide}, transparent 34%, rgba(255, 55, 36, 0.18) 72%, rgba(255, 220, 142, 0.52) 100%)`;
+  const animation = damageFlash.animate(
+    [
+      { opacity: peakOpacity },
+      { opacity: peakOpacity * 0.32, offset: 0.34 },
+      { opacity: 0 },
+    ],
+    { duration: settings.graphics.reducedFlashes ? 200 : 300, easing: 'cubic-bezier(.16,.84,.26,1)' },
+  );
+  damageFlashAnimation = animation;
+  animation.addEventListener('finish', () => {
+    if (damageFlashAnimation !== animation) return;
+    damageFlashAnimation = null;
+    damageFlash.style.removeProperty('background');
+  }, { once: true });
 }
 
 function showToast(message: string, detail = '', tone: 'cyan' | 'gold' | 'red' | 'violet' = 'cyan'): void {

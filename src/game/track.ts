@@ -92,7 +92,10 @@ export interface TrackSafeCorridor {
  * music-synchronised impact instant. Keeping this alongside collision geometry
  * prevents the route planner, warnings and tests from drifting apart.
  */
-export function getTrackEventSafeCorridors(event: Readonly<TrackEvent>): TrackSafeCorridor[] {
+export function getTrackEventSafeCorridors(
+  event: Readonly<TrackEvent>,
+  transportTime = event.musicTime,
+): TrackSafeCorridor[] {
   if (event.kind === 'gate') {
     return [{ center: wrapAngle(event.angle), halfWidth: event.gapWidth }];
   }
@@ -103,8 +106,9 @@ export function getTrackEventSafeCorridors(event: Readonly<TrackEvent>): TrackSa
     const armCount = Math.max(2, event.armCount);
     const interval = TAU / armCount;
     const halfWidth = Math.max(0, interval * 0.5 - event.gapWidth);
+    const phase = event.rotationPhase + event.rotationRate * (transportTime - event.musicTime);
     return Array.from({ length: armCount }, (_, index) => ({
-      center: wrapAngle(event.rotationPhase + (index + 0.5) * interval),
+      center: wrapAngle(phase + (index + 0.5) * interval),
       halfWidth,
     }));
   }
