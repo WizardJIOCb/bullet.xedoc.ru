@@ -125,6 +125,18 @@ export interface ServerRaceState extends ClientRaceState {
   serverTime: number;
 }
 
+/** A server-stamped terminal state accepted as the player's final state for a match. */
+export type TerminalServerRaceState = ServerRaceState & (
+  | { destroyed: true }
+  | { finished: true }
+);
+
+export function isTerminalServerRaceState(
+  state: ServerRaceState,
+): state is TerminalServerRaceState {
+  return state.destroyed || state.finished;
+}
+
 interface WithRequestId {
   requestId?: string;
 }

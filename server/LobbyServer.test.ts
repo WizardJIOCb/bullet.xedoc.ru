@@ -219,14 +219,27 @@ describe('LobbyServer race state relay', () => {
       destroyed: false, finished: true,
     };
     send(host, { type: 'race:state', state: terminal });
+    expect(host.last('race:state')?.state).toEqual(expect.objectContaining({
+      matchId,
+      playerId: host.last('welcome')!.playerId,
+      serverTime: 10_000,
+      finished: true,
+    }));
     expect(host.last('room:snapshot')!.room.phase).toBe('racing');
     const guestRelayCount = guest.messages('race:state').length;
+    const hostRelayCount = host.messages('race:state').length;
     const hostErrorCount = host.messages('error').length;
     send(host, { type: 'race:state', state: terminal });
     expect(guest.messages('race:state')).toHaveLength(guestRelayCount);
+    expect(host.messages('race:state')).toHaveLength(hostRelayCount);
     expect(host.messages('error')).toHaveLength(hostErrorCount);
-    advance(100);
     send(guest, { type: 'race:state', state: { ...terminal, rank: 2 } });
+    expect(guest.last('race:state')?.state).toEqual(expect.objectContaining({
+      matchId,
+      playerId: guest.last('welcome')!.playerId,
+      serverTime: 10_001,
+      finished: true,
+    }));
     expect(host.last('room:snapshot')!.room.phase).toBe('lobby');
     expect(guest.last('room:snapshot')!.room.players.every((player) => !player.ready)).toBe(true);
     const guestErrorCount = guest.messages('error').length;

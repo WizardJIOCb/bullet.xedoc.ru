@@ -6,6 +6,7 @@ import {
   decodeClientMessage,
   decodeServerMessage,
   encodeOnlineMessage,
+  isTerminalServerRaceState,
   normalizeChatText,
   normalizePlayerName,
 } from './protocol';
@@ -82,6 +83,17 @@ describe('online protocol boundary', () => {
       },
     };
     expect(decodeServerMessage(encodeOnlineMessage(message))).toEqual({ ok: true, value: message });
+  });
+
+  it('narrows server-stamped race states to terminal acknowledgements', () => {
+    const state = {
+      matchId: 'm1', sequence: 3, angle: 0, progress: 1, speed: 0,
+      shield: 1, heat: 0, flux: 30, score: 900, rank: 1, section: 3,
+      destroyed: false, finished: true,
+      playerId: 'p1', playerName: 'Nova', serverTime: 1_500,
+    };
+    expect(isTerminalServerRaceState(state)).toBe(true);
+    expect(isTerminalServerRaceState({ ...state, finished: false })).toBe(false);
   });
 
   it('normalizes display strings without allowing control characters', () => {

@@ -1,7 +1,7 @@
 import './styles.css';
 import { AudioEngine, AudioImportError, type CatalogAudioTrack } from './audio/AudioEngine';
 import { ABILITIES, TRACKS, WEAPONS, type AbilityId, type GarageState, type RemoteRacerState, type RunConfig, type RunResult, type RunStats, type TrackId, type UpgradeDefinition, type UpgradeId, type WeaponId } from './core/types';
-import { BallisticGame } from './game/Game';
+import { BallisticGame, type RivalStartDescriptor } from './game/Game';
 import { TouchInputRouter, type TouchInputAction } from './input/TouchInputRouter';
 import { MusicPreviewController } from './ui/MusicPreview';
 import { RaceTimelineController } from './ui/RaceTimeline';
@@ -83,6 +83,8 @@ const upgradeOptions = query<HTMLElement>('#upgrade-options');
 const installedUpgrades = query<HTMLElement>('#installed-upgrades');
 const resultsScreen = query<HTMLElement>('#results-screen');
 const raceTimeline = new RaceTimelineController(query<HTMLElement>('#race-course-markers'));
+const rivalMarkers = query<HTMLElement>('#rival-markers');
+const rivalMarkerElements = new Map<string, HTMLElement>();
 const startButton = query<HTMLButtonElement>('#start-run');
 const musicLibrary = query<HTMLFieldSetElement>('#music-library');
 const musicCatalog = query<HTMLSelectElement>('#music-catalog');
@@ -134,6 +136,7 @@ const game = new BallisticGame(query<HTMLCanvasElement>('#game-canvas'), audio, 
   onTimeline: (timeline) => raceTimeline.render(timeline),
   onToast: showToast,
   onUpgradeState: renderUpgradeState,
+  onTerminal: broadcastLocalRaceState,
   onFinish: showResults,
   onCountdown: showCountdown,
   onImpact: showImpactFlash,
@@ -488,6 +491,7 @@ function updateHud(stats: RunStats): void {
   setText('#heat-value', Math.round(stats.heat).toString().padStart(2, '0'));
   setText('#flux-value', Math.round(stats.flux).toString());
   query<HTMLElement>('#progress-fill').style.width = `${stats.progress * 100}%`;
+  updateRivalMarkers(stats.rivals ?? []);
   raceTimeline.update(stats.progress);
   query<HTMLElement>('#heat-fill').style.height = `${stats.heat}%`;
   query<HTMLElement>('#flux-fill').style.height = `${stats.flux}%`;
@@ -510,6 +514,33 @@ function updateHud(stats: RunStats): void {
   const pips = query<HTMLElement>('#shield-pips');
   pips.innerHTML = Array.from({ length: stats.maxShield }, (_, index) => `<i class="${index < stats.shield ? 'is-active' : ''}"></i>`).join('');
   if (currentRunIsOnline) broadcastLocalRaceState();
+}
+
+function updateRivalMarkers(markers: NonNullable<RunStats['rivals']>): void {
+  const seen = new Set<string>();
+  for (const [index, marker] of markers.entries()) {
+    seen.add(marker.id);
+    let element = rivalMarkerElements.get(marker.id);
+    if (!element) {
+      element = document.createElement('b');
+      element.className = 'rival-dot';
+      rivalMarkers.append(element);
+      rivalMarkerElements.set(marker.id, element);
+    }
+    const progress = Math.min(1, Math.max(0, marker.progress));
+    const color = `#${Math.max(0, marker.color).toString(16).padStart(6, '0').slice(-6)}`;
+    element.style.left = `${progress * 100}%`;
+    element.style.setProperty('--rival-color', color);
+    element.style.setProperty('--rival-boost', String(Math.min(1, Math.max(0, marker.boost))));
+    element.style.setProperty('--rival-row', String(index % 3));
+    element.dataset.mode = marker.mode;
+    element.title = `${marker.name} // ${marker.mode.toUpperCase()}`;
+  }
+  for (const [id, element] of rivalMarkerElements) {
+    if (seen.has(id)) continue;
+    element.remove();
+    rivalMarkerElements.delete(id);
+  }
 }
 
 function showImpactFlash(direction: -1 | 1): void {
@@ -632,7 +663,11 @@ function showResults(result: RunResult): void {
   resultsScreen.classList.add('is-active');
 }
 
-async function startConfiguredRun(config: RunConfig, online = false): Promise<void> {
+async function startConfiguredRun(
+  config: RunConfig,
+  online = false,
+  aiRivals: readonly RivalStartDescriptor[] = [],
+): Promise<void> {
   lastConfig = config;
   currentRunIsOnline = online;
   musicPreview.stop();
@@ -649,7 +684,13 @@ async function startConfiguredRun(config: RunConfig, online = false): Promise<vo
   mobileAbilityName.textContent = ABILITIES[config.ability].name.split(' ')[0].toUpperCase();
   setText('#section-label', 'SECTOR 01 // IGNITION');
   try {
-    await game.startRun(config);
+    await game.startRun(config, {
+      online,
+      aiRivals,
+      serverTime: online ? () => lobbyClient?.estimatedServerTime() ?? Date.now() : undefined,
+      raceStartsAt: online ? onlineMatch?.startsAt : undefined,
+      competitorCount: online ? (onlineMatch?.humans.length ?? 1) + aiRivals.length : undefined,
+    });
   } catch (error) {
     console.error(error);
     game.backToMenu();
@@ -1392,7 +1433,11 @@ function syncRemoteRacers(): void {
   if (!onlineMatch || !lobbyClient?.playerId || !currentRunIsOnline) return;
   const currentMembers = new Set(onlineRoom?.players.map((player) => player.id) ?? []);
   const racers: RemoteRacerState[] = onlineMatch.humans
-    .filter((human) => human.id !== lobbyClient?.playerId && currentMembers.has(human.id))
+    .filter((human) => {
+      if (human.id === lobbyClient?.playerId) return false;
+      const state = remoteRaceStates.get(human.id);
+      return currentMembers.has(human.id) || Boolean(state?.destroyed || state?.finished);
+    })
     .map((human) => {
       const state = remoteRaceStates.get(human.id);
       return {
@@ -1405,6 +1450,7 @@ function syncRemoteRacers(): void {
         active: state ? !state.destroyed && !state.finished : true,
         destroyed: state?.destroyed ?? false,
         finished: state?.finished ?? false,
+        finishedAt: state?.finished ? state.serverTime : undefined,
       };
     });
   game.setRemoteRacers(racers);
@@ -1452,7 +1498,7 @@ async function handleOnlineRaceStart(config: AuthoritativeRaceConfig): Promise<v
   window.clearTimeout(onlineStartTimer);
   onlineStartTimer = window.setTimeout(() => {
     const runConfig: RunConfig = { ...mine.runConfig, aiOpponents: config.aiOpponents };
-    void startConfiguredRun(runConfig, true).then(syncRemoteRacers);
+    void startConfiguredRun(runConfig, true, config.bots).then(syncRemoteRacers);
   }, delay);
 }
 
@@ -1481,7 +1527,9 @@ function bindLobbyClient(client: LobbyClient): void {
     renderOnlineRoom(room);
     if (onlineMatch) {
       const memberIds = new Set(room.players.map((player) => player.id));
-      for (const playerId of remoteRaceStates.keys()) if (!memberIds.has(playerId)) remoteRaceStates.delete(playerId);
+      for (const [playerId, state] of remoteRaceStates) {
+        if (!memberIds.has(playerId) && !state.destroyed && !state.finished) remoteRaceStates.delete(playerId);
+      }
       syncRemoteRacers();
     }
   });
@@ -1502,6 +1550,14 @@ function bindLobbyClient(client: LobbyClient): void {
     if (!isCurrent() || !onlineMatch || state.matchId !== onlineMatch.id || state.playerId === client.playerId) return;
     remoteRaceStates.set(state.playerId, state);
     syncRemoteRacers();
+  });
+  client.on('raceTerminal', ({ state, terminalStates, own }) => {
+    if (!isCurrent() || !onlineMatch || state.matchId !== onlineMatch.id) return;
+    for (const terminal of terminalStates) {
+      if (terminal.playerId !== client.playerId) remoteRaceStates.set(terminal.playerId, terminal);
+    }
+    syncRemoteRacers();
+    if (own) game.confirmAuthoritativeTerminal(state.serverTime);
   });
   client.on('rejoinFailed', () => {
     if (!isCurrent()) return;

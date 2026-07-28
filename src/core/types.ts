@@ -130,6 +130,8 @@ export interface RemoteRacerState {
   active?: boolean;
   destroyed?: boolean;
   finished?: boolean;
+  /** Authoritative server timestamp for a completed online run. */
+  finishedAt?: number;
 }
 
 export interface GarageState {
@@ -194,6 +196,18 @@ export interface RunStats {
   rhythmPulse: number;
   phaseActive: boolean;
   overheated: boolean;
+  rivals?: RivalRaceMarker[];
+}
+
+export type RivalRaceMode = 'cruise' | 'read' | 'pulse' | 'draft' | 'block' | 'overtake' | 'edge' | 'vent';
+
+export interface RivalRaceMarker {
+  id: string;
+  name: string;
+  progress: number;
+  mode: RivalRaceMode;
+  color: number;
+  boost: number;
 }
 
 export interface RunResult {

@@ -43,6 +43,18 @@ import {
   type DeathSequenceState,
 } from './deathSequence';
 import {
+  RIVAL_ARCHETYPE_LABELS,
+  applyRivalHazardImpact,
+  createRivalAIProfile,
+  createRivalAIState,
+  stepRivalAI,
+  type RivalAIOutput,
+  type RivalAIProfile,
+  type RivalAIRaceModel,
+  type RivalAISnapshot,
+  type RivalAIState,
+} from './rivalAI';
+import {
   generateTrack,
   getTrackEventSafeCorridors,
   radialAt,
@@ -59,6 +71,7 @@ interface GameHooks {
   onTimeline: (timeline: TrackTimeline) => void;
   onToast: (message: string, detail?: string, tone?: 'cyan' | 'gold' | 'red' | 'violet') => void;
   onUpgradeState: (pending: UpgradeDefinition[], installed: UpgradeDefinition[]) => void;
+  onTerminal: () => void;
   onFinish: (result: RunResult) => void;
   onCountdown: (value: string | null) => void;
   onSection: (name: string, index: number) => void;
@@ -77,10 +90,27 @@ interface Bullet {
 
 interface Rival {
   mesh: THREE.Group;
-  distance: number;
-  angle: number;
-  speedFactor: number;
-  phase: number;
+  engineGlow: THREE.Group;
+  thrustTrails: THREE.Mesh[];
+  profile: RivalAIProfile;
+  ai: RivalAIState;
+  lastOutput: RivalAIOutput | null;
+  color: number;
+}
+
+export interface RunStartOptions {
+  online?: boolean;
+  aiRivals?: readonly RivalStartDescriptor[];
+  serverTime?: () => number;
+  raceStartsAt?: number;
+  /** Stable size of the starting grid, including the local player. */
+  competitorCount?: number;
+}
+
+export interface RivalStartDescriptor {
+  id?: string;
+  name?: string;
+  difficulty?: number;
 }
 
 interface RemoteRacer {
@@ -97,6 +127,7 @@ interface RemoteRacer {
   active: boolean;
   destroyed: boolean;
   finished: boolean;
+  finishedAt: number | null;
 }
 
 interface Burst {
@@ -154,11 +185,15 @@ interface StreakSpec {
 }
 
 const FIXED_STEP = 1 / 120;
+const RUN_COUNTDOWN_SECONDS = 2.8;
+const ONLINE_AI_CATCHUP_STEPS_PER_FRAME = 120;
+const ONLINE_TERMINAL_ACK_TIMEOUT = 1.5;
 const UPGRADES_AT = [0.31, 0.64];
 const TEMPORAL_FOCUS_DURATION = 1.2;
 const TEMPORAL_HANDLING_MULTIPLIER = 1.28;
 const TEMPORAL_SCORE_MULTIPLIER = 1.35;
 const MAX_AI_RIVALS = 7;
+const AI_HAZARD_KINDS = new Set<TrackEvent['kind']>(['gate', 'halfwall', 'blade', 'cross', 'bastion']);
 const AI_RIVAL_OFFSETS = [32, -24, 65, -52, 88, 12, -78] as const;
 const AI_RIVAL_SPEEDS = [0.987, 1.016, 1.004, 0.998, 1.009, 0.992, 1.021] as const;
 const AI_RIVAL_COLORS: ReadonlyArray<readonly [number, number]> = [
@@ -196,6 +231,7 @@ export class BallisticGame {
   private readonly world = new THREE.Group();
   private readonly dynamicLayer = new THREE.Group();
   private readonly eventVisuals = new Map<number, THREE.Object3D>();
+  private readonly trackEventsById = new Map<number, TrackEvent>();
   private readonly keys = new Set<string>();
   private readonly mobileInput = new Map<TouchInputAction, boolean>();
   private readonly bullets: Bullet[] = [];
@@ -215,6 +251,7 @@ export class BallisticGame {
   private streaks: StreakSpec[] = [];
   private tunnelMaterial: THREE.ShaderMaterial | null = null;
   private plan: TrackPlan;
+  private rivalAiModel: RivalAIRaceModel | null = null;
   private timelinePreview!: TrackTimeline;
   private trackId: TrackId = 'aurora';
   private config: RunConfig | null = null;
@@ -275,6 +312,22 @@ export class BallisticGame {
   private deathSequence: DeathSequenceState | null = null;
   private pendingResult: RunResult | null = null;
   private resultDelay = 0;
+  private simulationTick = 0;
+  private rivalAiTick = 0;
+  private rivalAiCatchupBudget = ONLINE_AI_CATCHUP_STEPS_PER_FRAME;
+  private onlineRun = false;
+  private aiRivals: RivalStartDescriptor[] = [];
+  private onlineTimeProvider: (() => number) | null = null;
+  private onlineRaceOriginTime: number | null = null;
+  private localFinishTime: number | null = null;
+  private localFinishAiTick: number | null = null;
+  private raceCompetitorCount = 1;
+  private awaitingTerminalAck = false;
+  private terminalAckTimeout = 0;
+  private rivalDraftCharge = 0;
+  private rivalDraftCooldown = 0;
+  private rivalCalloutCooldown = 0;
+  private rivalContactCooldown = 0;
 
   constructor(canvas: HTMLCanvasElement, audio: AudioEngine, hooks: GameHooks, settings: Pick<SettingsState, 'graphics' | 'controls'>) {
     this.canvas = canvas;
@@ -411,6 +464,7 @@ export class BallisticGame {
           active: state.active ?? true,
           destroyed: state.destroyed ?? false,
           finished: state.finished ?? false,
+          finishedAt: state.finished && Number.isFinite(state.finishedAt) ? state.finishedAt as number : null,
         };
         this.remoteRacers.set(id, racer);
       } else {
@@ -422,6 +476,9 @@ export class BallisticGame {
         racer.active = state.active ?? true;
         racer.destroyed = state.destroyed ?? false;
         racer.finished = state.finished ?? false;
+        racer.finishedAt = racer.finished && Number.isFinite(state.finishedAt)
+          ? state.finishedAt as number
+          : racer.finished ? racer.finishedAt : null;
       }
       racer.mesh.userData.remoteRacer = {
         id: racer.id,
@@ -433,6 +490,7 @@ export class BallisticGame {
         active: racer.active,
         destroyed: racer.destroyed,
         finished: racer.finished,
+        finishedAt: racer.finishedAt,
       };
     }
 
@@ -441,6 +499,15 @@ export class BallisticGame {
       this.removeAndDispose(racer.mesh);
       this.remoteRacers.delete(id);
     }
+  }
+
+  /** Replaces the client's estimated finish clock with the server-accepted terminal stamp. */
+  confirmAuthoritativeTerminal(serverTime: number): void {
+    if (!this.onlineRun || !Number.isFinite(serverTime)) return;
+    this.localFinishTime = serverTime;
+    this.localFinishAiTick = this.onlineAiTickAt(serverTime);
+    this.awaitingTerminalAck = false;
+    this.terminalAckTimeout = 0;
   }
 
   setGraphicsSettings(settings: GraphicsSettings): void {
@@ -505,16 +572,32 @@ export class BallisticGame {
     return this.controlBindings[action].some((code) => code && this.keys.has(code));
   }
 
-  async startRun(config: RunConfig): Promise<void> {
+  async startRun(config: RunConfig, options: RunStartOptions = {}): Promise<void> {
     this.releaseInputs();
     this.visibilityPaused = false;
     this.config = config;
+    this.onlineRun = options.online ?? false;
+    this.aiRivals = [...(options.aiRivals ?? [])]
+      .slice(0, MAX_AI_RIVALS)
+      .map((rival) => ({
+        id: rival.id?.trim().slice(0, 80),
+        name: rival.name?.replace(/\s+/g, ' ').trim().slice(0, 24),
+        difficulty: clamp(Number.isFinite(rival.difficulty) ? rival.difficulty as number : 0.6, 0.35, 0.96),
+      }));
+    this.onlineTimeProvider = this.onlineRun && options.serverTime ? options.serverTime : null;
+    this.onlineRaceOriginTime = this.onlineRun && Number.isFinite(options.raceStartsAt)
+      ? options.raceStartsAt as number + RUN_COUNTDOWN_SECONDS * 1_000
+      : null;
     this.trackId = config.track;
     this.buildWorld(config.track, config.seed);
+    const configuredCompetitors = Number.isFinite(options.competitorCount)
+      ? Math.trunc(options.competitorCount as number)
+      : 1 + this.rivals.length;
+    this.raceCompetitorCount = Math.max(1 + this.rivals.length, configuredCompetitors);
     this.resetRun();
     await this.audio.start(true);
     this.state = 'countdown';
-    this.countdown = 2.8;
+    this.countdown = RUN_COUNTDOWN_SECONDS;
     this.hooks.onCountdown('3');
   }
 
@@ -602,6 +685,19 @@ export class BallisticGame {
     this.queuedUpgradePicks = 0;
     this.runUpgrades.clear();
     this.setRemoteRacers([]);
+    this.onlineRun = false;
+    this.aiRivals = [];
+    this.onlineTimeProvider = null;
+    this.onlineRaceOriginTime = null;
+    this.localFinishTime = null;
+    this.localFinishAiTick = null;
+    this.raceCompetitorCount = 1;
+    this.awaitingTerminalAck = false;
+    this.terminalAckTimeout = 0;
+    this.rivalDraftCharge = 0;
+    this.rivalDraftCooldown = 0;
+    this.rivalCalloutCooldown = 0;
+    this.rivalContactCooldown = 0;
     this.emitUpgradeState();
     this.hooks.onCountdown(null);
   }
@@ -658,6 +754,9 @@ export class BallisticGame {
     const profile = this.audio.getProfile();
     const theme = TRACKS[trackId];
     this.plan = generateTrack(theme, profile, seed);
+    this.trackEventsById.clear();
+    for (const event of this.plan.events) this.trackEventsById.set(event.id, event);
+    this.rivalAiModel = this.createRivalAiModel(theme.handling);
     this.timelinePreview = createTrackTimeline(this.plan, profile);
     this.hooks.onTimeline(this.timelinePreview);
     this.disposeGroup(this.world);
@@ -685,6 +784,49 @@ export class BallisticGame {
     this.createStreakField(theme.colors.primary, seed);
     this.createRivals();
     this.demoDistance = Math.min(this.plan.length * 0.045, 520);
+  }
+
+  private createRivalAiModel(handling: number): RivalAIRaceModel {
+    const hazards = this.plan.events
+      .filter((event) => AI_HAZARD_KINDS.has(event.kind))
+      .map((event) => {
+        const corridors = getTrackEventSafeCorridors(event);
+        const referenceAngle = wrapAngle(event.safeAngle ?? corridors[0]?.center ?? event.angle);
+        const corridor = corridors.reduce<(typeof corridors)[number] | undefined>((nearest, candidate) => {
+          if (!nearest) return candidate;
+          return angularDistance(candidate.center, referenceAngle) < angularDistance(nearest.center, referenceAngle)
+            ? candidate
+            : nearest;
+        }, undefined);
+        return {
+          id: event.id,
+          kind: event.kind,
+          distance: event.distance,
+          safeAngle: referenceAngle,
+          safeHalfWidth: corridor?.halfWidth ?? Math.max(0.2, event.gapWidth),
+          safeAngularVelocity: event.safeAngularVelocity ?? 0,
+          warningDistance: event.warningDistance,
+          strength: event.strength,
+        };
+      });
+    return {
+      length: this.plan.length,
+      baseSpeed: this.plan.length / this.plan.runDuration,
+      handling,
+      hazards,
+      beats: this.plan.beatDistances.map((beat) => ({
+        id: beat.beatIndex,
+        time: beat.time,
+        strength: beat.strength,
+        barBeat: beat.barBeat,
+      })),
+      transitions: this.plan.transitionDistances.map((transition) => ({
+        id: transition.transitionIndex,
+        time: transition.time,
+        kind: transition.kind,
+        strength: transition.strength,
+      })),
+    };
   }
 
   private createTunnelMaterial(primary: number, secondary: number): THREE.ShaderMaterial {
@@ -1182,9 +1324,22 @@ export class BallisticGame {
     const count = Number.isFinite(requestedCount)
       ? clamp(Math.trunc(requestedCount as number), 0, MAX_AI_RIVALS)
       : 3;
+    if (!this.rivalAiModel) return;
     for (let index = 0; index < count; index += 1) {
       const colors = AI_RIVAL_COLORS[index];
-      const craft = this.createCraft(colors[0], colors[1], 0.72).group;
+      const generatedProfile = createRivalAIProfile(
+        this.plan.seed,
+        index,
+        AI_RIVAL_SPEEDS[index],
+        this.aiRivals[index]?.difficulty,
+      );
+      const profile: RivalAIProfile = {
+        ...generatedProfile,
+        id: this.aiRivals[index]?.id || generatedProfile.id,
+        callSign: this.aiRivals[index]?.name || generatedProfile.callSign,
+      };
+      const craftParts = this.createCraft(colors[0], colors[1], 0.72);
+      const craft = craftParts.group;
       const fadedMaterials = new Set<THREE.Material>();
       craft.traverse((object) => {
         if (!(object instanceof THREE.Mesh)) return;
@@ -1197,13 +1352,24 @@ export class BallisticGame {
           material.depthWrite = false;
         }
       });
+      const nameplate = this.createRacerNameplate(
+        `${profile.callSign} // ${RIVAL_ARCHETYPE_LABELS[profile.archetype]}`,
+        colors[0],
+      );
+      if (nameplate) craft.add(nameplate);
+      craft.userData.rivalAI = { id: profile.id, callSign: profile.callSign, archetype: profile.archetype };
       this.dynamicLayer.add(craft);
       this.rivals.push({
         mesh: craft,
-        distance: AI_RIVAL_OFFSETS[index],
-        angle: (index / Math.max(1, count)) * TAU,
-        speedFactor: AI_RIVAL_SPEEDS[index],
-        phase: index * 2.17,
+        engineGlow: craftParts.engineGlow,
+        thrustTrails: craftParts.thrustTrails,
+        profile,
+        ai: createRivalAIState(profile, {
+          distance: AI_RIVAL_OFFSETS[index],
+          angle: (index / Math.max(1, count)) * TAU,
+        }, this.rivalAiModel.baseSpeed),
+        lastOutput: null,
+        color: colors[0],
       });
     }
   }
@@ -1796,10 +1962,26 @@ export class BallisticGame {
     this.lastCollisionCursor = 0;
     this.lastCollisionAudioTime = 0;
     this.fixedAccumulator = 0;
+    this.simulationTick = 0;
+    this.rivalAiTick = 0;
+    this.rivalAiCatchupBudget = ONLINE_AI_CATCHUP_STEPS_PER_FRAME;
+    this.localFinishTime = null;
+    this.localFinishAiTick = null;
+    this.awaitingTerminalAck = false;
+    this.terminalAckTimeout = 0;
+    this.rivalDraftCharge = 0;
+    this.rivalDraftCooldown = 0;
+    this.rivalCalloutCooldown = 0;
+    this.rivalContactCooldown = 0;
     this.runUpgrades.clear();
     this.emitUpgradeState();
     for (let index = 0; index < this.rivals.length; index += 1) {
-      this.rivals[index].distance = AI_RIVAL_OFFSETS[index];
+      const rival = this.rivals[index];
+      rival.ai = createRivalAIState(rival.profile, {
+        distance: AI_RIVAL_OFFSETS[index],
+        angle: (index / Math.max(1, this.rivals.length)) * TAU,
+      }, baseSpeed);
+      rival.lastOutput = null;
     }
     for (const racer of this.remoteRacers.values()) {
       racer.progress = 0;
@@ -1808,6 +1990,7 @@ export class BallisticGame {
       racer.speed = 0;
       racer.destroyed = false;
       racer.finished = false;
+      racer.finishedAt = null;
     }
   }
 
@@ -1832,11 +2015,26 @@ export class BallisticGame {
     }
 
     if (this.state === 'playing') {
+      this.rivalAiCatchupBudget = ONLINE_AI_CATCHUP_STEPS_PER_FRAME;
       this.fixedAccumulator = Math.min(this.fixedAccumulator + dt, FIXED_STEP * 8);
       while (this.fixedAccumulator >= FIXED_STEP && this.state === 'playing') {
         this.fixedAccumulator -= FIXED_STEP;
         this.stepSimulation(FIXED_STEP);
       }
+    } else if (
+      this.onlineRun
+      && this.pendingResult
+      && (this.state === 'finished' || this.state === 'dying')
+      && dt > 0
+    ) {
+      this.rivalAiCatchupBudget = ONLINE_AI_CATCHUP_STEPS_PER_FRAME;
+      this.updateRivals(
+        FIXED_STEP,
+        this.distance,
+        this.rivalAiTick * FIXED_STEP,
+        false,
+        this.localFinishAiTick ?? undefined,
+      );
     } else if (
       this.state === 'menu'
       || (this.state === 'finished' && this.impactFlashTimer <= 0 && this.chaseImpactEffects.length === 0)
@@ -1846,6 +2044,9 @@ export class BallisticGame {
     }
 
     let resultReady = false;
+    if (this.awaitingTerminalAck) {
+      this.terminalAckTimeout = Math.max(0, this.terminalAckTimeout - dt);
+    }
     if (this.state === 'dying' && this.deathSequence) {
       const deathFrame = stepDeathSequence(this.deathSequence, dt);
       this.deathSequence = deathFrame.state;
@@ -1854,6 +2055,8 @@ export class BallisticGame {
       this.resultDelay = Math.max(0, this.resultDelay - dt);
       resultReady = this.resultDelay <= 0;
     }
+    if (resultReady && this.awaitingTerminalAck && this.terminalAckTimeout > 0) resultReady = false;
+    if (resultReady && !this.onlineRivalsReadyForResult()) resultReady = false;
 
     this.updateVisuals(dt);
     this.uiAccumulator += dt;
@@ -1889,6 +2092,7 @@ export class BallisticGame {
 
   private stepSimulation(dt: number): void {
     if (!this.config) return;
+    this.simulationTick += 1;
     const baseSpeed = this.plan.length / this.plan.runDuration;
     const theme = TRACKS[this.config.track];
     const left = this.isActionPressed('left') || this.mobileInput.get('left');
@@ -1922,7 +2126,8 @@ export class BallisticGame {
     const cruisingSpeed = baseSpeed * (cooling ? 0.68 : 1);
     const boosting = boostHeld && this.flux > 0 && this.overheatTimer <= 0;
     const overdrive = this.overdriveTimer > 0;
-    const musicDistance = clamp(this.audio.getTransportTime() / this.plan.runDuration, 0, 1) * this.plan.length;
+    const transportTime = this.audio.getTransportTime();
+    const musicDistance = clamp(transportTime / this.plan.runDuration, 0, 1) * this.plan.length;
     const phaseError = musicDistance - this.distance;
     const phaseAssist = clamp(phaseError * 0.65, -baseSpeed * 0.26, baseSpeed * 0.26);
     const rawTargetSpeed = overdrive ? maxSpeed * 1.08 : boosting ? maxSpeed : cruisingSpeed;
@@ -1968,7 +2173,7 @@ export class BallisticGame {
     this.processCollisions();
     if (this.state !== 'playing') return;
     this.updateBullets(dt);
-    this.updateRivals(dt, baseSpeed);
+    this.updateRivals(dt, musicDistance, transportTime);
 
     const progress = this.distance / this.plan.length;
     const newSection = progress < 0.33 ? 1 : progress < 0.67 ? 2 : 3;
@@ -2174,12 +2379,229 @@ export class BallisticGame {
     }
   }
 
-  private updateRivals(dt: number, baseSpeed: number): void {
-    for (const rival of this.rivals) {
-      const modulation = 1 + Math.sin(this.audio.getTime() * 0.7 + rival.phase) * 0.025;
-      rival.distance = Math.min(this.plan.length, rival.distance + baseSpeed * rival.speedFactor * modulation * dt);
-      rival.angle = wrapAngle(rival.angle + Math.sin(this.audio.getTime() * 0.5 + rival.phase) * dt * 0.12);
+  private onlineAiTickAt(serverTime: number): number {
+    if (this.onlineRaceOriginTime === null || !Number.isFinite(serverTime)) return this.rivalAiTick;
+    const elapsed = Math.max(0, (serverTime - this.onlineRaceOriginTime) / 1_000);
+    return clamp(
+      Math.floor(elapsed / FIXED_STEP),
+      0,
+      Math.ceil(this.plan.runDuration / FIXED_STEP),
+    );
+  }
+
+  private onlineAiTargetTick(): number {
+    if (!this.onlineRun || !this.onlineTimeProvider || this.onlineRaceOriginTime === null) {
+      return this.rivalAiTick + 1;
     }
+    return Math.max(this.rivalAiTick, this.onlineAiTickAt(this.onlineTimeProvider()));
+  }
+
+  private onlineRivalsReadyForResult(): boolean {
+    if (
+      !this.onlineRun
+      || !this.onlineTimeProvider
+      || this.onlineRaceOriginTime === null
+      || this.rivals.every((rival) => rival.ai.finishTick !== null)
+    ) return true;
+    return this.rivalAiTick >= (this.localFinishAiTick ?? this.onlineAiTargetTick());
+  }
+
+  private updateRivals(
+    dt: number,
+    paceReference: number,
+    transportTime: number,
+    interactive = true,
+    targetTickOverride?: number,
+  ): void {
+    if (!this.rivalAiModel || this.rivals.length === 0) return;
+    this.rivalDraftCooldown = Math.max(0, this.rivalDraftCooldown - dt);
+    this.rivalCalloutCooldown = Math.max(0, this.rivalCalloutCooldown - dt);
+    this.rivalContactCooldown = Math.max(0, this.rivalContactCooldown - dt);
+
+    const player: RivalAISnapshot = {
+      id: 'player',
+      distance: this.distance,
+      speed: this.speed,
+      angle: this.angle,
+      angularVelocity: this.angularVelocity,
+    };
+    const targetAiTick = this.onlineRun
+      ? Number.isFinite(targetTickOverride)
+        ? clamp(
+          Math.trunc(targetTickOverride as number),
+          this.rivalAiTick,
+          Math.ceil(this.plan.runDuration / FIXED_STEP),
+        )
+        : this.onlineAiTargetTick()
+      : this.rivalAiTick + 1;
+    const availableCatchup = this.onlineRun
+      ? Math.max(0, Math.trunc(Number.isFinite(this.rivalAiCatchupBudget)
+        ? this.rivalAiCatchupBudget
+        : ONLINE_AI_CATCHUP_STEPS_PER_FRAME))
+      : 1;
+    const finalAiTick = Math.min(targetAiTick, this.rivalAiTick + availableCatchup);
+    const catchupStartTick = this.rivalAiTick;
+    let outputs: RivalAIOutput[] = [];
+    while (this.rivalAiTick < finalAiTick) {
+      this.rivalAiTick += 1;
+      const aiTransportTime = this.onlineRun ? this.rivalAiTick * FIXED_STEP : transportTime;
+      const aiPaceReference = this.onlineRun
+        ? clamp(aiTransportTime / this.plan.runDuration, 0, 1) * this.plan.length
+        : paceReference;
+      const snapshots: RivalAISnapshot[] = this.rivals.map((rival) => ({
+        id: rival.profile.id,
+        distance: rival.ai.distance,
+        speed: rival.ai.speed,
+        angle: rival.ai.angle,
+        angularVelocity: rival.ai.angularVelocity,
+      }));
+      outputs = this.rivals.map((rival) => this.resolveRivalHazards(
+        rival,
+        stepRivalAI(
+          this.rivalAiModel as RivalAIRaceModel,
+          rival.profile,
+          rival.ai,
+          {
+            dt: this.onlineRun ? FIXED_STEP : dt,
+            tick: this.rivalAiTick,
+            transportTime: aiTransportTime,
+            paceReference: aiPaceReference,
+            player,
+            traffic: snapshots.filter((snapshot) => snapshot.id !== rival.profile.id),
+            allowPlayerTactics: !this.onlineRun,
+          },
+        ),
+        aiTransportTime,
+      ));
+      for (let index = 0; index < this.rivals.length; index += 1) {
+        this.rivals[index].ai = outputs[index].state;
+      }
+    }
+    if (this.onlineRun) {
+      this.rivalAiCatchupBudget = Math.max(
+        0,
+        availableCatchup - (this.rivalAiTick - catchupStartTick),
+      );
+    }
+
+    if (outputs.length > 0) {
+      for (let index = 0; index < this.rivals.length; index += 1) {
+        const rival = this.rivals[index];
+        const output = outputs[index];
+        rival.lastOutput = output;
+        rival.mesh.userData.rivalAI = {
+          ...rival.mesh.userData.rivalAI,
+          mode: output.state.mode,
+          targetAngle: output.targetAngle,
+          activeHazardId: output.activeHazardId,
+        };
+        if (interactive && output.hitHazard) this.showRivalImpact(rival);
+        if (interactive && output.modeChanged) this.announceRivalManeuver(rival);
+      }
+    }
+
+    if (!interactive) return;
+    const draftTarget = this.rivals
+      .filter((rival) => {
+        const ahead = rival.ai.distance - this.distance;
+        return ahead > 10 && ahead < 112 && angularDistance(rival.ai.angle, this.angle) < 0.36;
+      })
+      .sort((left, right) => left.ai.distance - right.ai.distance)[0];
+    if (draftTarget && this.rivalDraftCooldown <= 0) {
+      this.rivalDraftCharge = clamp(this.rivalDraftCharge + dt * 1.18, 0, 1);
+      if (this.rivalDraftCharge >= 1) {
+        this.rivalDraftCharge = 0;
+        this.rivalDraftCooldown = 2.6;
+        this.flux = Math.min(100, this.flux + 10);
+        this.speed *= 1.022;
+        this.score += 180;
+        this.audio.accentMusic(0.72);
+        this.hooks.onToast('RIVAL SLIPSTREAM', `${draftTarget.profile.callSign} WAKE // FLUX +10`, 'cyan');
+      }
+    } else {
+      this.rivalDraftCharge = Math.max(0, this.rivalDraftCharge - dt * 1.7);
+    }
+    this.resolveRivalContact();
+  }
+
+  private resolveRivalHazards(rival: Rival, output: RivalAIOutput, transportTime: number): RivalAIOutput {
+    const hitHazard = output.crossedHazardIds.some((id) => {
+      const event = this.trackEventsById.get(id);
+      if (!event || (!this.onlineRun && event.destroyed)) return false;
+      return isObstacleCollision(event, output.state.angle, transportTime);
+    });
+    if (!hitHazard) return output;
+    const state = applyRivalHazardImpact(output.state, rival.profile);
+    return {
+      ...output,
+      state,
+      modeChanged: state.mode !== rival.ai.mode,
+      hitHazard: true,
+    };
+  }
+
+  private resolveRivalContact(): void {
+    if (this.onlineRun || this.rivalContactCooldown > 0 || this.phaseTimer > 0 || this.invulnerableTimer > 0) return;
+    const rival = this.rivals
+      .filter((candidate) => (
+        Math.abs(candidate.ai.distance - this.distance) < 8.5
+        && angularDistance(candidate.ai.angle, this.angle) < 0.24
+      ))
+      .sort((left, right) => (
+        Math.abs(left.ai.distance - this.distance) - Math.abs(right.ai.distance - this.distance)
+      ))[0];
+    if (!rival) return;
+
+    const separation = wrapAngle(this.angle - rival.ai.angle);
+    const direction = (Math.abs(separation) < 0.02 ? -rival.profile.passSide : separation > 0 ? 1 : -1) as -1 | 1;
+    this.rivalContactCooldown = 0.82;
+    this.angle = wrapAngle(this.angle + direction * 0.07);
+    this.angularVelocity = clamp(this.angularVelocity + direction * 0.92, -2.4, 2.4);
+    this.speed *= 0.965;
+    this.heat = Math.min(100, this.heat + 4);
+    rival.ai = {
+      ...rival.ai,
+      angle: wrapAngle(rival.ai.angle - direction * 0.05),
+      angularVelocity: clamp(rival.ai.angularVelocity - direction * 0.78, -2.4, 2.4),
+      speed: rival.ai.speed * 0.965,
+      heat: Math.min(100, rival.ai.heat + 4),
+      impactTimer: Math.max(rival.ai.impactTimer, 0.28),
+      tacticCooldown: Math.max(rival.ai.tacticCooldown, 0.7),
+    };
+    this.damageKick = Math.max(this.damageKick, 0.32);
+    this.impactFlashTimer = Math.max(this.impactFlashTimer, 0.18);
+    this.audio.playEffect('impact', 0.38);
+    const frame = sampleTrackFrame(this.plan, clamp(rival.ai.distance / this.plan.length, 0, 0.9999));
+    const position = frame.position.clone().add(radialAt(frame, rival.ai.angle).multiplyScalar(this.plan.radius - 1.4));
+    this.spawnBurst(position, rival.color, 9);
+    this.hooks.onImpact(direction);
+    this.hooks.onToast('RIVAL CONTACT', `${rival.profile.callSign} // SOFT DEFLECT`, 'red');
+  }
+
+  private showRivalImpact(rival: Rival): void {
+    const frame = sampleTrackFrame(this.plan, clamp(rival.ai.distance / this.plan.length, 0, 0.9999));
+    const position = frame.position.clone().add(radialAt(frame, rival.ai.angle).multiplyScalar(this.plan.radius - 1.4));
+    this.spawnBurst(position, 0xff6a38, 12);
+    const ahead = rival.ai.distance - this.distance;
+    if (this.rivalCalloutCooldown > 0 || ahead < -80 || ahead > 320) return;
+    this.rivalCalloutCooldown = 1.4;
+    this.hooks.onToast(`${rival.profile.callSign} // IMPACT`, 'RIVAL LOST SPEED // RECOVERING', 'red');
+  }
+
+  private announceRivalManeuver(rival: Rival): void {
+    if (this.rivalCalloutCooldown > 0) return;
+    const ahead = rival.ai.distance - this.distance;
+    if (ahead < -80 || ahead > 260) return;
+    const callouts: Partial<Record<RivalAIState['mode'], [string, string, 'cyan' | 'gold' | 'red' | 'violet']>> = {
+      block: [`${rival.profile.callSign} // BLOCK`, 'RIVAL IS CLOSING YOUR LINE', 'red'],
+      overtake: [`${rival.profile.callSign} // STRIKE`, 'SLIPSTREAM RELEASE // OVERTAKE', 'gold'],
+      pulse: [`${rival.profile.callSign} // PULSE`, 'BEAT-SYNC THRUST', 'violet'],
+      edge: [`${rival.profile.callSign} // EDGE`, 'HIGH-RISK CORRIDOR CUT', 'gold'],
+    };
+    const callout = callouts[rival.ai.mode];
+    if (!callout) return;
+    this.rivalCalloutCooldown = 1.65;
+    this.hooks.onToast(...callout);
   }
 
   private openUpgrade(): void {
@@ -2226,13 +2648,29 @@ export class BallisticGame {
     this.pendingUpgradeOptions = [];
     this.queuedUpgradePicks = 0;
     this.emitUpgradeState();
-    const result = this.createRunResult(survived);
     if (!survived) {
+      this.state = 'dying';
+      this.localFinishTime = this.onlineTimeProvider?.() ?? null;
+      this.localFinishAiTick = this.localFinishTime === null
+        ? this.rivalAiTick
+        : this.onlineAiTickAt(this.localFinishTime);
+      this.awaitingTerminalAck = this.onlineRun;
+      this.terminalAckTimeout = this.onlineRun ? ONLINE_TERMINAL_ACK_TIMEOUT : 0;
+      this.hooks.onTerminal();
+      const result = this.createRunResult(false);
       this.beginDeathSequence(result);
       return;
     }
     this.releaseInputs();
     this.state = 'finished';
+    this.localFinishTime = this.onlineTimeProvider?.() ?? null;
+    this.localFinishAiTick = this.localFinishTime === null
+      ? this.rivalAiTick
+      : this.onlineAiTickAt(this.localFinishTime);
+    this.awaitingTerminalAck = this.onlineRun;
+    this.terminalAckTimeout = this.onlineRun ? ONLINE_TERMINAL_ACK_TIMEOUT : 0;
+    this.hooks.onTerminal();
+    const result = this.createRunResult(true);
     this.audio.stop();
     this.pendingResult = result;
     this.resultDelay = 0.42;
@@ -2241,9 +2679,7 @@ export class BallisticGame {
   private createRunResult(survived: boolean): RunResult {
     const rank = this.getRank();
     const accuracy = this.shots > 0 ? this.hits / this.shots : 0;
-    const remoteCompetitors = [...(this.remoteRacers?.values() ?? [])].filter((racer) => !racer.destroyed).length;
-    const totalCompetitors = 1 + this.rivals.length + remoteCompetitors;
-    const placementBonus = Math.max(0, totalCompetitors - rank) * 1200;
+    const placementBonus = Math.max(0, this.raceCompetitorCount - rank) * 1200;
     const finalScore = Math.round(this.score + (survived ? 5000 : 0) + placementBonus);
     const credits = Math.max(90, Math.round(finalScore / 42 + this.kills * 8));
     return {
@@ -2258,6 +2694,20 @@ export class BallisticGame {
       survived,
       trackName: TRACKS[this.trackId].name,
       seed: this.plan.seed,
+    };
+  }
+
+  private refreshRunResultPlacement(result: Readonly<RunResult>): RunResult {
+    const rank = this.getRank();
+    if (rank === result.rank) return { ...result };
+    const previousBonus = Math.max(0, this.raceCompetitorCount - result.rank) * 1200;
+    const placementBonus = Math.max(0, this.raceCompetitorCount - rank) * 1200;
+    const score = Math.max(0, result.score - previousBonus + placementBonus);
+    return {
+      ...result,
+      rank,
+      score,
+      credits: Math.max(90, Math.round(score / 42 + this.kills * 8)),
     };
   }
 
@@ -2287,11 +2737,13 @@ export class BallisticGame {
   }
 
   private deliverPendingResult(): void {
-    const result = this.pendingResult;
-    if (!result) return;
+    if (!this.pendingResult) return;
+    const result = this.refreshRunResultPlacement(this.pendingResult);
     const wasDying = this.state === 'dying';
     this.pendingResult = null;
     this.resultDelay = 0;
+    this.awaitingTerminalAck = false;
+    this.terminalAckTimeout = 0;
     this.deathSequence = null;
     this.state = 'finished';
     this.releaseInputs();
@@ -2452,14 +2904,28 @@ export class BallisticGame {
 
   private updateRivalVisuals(dt: number): void {
     for (const rival of this.rivals) {
-      const ahead = rival.distance - this.distance;
+      const ahead = rival.ai.distance - this.distance;
       rival.mesh.visible = this.state === 'menu' ? false : ahead > -100 && ahead < 800;
       if (!rival.mesh.visible) continue;
-      const frame = sampleTrackFrame(this.plan, clamp(rival.distance / this.plan.length, 0, 0.9999));
-      const radial = radialAt(frame, rival.angle);
-      const circumferential = frame.normal.clone().multiplyScalar(-Math.sin(rival.angle)).add(frame.binormal.clone().multiplyScalar(Math.cos(rival.angle))).normalize();
+      const frame = sampleTrackFrame(this.plan, clamp(rival.ai.distance / this.plan.length, 0, 0.9999));
+      const radial = radialAt(frame, rival.ai.angle);
+      const circumferential = frame.normal.clone().multiplyScalar(-Math.sin(rival.ai.angle))
+        .add(frame.binormal.clone().multiplyScalar(Math.cos(rival.ai.angle))).normalize();
       rival.mesh.position.copy(frame.position).add(radial.clone().multiplyScalar(this.plan.radius - 1.4));
       rival.mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(circumferential, radial, frame.tangent));
+      const boost = rival.ai.boost;
+      const beatGlow = rival.ai.beatImpulse * 7;
+      rival.engineGlow.scale.setScalar(1 + boost * 0.28 + beatGlow * 0.12);
+      for (const child of rival.engineGlow.children) {
+        if (!(child instanceof THREE.Mesh)) continue;
+        const material = child.material as THREE.MeshBasicMaterial;
+        material.opacity = clamp(0.18 + boost * 0.34 + beatGlow * 0.1, 0.12, 0.72);
+      }
+      for (const trail of rival.thrustTrails) {
+        const material = trail.material as THREE.MeshBasicMaterial;
+        material.opacity = 0.1 + boost * 0.32;
+        trail.scale.set(1 + boost * 0.18, 1 + boost * 0.18, 1 + boost * 1.25);
+      }
     }
     const interpolation = 1 - Math.exp(-Math.max(0, dt) * 14);
     for (const racer of this.remoteRacers.values()) {
@@ -2733,12 +3199,24 @@ export class BallisticGame {
   }
 
   private getRank(): number {
+    const localFinished = this.distance >= this.plan.length;
+    const localFinishTime = localFinished ? this.localFinishTime : null;
     const remoteAhead = [...(this.remoteRacers?.values() ?? [])].filter((racer) => (
       !racer.destroyed
       && (racer.active || racer.finished)
-      && racer.targetProgress * this.plan.length > this.distance + 2
+      && (
+        localFinished && racer.finished
+          ? localFinishTime !== null && racer.finishedAt !== null && racer.finishedAt < localFinishTime
+          : racer.targetProgress * this.plan.length > this.distance + 2
+      )
     )).length;
-    return 1 + this.rivals.filter((rival) => rival.distance > this.distance + 2).length + remoteAhead;
+    const localAiAhead = localFinished
+      ? this.rivals.filter((rival) => (
+        rival.ai.finishTick !== null
+        && rival.ai.finishTick < (this.localFinishAiTick ?? this.rivalAiTick)
+      )).length
+      : this.rivals.filter((rival) => rival.ai.distance > this.distance + 2).length;
+    return 1 + localAiAhead + remoteAhead;
   }
 
   private getStats(): RunStats {
@@ -2760,6 +3238,14 @@ export class BallisticGame {
       rhythmPulse: this.lastBands.pulse,
       phaseActive: this.phaseTimer > 0,
       overheated: this.overheatTimer > 0,
+      rivals: this.rivals.map((rival) => ({
+        id: rival.profile.id,
+        name: rival.profile.callSign,
+        progress: clamp(rival.ai.distance / this.plan.length, 0, 1),
+        mode: rival.ai.mode,
+        color: rival.color,
+        boost: rival.ai.boost,
+      })),
     };
   }
 

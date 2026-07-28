@@ -2658,19 +2658,58 @@ kbd {
   animation: race-marker-pulse 900ms ease-in-out infinite;
 }
 
-.rival-dot {
+.rival-markers {
   position: absolute;
   z-index: 4;
-  top: -3px;
-  width: 7px;
-  height: 7px;
-  transform: rotate(45deg);
-  background: var(--violet);
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
 }
 
-.rival-dot--one { left: 24%; }
-.rival-dot--two { left: 51%; background: var(--gold); }
-.rival-dot--three { left: 73%; background: #6effb0; }
+.rival-dot {
+  --rival-color: var(--violet);
+  --rival-boost: 0;
+  --rival-row: 0;
+  position: absolute;
+  top: calc(-5px + var(--rival-row) * 4px);
+  left: 0;
+  width: 7px;
+  height: 7px;
+  transform: translate(-50%, -50%) rotate(45deg) scale(calc(1 + var(--rival-boost) * 0.28));
+  background: var(--rival-color);
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  box-shadow: 0 0 calc(5px + var(--rival-boost) * 8px) var(--rival-color);
+  transition: left 90ms linear, background 140ms ease, box-shadow 140ms ease;
+}
+
+.rival-dot[data-mode="block"] {
+  outline: 2px solid rgba(255, 52, 90, 0.66);
+  outline-offset: 2px;
+}
+
+.rival-dot[data-mode="overtake"],
+.rival-dot[data-mode="edge"] {
+  border-color: #fff4a6;
+  box-shadow: 0 0 11px var(--gold), 0 0 18px var(--rival-color);
+}
+
+.rival-dot[data-mode="pulse"] {
+  animation: rival-pulse 420ms ease-in-out infinite alternate;
+}
+
+.rival-dot[data-mode="read"] {
+  border-radius: 50%;
+}
+
+.rival-dot[data-mode="vent"] {
+  opacity: 0.48;
+  filter: saturate(0.35);
+}
+
+@keyframes rival-pulse {
+  from { filter: brightness(1); }
+  to { filter: brightness(1.8) drop-shadow(0 0 5px var(--rival-color)); }
+}
 
 .rank {
   display: flex;

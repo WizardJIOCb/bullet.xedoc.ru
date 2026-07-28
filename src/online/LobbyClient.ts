@@ -1,9 +1,17 @@
-import type { ClientMessage, OnlineLoadout, OnlineRoomSettings, ClientRaceState, ServerMessage } from './protocol';
+import type {
+  ClientMessage,
+  OnlineLoadout,
+  OnlineRoomSettings,
+  ClientRaceState,
+  ServerMessage,
+  TerminalServerRaceState,
+} from './protocol';
 import {
   ONLINE_LIMITS,
   ONLINE_PROTOCOL_VERSION,
   decodeServerMessage,
   encodeOnlineMessage,
+  isTerminalServerRaceState,
   normalizePlayerName,
 } from './protocol';
 
@@ -49,6 +57,15 @@ export interface LobbyProtocolError {
   raw?: unknown;
 }
 
+export interface LobbyRaceTerminalEvent {
+  /** The newly accepted, server-stamped terminal state. */
+  state: TerminalServerRaceState;
+  /** Every terminal state currently known for this match, ordered by server acceptance time. */
+  terminalStates: readonly TerminalServerRaceState[];
+  /** True when `state` is the authoritative echo of this client's own terminal packet. */
+  own: boolean;
+}
+
 export interface LobbyClientEvents {
   connection: LobbyConnectionEvent;
   message: ServerMessage;
@@ -59,6 +76,7 @@ export interface LobbyClientEvents {
   hostChanged: Extract<ServerMessage, { type: 'host:changed' }>;
   raceStarted: Extract<ServerMessage, { type: 'race:started' }>;
   raceState: Extract<ServerMessage, { type: 'race:state' }>;
+  raceTerminal: LobbyRaceTerminalEvent;
   rejoinFailed: Extract<ServerMessage, { type: 'error' }>;
   serverError: Extract<ServerMessage, { type: 'error' }>;
   protocolError: LobbyProtocolError;
@@ -93,6 +111,7 @@ export class LobbyClient {
     hostChanged: new Set(),
     raceStarted: new Set(),
     raceState: new Set(),
+    raceTerminal: new Set(),
     rejoinFailed: new Set(),
     serverError: new Set(),
     protocolError: new Set(),
@@ -112,6 +131,7 @@ export class LobbyClient {
   private desiredRoomCode: string | null = null;
   private pendingJoin: { requestId: string; code: string; rejoin: boolean } | null = null;
   private terminalMatchId: string | null = null;
+  private readonly terminalStatesByMatch = new Map<string, Map<string, TerminalServerRaceState>>();
   private awaitingWelcome = false;
   private readonly pendingPings = new Map<string, number>();
 
@@ -142,6 +162,22 @@ export class LobbyClient {
 
   delayUntil(serverTimestamp: number): number {
     return Math.max(0, serverTimestamp - this.estimatedServerTime());
+  }
+
+  /** Returns a defensive, server-time ordered snapshot of accepted terminal states. */
+  getTerminalRaceStates(matchId: string): readonly TerminalServerRaceState[] {
+    const states = this.terminalStatesByMatch.get(matchId);
+    if (!states) return [];
+    return [...states.values()]
+      .sort((left, right) => left.serverTime - right.serverTime || left.playerId.localeCompare(right.playerId))
+      .map((state) => ({ ...state }));
+  }
+
+  /** Returns this client's authoritative terminal echo once the server has accepted it. */
+  getOwnTerminalRaceState(matchId: string): TerminalServerRaceState | null {
+    if (!this.playerId) return null;
+    const state = this.terminalStatesByMatch.get(matchId)?.get(this.playerId);
+    return state ? { ...state } : null;
   }
 
   on<K extends keyof LobbyClientEvents>(event: K, listener: Listener<K>): () => void {
@@ -299,6 +335,7 @@ export class LobbyClient {
         break;
       case 'room:left':
         this.cancelRoomRejoin();
+        this.terminalStatesByMatch.clear();
         this.emit('roomLeft', message);
         break;
       case 'chat:message': this.emit('chat', message); break;
@@ -307,9 +344,26 @@ export class LobbyClient {
         this.raceSequence = 0;
         this.lastRaceStateAt = Number.NEGATIVE_INFINITY;
         this.terminalMatchId = null;
+        this.terminalStatesByMatch.clear();
         this.emit('raceStarted', message);
         break;
-      case 'race:state': this.emit('raceState', message); break;
+      case 'race:state': {
+        this.emit('raceState', message);
+        if (isTerminalServerRaceState(message.state)) {
+          let terminalStates = this.terminalStatesByMatch.get(message.state.matchId);
+          if (!terminalStates) {
+            terminalStates = new Map();
+            this.terminalStatesByMatch.set(message.state.matchId, terminalStates);
+          }
+          terminalStates.set(message.state.playerId, message.state);
+          this.emit('raceTerminal', {
+            state: { ...message.state },
+            terminalStates: this.getTerminalRaceStates(message.state.matchId),
+            own: message.state.playerId === this.playerId,
+          });
+        }
+        break;
+      }
       case 'error': {
         const failedJoin = Boolean(
           this.pendingJoin

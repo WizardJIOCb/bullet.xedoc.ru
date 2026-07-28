@@ -102,6 +102,56 @@ describe('LobbyClient', () => {
     expect(states.map((message) => message.state.sequence)).toEqual([1, 2]);
   });
 
+  it('emits and caches authoritative terminal echoes on the server clock', async () => {
+    const socket = new FakeSocket();
+    const client = new LobbyClient({
+      url: 'ws://test/multiplayer', name: 'Nova', loadout,
+      socketFactory: () => socket, autoReconnect: false,
+    });
+    const terminalListener = vi.fn();
+    client.on('raceTerminal', terminalListener);
+    const connected = client.connect();
+    socket.open();
+    socket.message({ type: 'welcome', version: ONLINE_PROTOCOL_VERSION, playerId: 'p1', serverTime: 10 });
+    await connected;
+
+    const baseState = {
+      matchId: 'm1', sequence: 2, angle: 0, progress: 1, speed: 0, shield: 1,
+      heat: 20, flux: 40, score: 2_000, rank: 1, section: 3,
+      destroyed: false as const, finished: true as const,
+    };
+    socket.message({
+      type: 'race:state',
+      state: { ...baseState, playerId: 'p1', playerName: 'Nova', serverTime: 1_500 },
+    });
+    socket.message({
+      type: 'race:state',
+      state: {
+        ...baseState,
+        sequence: 4,
+        playerId: 'p2',
+        playerName: 'Rift',
+        serverTime: 1_490,
+      },
+    });
+
+    expect(client.getOwnTerminalRaceState('m1')).toEqual(expect.objectContaining({
+      playerId: 'p1', serverTime: 1_500, finished: true,
+    }));
+    expect(client.getTerminalRaceStates('m1').map((state) => state.playerId)).toEqual(['p2', 'p1']);
+    expect(terminalListener).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      own: true,
+      state: expect.objectContaining({ playerId: 'p1', serverTime: 1_500 }),
+    }));
+    expect(terminalListener).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      own: false,
+      terminalStates: expect.arrayContaining([
+        expect.objectContaining({ playerId: 'p1' }),
+        expect.objectContaining({ playerId: 'p2' }),
+      ]),
+    }));
+  });
+
   it('only reports ROOM_RUNNING as a rejoin failure when it answers the automatic join', async () => {
     vi.useFakeTimers();
     try {

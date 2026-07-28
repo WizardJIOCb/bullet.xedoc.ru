@@ -4,6 +4,7 @@ export type {
   LobbyClientOptions,
   LobbyConnectionEvent,
   LobbyConnectionState,
+  LobbyRaceTerminalEvent,
 } from './LobbyClient';
 export {
   ONLINE_LIMITS,
@@ -11,6 +12,7 @@ export {
   decodeClientMessage,
   decodeServerMessage,
   encodeOnlineMessage,
+  isTerminalServerRaceState,
 } from './protocol';
 export type {
   AuthoritativeRaceConfig,
@@ -24,4 +26,5 @@ export type {
   OnlineRoomSummary,
   ServerMessage,
   ServerRaceState,
+  TerminalServerRaceState,
 } from './protocol';

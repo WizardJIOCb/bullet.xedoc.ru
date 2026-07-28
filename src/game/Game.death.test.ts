@@ -19,7 +19,7 @@ interface DeathHarness {
     fadeOutMusic: Mock;
     playDeathExplosion: Mock;
   };
-  hooks: { onFinish: Mock };
+  hooks: { onFinish: Mock; onTerminal: Mock };
   emitUpgradeState: Mock;
   releaseInputs: Mock;
   deathFx: { start: Mock; reset: Mock };
@@ -54,7 +54,7 @@ function harness(): DeathHarness {
       fadeOutMusic: vi.fn(),
       playDeathExplosion: vi.fn(),
     },
-    hooks: { onFinish: vi.fn() },
+    hooks: { onFinish: vi.fn(), onTerminal: vi.fn() },
     emitUpgradeState: vi.fn(),
     releaseInputs: vi.fn(),
     deathFx: { start: vi.fn(() => 'reactor-bloom'), reset: vi.fn() },
@@ -83,6 +83,7 @@ describe('BallisticGame death sequence', () => {
       impactDirection: -1,
     });
     expect(game.audio.stop).not.toHaveBeenCalled();
+    expect(game.hooks.onTerminal).toHaveBeenCalledOnce();
     expect(game.hooks.onFinish).not.toHaveBeenCalled();
   });
 
@@ -98,6 +99,7 @@ describe('BallisticGame death sequence', () => {
     expect(game.state).toBe('finished');
     expect(game.pendingResult).toBeNull();
     expect(game.audio.stop).toHaveBeenCalledOnce();
+    expect(game.hooks.onTerminal).toHaveBeenCalledOnce();
     expect(game.hooks.onFinish).toHaveBeenCalledOnce();
     expect(game.hooks.onFinish).toHaveBeenCalledWith(snapshot);
     expect(game.hooks.onFinish.mock.calls[0][0].score).not.toBe(999_999);

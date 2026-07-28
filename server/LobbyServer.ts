@@ -72,6 +72,7 @@ interface LobbyRoom {
   chat: OnlineChatMessage[];
   createdAt: number;
   lastActivityAt: number;
+  lastTerminalAt: number;
   revision: number;
   match: AuthoritativeRaceConfig | null;
 }
@@ -315,6 +316,7 @@ export class LobbyServer {
       chat: [],
       createdAt,
       lastActivityAt: createdAt,
+      lastTerminalAt: 0,
       revision: 1,
       match: null,
     };
@@ -466,6 +468,7 @@ export class LobbyServer {
 
     room.phase = 'racing';
     room.match = config;
+    room.lastTerminalAt = 0;
     room.revision += 1;
     this.touchRoom(room);
     for (const member of room.members.values()) {
@@ -502,6 +505,9 @@ export class LobbyServer {
     if (terminal) member.terminalMatchId = state.matchId;
     this.touchRoom(room, now);
 
+    const serverTime = terminal ? Math.max(now, room.lastTerminalAt + 1) : now;
+    if (terminal) room.lastTerminalAt = serverTime;
+
     const safeState = {
       ...state,
       angle: normalizeAngle(state.angle),
@@ -509,9 +515,16 @@ export class LobbyServer {
       score: Math.floor(state.score),
       playerId: session.playerId as PlayerId,
       playerName: session.name as string,
-      serverTime: now,
+      serverTime,
     };
-    this.broadcast(room, { type: 'race:state', state: safeState }, session.playerId as PlayerId);
+    // Moving snapshots do not need to echo back to their author. A terminal
+    // snapshot does: its serverTime is the authoritative finish/death stamp
+    // used to compare every racer on the same clock.
+    this.broadcast(
+      room,
+      { type: 'race:state', state: safeState },
+      terminal ? undefined : session.playerId as PlayerId,
+    );
     if (terminal) this.finishRaceIfComplete(room);
   }
 
