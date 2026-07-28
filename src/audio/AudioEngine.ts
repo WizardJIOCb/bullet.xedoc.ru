@@ -262,7 +262,6 @@ export class AudioEngine {
     const startAt = context.currentTime;
     const resumePromise = context.resume();
     if (this.usingFile) this.startDecodedTrack(context, startAt);
-    this.startedAt = startAt;
     await resumePromise;
     this.running = true;
     this.lastBeatAt = -10;
@@ -271,6 +270,9 @@ export class AudioEngine {
     this.beatPulse = 0;
     this.stepIndex = 0;
     this.nextStepTime = context.currentTime + 0.05;
+    // Decoded audio starts at startAt. The synth's first kick is scheduled on
+    // nextStepTime, so its transport epoch must start on that exact sample too.
+    this.startedAt = this.usingFile ? startAt : this.nextStepTime;
   }
 
   pause(): void {
@@ -283,7 +285,10 @@ export class AudioEngine {
     const context = this.ensureContext();
     await context.resume();
     this.running = true;
-    if (this.nextStepTime < context.currentTime + 0.01) this.nextStepTime = context.currentTime + 0.04;
+    if (this.nextStepTime < context.currentTime + 0.01) {
+      this.nextStepTime = context.currentTime + 0.04;
+      if (!this.usingFile && this.stepIndex === 0) this.startedAt = this.nextStepTime;
+    }
   }
 
   stop(): void {
@@ -347,6 +352,21 @@ export class AudioEngine {
   }
 
   isInsideBeatWindow(windowSeconds = 0.08): boolean {
+    const mappedBeats = this.profile.beats || [];
+    const transportTime = this.getTransportTime();
+    if (mappedBeats.length > 0) {
+      let left = 0;
+      let right = mappedBeats.length;
+      while (left < right) {
+        const middle = Math.floor((left + right) / 2);
+        if (mappedBeats[middle].time < transportTime) left = middle + 1;
+        else right = middle;
+      }
+      const previousDelta = left > 0 ? Math.abs(mappedBeats[left - 1].time - transportTime) : Number.POSITIVE_INFINITY;
+      const nextDelta = left < mappedBeats.length ? Math.abs(mappedBeats[left].time - transportTime) : Number.POSITIVE_INFINITY;
+      return Math.min(previousDelta, nextDelta) <= windowSeconds;
+    }
+
     const interval = 60 / this.profile.bpm;
     const now = this.getTime();
     const phase = ((((now - this.beatAnchor) % interval) + interval) % interval);

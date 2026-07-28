@@ -104,7 +104,7 @@ export interface UpgradeDefinition {
   tone: 'cyan' | 'gold' | 'red' | 'violet';
 }
 
-export type TrackEventKind = 'gate' | 'halfwall' | 'blade' | 'cross' | 'mine' | 'shard' | 'boost' | 'drone' | 'coolant';
+export type TrackEventKind = 'gate' | 'halfwall' | 'blade' | 'cross' | 'shard' | 'boost' | 'drone' | 'coolant';
 
 export interface TrackEvent {
   id: number;

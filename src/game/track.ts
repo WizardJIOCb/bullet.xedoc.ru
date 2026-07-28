@@ -403,7 +403,7 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
     const energy = profileValueAtTime(profile.energy, beat.time, runDuration);
     const bass = clamp((beat.bass + profileValueAtTime(profile.bass, beat.time, runDuration)) * 0.5, 0, 1);
     const eventStrength = clamp(tuning.strength ?? beat.strength * 0.58 + energy * 0.25 + bass * 0.17, 0, 1);
-    const hazard = kind === 'gate' || kind === 'halfwall' || kind === 'blade' || kind === 'cross' || kind === 'mine' || kind === 'drone';
+    const hazard = kind === 'gate' || kind === 'halfwall' || kind === 'blade' || kind === 'cross' || kind === 'drone';
     const finalAngle = wrapPositive(angle);
     events.push({
       id: -1,
@@ -442,56 +442,115 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
   }
 
   const startIndex = Math.max(0, beats.findIndex((beat) => beat.time >= safeStartTime));
-  const usedTransitions = new Set<number>();
-  let patternOrdinal = 0;
   let barOrdinal = 0;
+  let baseCycleIndex = 0;
+  let reservedThroughIndex = startIndex - 1;
+  let lastPatternStartTime = Number.NEGATIVE_INFINITY;
   const hazardCadence = Math.max(1, Math.round(1.35 / theme.hazardRate));
-  const patternCycle = ['gate', 'halfwall', 'mine', 'blade', 'pickup', 'cross', 'drone'] as const;
+  const minimumPatternGap = clamp(1.05 / theme.hazardRate, 0.78, 1.25);
+  const patternCycle = ['gate', 'halfwall', 'blade', 'pickup', 'cross', 'drone'] as const;
+  const accentPatternCycle = ['gate', 'blade', 'halfwall', 'cross', 'drone'] as const;
+  let accentCycleIndex = Math.floor(
+    patternRandom(beats[startIndex]?.beatIndex ?? 0, 0x71ac)() * accentPatternCycle.length,
+  );
+  const courseStrengths = beats
+    .slice(startIndex)
+    .filter((beat) => beat.time <= lastEventTime)
+    .map((beat) => beat.strength)
+    .sort((a, b) => a - b);
+  const accentThreshold = Math.max(
+    0.64,
+    courseStrengths[Math.floor(Math.max(0, courseStrengths.length - 1) * 0.72)] ?? 0.72,
+  );
+  const transitionByBeat = new Map<number, IndexedTransition>();
+  for (const transition of transitions) {
+    let nearestIndex = -1;
+    let nearestDelta = Number.POSITIVE_INFINITY;
+    for (let beatIndex = startIndex; beatIndex < beats.length; beatIndex += 1) {
+      const delta = Math.abs(beats[beatIndex].time - transition.time);
+      if (delta < nearestDelta) {
+        nearestIndex = beatIndex;
+        nearestDelta = delta;
+      }
+      if (beats[beatIndex].time > transition.time + beatInterval) break;
+    }
+    if (nearestIndex < 0 || nearestDelta > beatInterval * 0.62) continue;
+    const existing = transitionByBeat.get(nearestIndex);
+    if (!existing || transition.strength > existing.strength) transitionByBeat.set(nearestIndex, transition);
+  }
+  const localAccentIndexes = new Set<number>();
+  for (let beatIndex = startIndex; beatIndex < beats.length; beatIndex += 1) {
+    const beat = beats[beatIndex];
+    if (beat.time > lastEventTime) break;
+    const previousStrength = beats[beatIndex - 1]?.strength ?? -1;
+    const nextStrength = beats[beatIndex + 1]?.strength ?? -1;
+    if (
+      beat.strength >= accentThreshold
+      && beat.strength >= previousStrength + 0.035
+      && beat.strength >= nextStrength + 0.015
+    ) localAccentIndexes.add(beatIndex);
+  }
+  const protectedAnchorIndexes = [...new Set([...transitionByBeat.keys(), ...localAccentIndexes])].sort((a, b) => a - b);
 
   for (let anchorIndex = startIndex; anchorIndex < beats.length; anchorIndex += 1) {
     const anchor = beats[anchorIndex];
     if (anchor.time > lastEventTime) break;
-    if (anchor.barBeat !== 0) continue;
+    const isDownbeat = anchor.barBeat === 0;
+    const currentBarOrdinal = barOrdinal;
+    if (isDownbeat) barOrdinal += 1;
+    const isLocalAccent = localAccentIndexes.has(anchorIndex);
+    const nearbyTransition = transitionByBeat.get(anchorIndex);
+    if (!isDownbeat && !isLocalAccent && !nearbyTransition) continue;
+    const nextProtectedIndex = protectedAnchorIndexes.find((index) => index > anchorIndex);
+    const protectedAnchorSoon = !nearbyTransition
+      && nextProtectedIndex !== undefined
+      && (!isLocalAccent || transitionByBeat.has(nextProtectedIndex))
+      && beats[nextProtectedIndex].time - anchor.time < minimumPatternGap;
+    if (protectedAnchorSoon) continue;
+    if (!nearbyTransition && anchor.time - lastPatternStartTime < minimumPatternGap) continue;
+    const keepDownbeat = baseCycleIndex < patternCycle.length
+      || Boolean(nearbyTransition)
+      || isLocalAccent
+      || currentBarOrdinal % hazardCadence === 0;
+    if (isDownbeat && !keepDownbeat) continue;
+    if (anchorIndex <= reservedThroughIndex) continue;
 
     const random = patternRandom(anchor.beatIndex, 0xa53c);
-    const patternId = nextPatternId;
-    nextPatternId += 1;
     const baseAngle = random() * TAU;
     const direction = random() > 0.5 ? 1 : -1;
     const energy = profileValueAtTime(profile.energy, anchor.time, runDuration);
     const bass = clamp((anchor.bass + profileValueAtTime(profile.bass, anchor.time, runDuration)) * 0.5, 0, 1);
     const highs = clamp((anchor.highs + profileValueAtTime(profile.highs, anchor.time, runDuration)) * 0.5, 0, 1);
-    const nearbyTransition = transitions
-      .filter((transition) => !usedTransitions.has(transition.transitionIndex))
-      .map((transition) => ({ transition, delta: Math.abs(transition.time - anchor.time) }))
-      .filter(({ delta }) => delta <= beatInterval * 2.2)
-      .sort((a, b) => a.delta - b.delta)[0]?.transition;
-    const keepBar = patternOrdinal < patternCycle.length
-      || Boolean(nearbyTransition)
-      || barOrdinal % hazardCadence === 0;
-    barOrdinal += 1;
-    if (!keepBar) continue;
 
     let pattern: typeof patternCycle[number];
     if (nearbyTransition) {
-      usedTransitions.add(nearbyTransition.transitionIndex);
       if (nearbyTransition.kind === 'drop') pattern = 'cross';
       else if (nearbyTransition.kind === 'build') pattern = 'halfwall';
       else if (nearbyTransition.kind === 'fill') pattern = 'blade';
       else pattern = 'pickup';
-    } else if (patternOrdinal < patternCycle.length) {
-      pattern = patternCycle[patternOrdinal];
+    } else if (isLocalAccent && !isDownbeat) {
+      pattern = accentPatternCycle[accentCycleIndex % accentPatternCycle.length];
+      accentCycleIndex += 1;
+    } else if (baseCycleIndex < patternCycle.length) {
+      pattern = patternCycle[baseCycleIndex];
+      baseCycleIndex += 1;
     } else if (highs > 0.72) {
       pattern = 'blade';
     } else if (bass > 0.7 && energy > 0.6) {
-      pattern = random() > 0.48 ? 'mine' : 'cross';
+      pattern = random() > 0.48 ? 'gate' : 'cross';
     } else if (energy < 0.48) {
       pattern = 'pickup';
     } else {
       pattern = patternCycle[Math.floor(random() * patternCycle.length)];
     }
 
+    const patternId = nextPatternId;
+    nextPatternId += 1;
     const at = (offset: number): IndexedBeat | undefined => beats[anchorIndex + offset];
+    const maxPatternSpan = nextProtectedIndex === undefined
+      ? Number.POSITIVE_INFINITY
+      : Math.max(0, nextProtectedIndex - anchorIndex - 1);
+    let patternSpan = 0;
     if (pattern === 'gate') {
       pushEvent('gate', anchor, baseAngle, patternId, {
         gapWidth: 0.78 + (1 - energy) * 0.24,
@@ -500,9 +559,13 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
     } else if (pattern === 'halfwall') {
       const turn = direction * (0.38 + highs * 0.16);
       pushEvent('halfwall', anchor, baseAngle, patternId, { gapWidth: 1.28 + energy * 0.12 });
-      pushEvent('halfwall', at(2), baseAngle + turn, patternId, { gapWidth: 1.26 + energy * 0.12 });
+      if (maxPatternSpan >= 2) {
+        pushEvent('halfwall', at(2), baseAngle + turn, patternId, { gapWidth: 1.26 + energy * 0.12 });
+        patternSpan = 2;
+      }
     } else if (pattern === 'blade') {
-      const count = nearbyTransition?.kind === 'fill' ? 4 : 3;
+      const preferredCount = nearbyTransition?.kind === 'fill' ? 4 : 3;
+      const count = Math.max(1, Math.min(preferredCount, maxPatternSpan + 1));
       const twist = direction * (0.27 + highs * 0.17);
       for (let step = 0; step < count; step += 1) {
         pushEvent('blade', at(step), baseAngle + twist * step, patternId, {
@@ -511,9 +574,11 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
           armCount: 2,
         });
       }
+      patternSpan = count - 1;
     } else if (pattern === 'cross') {
       const spiral = direction * (0.16 + highs * 0.1);
-      const count = nearbyTransition?.kind === 'drop' ? 3 : 2;
+      const preferredCount = nearbyTransition?.kind === 'drop' ? 3 : 2;
+      const count = Math.max(1, Math.min(preferredCount, maxPatternSpan + 1));
       for (let step = 0; step < count; step += 1) {
         pushEvent('cross', at(step), baseAngle + spiral * step, patternId, {
           gapWidth: 0.16 + energy * 0.05,
@@ -522,25 +587,29 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
           strength: clamp(anchor.strength + step * 0.035, 0, 1),
         });
       }
-    } else if (pattern === 'mine') {
-      const weave = 0.46 + bass * 0.24;
-      for (let step = 0; step < 3; step += 1) {
-        const offset = Math.sin((step - 1) * Math.PI * 0.62) * weave;
-        pushEvent('mine', at(step), baseAngle + offset * direction, patternId, {
-          gapWidth: 0.28 + energy * 0.035,
-          warningDistance: 290 + anchor.strength * 150,
-        });
-      }
+      patternSpan = count - 1;
     } else if (pattern === 'drone') {
       pushEvent('drone', anchor, baseAngle, patternId, { warningDistance: 300 + energy * 150 });
-      pushEvent('shard', at(1), baseAngle + direction * 0.22, patternId);
+      if (maxPatternSpan >= 1) {
+        pushEvent('shard', at(1), baseAngle + direction * 0.22, patternId);
+        patternSpan = 1;
+      }
     } else {
       const rewardKind: TrackEvent['kind'] = nearbyTransition?.kind === 'break' ? 'coolant' : random() > 0.52 ? 'boost' : 'shard';
       pushEvent(rewardKind, anchor, baseAngle, patternId);
-      pushEvent('shard', at(1), baseAngle + direction * 0.17, patternId);
-      pushEvent('shard', at(2), baseAngle + direction * 0.32, patternId);
+      if (maxPatternSpan >= 1) {
+        pushEvent('shard', at(1), baseAngle + direction * 0.17, patternId);
+        patternSpan = 1;
+      }
+      if (maxPatternSpan >= 2) {
+        pushEvent('shard', at(2), baseAngle + direction * 0.32, patternId);
+        patternSpan = 2;
+      }
     }
-    patternOrdinal += 1;
+    // Reserve every beat occupied by the pattern plus one readable reaction beat.
+    const readablePadding = nextProtectedIndex === anchorIndex + patternSpan + 1 ? 0 : 1;
+    reservedThroughIndex = Math.max(reservedThroughIndex, anchorIndex + patternSpan + readablePadding);
+    lastPatternStartTime = anchor.time;
   }
 
   // Profiles with very sparse detected peaks still receive a complete course.

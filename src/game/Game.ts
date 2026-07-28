@@ -22,6 +22,7 @@ import {
   type UpgradeId,
 } from '../core/types';
 import type { ControlBindings, GraphicsSettings, InputAction, SettingsState } from '../settings/SettingsStore';
+import { synchronizeDistanceToMusic } from './rhythm';
 import { generateTrack, radialAt, sampleTrackFrame, type TrackFrame, type TrackPlan } from './track';
 
 type GameState = 'menu' | 'countdown' | 'playing' | 'finished';
@@ -315,7 +316,7 @@ export class BallisticGame {
     } else if (ability.id === 'emp') {
       let destroyed = 0;
       for (const event of this.plan.events) {
-        if (!event.destroyed && !event.resolved && event.distance > this.distance && event.distance < this.distance + 190 && (event.kind === 'mine' || event.kind === 'drone')) {
+        if (!event.destroyed && !event.resolved && event.distance > this.distance && event.distance < this.distance + 190 && event.kind === 'drone') {
           this.destroyEvent(event, true);
           destroyed += 1;
         }
@@ -528,7 +529,7 @@ export class BallisticGame {
   }
 
   private createEventWarning(event: TrackEvent): THREE.Object3D | null {
-    if (!['gate', 'halfwall', 'blade', 'cross', 'mine', 'drone'].includes(event.kind)) return null;
+    if (!['gate', 'halfwall', 'blade', 'cross', 'drone'].includes(event.kind)) return null;
     const distance = event.distance - clamp(event.warningDistance * 0.62, 150, 280);
     if (distance < 35) return null;
     const frame = sampleTrackFrame(this.plan, distance / this.plan.length);
@@ -536,7 +537,7 @@ export class BallisticGame {
     group.userData.warningFor = event.id;
     group.position.copy(frame.position);
     group.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(frame.normal, frame.binormal, frame.tangent));
-    const warningColor = event.kind === 'mine' || event.kind === 'drone' ? 0xff9b42 : 0xffd35a;
+    const warningColor = event.kind === 'drone' ? 0xff9b42 : 0xffd35a;
     const ring = new THREE.Mesh(
       new THREE.TorusGeometry(this.plan.radius - 0.62, 0.085, 4, 36),
       new THREE.MeshBasicMaterial({ color: warningColor, transparent: true, opacity: 0.48, toneMapped: false }),
@@ -690,21 +691,7 @@ export class BallisticGame {
     visual.position.copy(position);
     visual.quaternion.setFromRotationMatrix(matrix);
 
-    if (event.kind === 'mine') {
-      const mine = new THREE.Mesh(
-        new THREE.IcosahedronGeometry(1.42, 1),
-        new THREE.MeshStandardMaterial({ color: 0x300408, emissive: theme.colors.danger, emissiveIntensity: 0.34, metalness: 0.48, roughness: 0.5 }),
-      );
-      const ring = new THREE.Mesh(
-        new THREE.TorusGeometry(2.05, 0.14, 6, 28),
-        new THREE.MeshBasicMaterial({ color: 0xffd45b, transparent: true, opacity: 0.92, toneMapped: false }),
-      );
-      const core = new THREE.Mesh(
-        new THREE.IcosahedronGeometry(1.54, 1),
-        new THREE.MeshBasicMaterial({ color: 0xffc45b, wireframe: true, transparent: true, opacity: 0.84, toneMapped: false }),
-      );
-      visual.add(mine, core, ring);
-    } else if (event.kind === 'shard') {
+    if (event.kind === 'shard') {
       const shard = new THREE.Mesh(
         new THREE.OctahedronGeometry(0.72, 0),
         new THREE.MeshStandardMaterial({ color: 0xcfffff, emissive: theme.colors.primary, emissiveIntensity: 5.5, metalness: 0.18, roughness: 0.12 }),
@@ -1120,7 +1107,11 @@ export class BallisticGame {
     }
 
     this.previousDistance = this.distance;
-    this.distance = Math.min(this.plan.length, this.distance + this.speed * dt);
+    const proposedDistance = this.distance + this.speed * dt;
+    this.distance = Math.min(
+      this.plan.length,
+      synchronizeDistanceToMusic(this.distance, proposedDistance, musicDistance, baseSpeed),
+    );
     this.maxRunSpeed = Math.max(this.maxRunSpeed, this.speed);
     this.score += this.speed * dt * (0.42 + this.sync * 0.012);
     this.processCollisions();
@@ -1173,8 +1164,8 @@ export class BallisticGame {
           if (bladeDelta < event.gapWidth + 0.14) this.registerNearMiss();
           else if (this.audio.isInsideBeatWindow()) this.registerPerfect(event.kind === 'cross' ? 'CROSS SYNC' : 'BLADE SYNC');
         }
-      } else if (event.kind === 'mine' || event.kind === 'drone') {
-        const threshold = event.kind === 'mine' ? 0.4 : 0.45;
+      } else if (event.kind === 'drone') {
+        const threshold = 0.45;
         if (delta < threshold) this.hitObstacle(event);
         else {
           event.resolved = true;
@@ -1265,10 +1256,10 @@ export class BallisticGame {
       bullet.ttl -= dt;
       let consumed = false;
       for (const event of this.plan.events) {
-        if (event.destroyed || event.resolved || (event.kind !== 'mine' && event.kind !== 'drone')) continue;
+        if (event.destroyed || event.resolved || event.kind !== 'drone') continue;
         if (event.distance < bullet.distance - 12) continue;
         if (event.distance > bullet.distance + 12) break;
-        if (angularDistance(event.angle, bullet.angle) < (event.kind === 'drone' ? 0.46 : 0.4)) {
+        if (angularDistance(event.angle, bullet.angle) < 0.46) {
           event.health -= bullet.damage;
           this.hits += 1;
           bullet.piercing -= 1;
@@ -1444,7 +1435,7 @@ export class BallisticGame {
       if (!['gate', 'halfwall', 'blade', 'cross'].includes(event.kind)) visual.scale.setScalar(damp(visual.scale.x, pulse, 8, dt));
       const rotor = visual.userData.rotor as THREE.Group | undefined;
       if (rotor) rotor.rotation.z = event.rotationPhase + event.rotationRate * (transportTime - event.musicTime);
-      if (event.kind === 'mine' || event.kind === 'shard' || event.kind === 'coolant') visual.rotateZ(dt * (event.kind === 'mine' ? 1.2 : 2.4));
+      if (event.kind === 'shard' || event.kind === 'coolant') visual.rotateZ(dt * 2.4);
     }
   }
 

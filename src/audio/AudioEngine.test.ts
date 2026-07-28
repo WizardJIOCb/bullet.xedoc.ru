@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import type { MusicTransition, RhythmBeat } from '../core/types';
+import type { MusicProfile, MusicTransition, RhythmBeat } from '../core/types';
 import { AudioEngine } from './AudioEngine';
+import { createDefaultMusicProfile } from '../game/track';
 
 interface RhythmMapBuilder {
   buildRhythmMap(
@@ -14,6 +15,14 @@ interface RhythmMapBuilder {
     bpm: number,
     beatOffset: number,
   ): { beats: RhythmBeat[]; transitions: MusicTransition[] };
+}
+
+interface BeatWindowHarness {
+  profile: MusicProfile;
+  context: Pick<AudioContext, 'currentTime'>;
+  startedAt: number;
+  beatAnchor: number;
+  lastBeatAt: number;
 }
 
 describe('decoded audio rhythm map', () => {
@@ -39,5 +48,26 @@ describe('decoded audio rhythm map', () => {
     expect(map.beats[1].time).toBeCloseTo(0.457, 3);
     expect(map.beats[2].time).toBeCloseTo(1.086, 3);
     expect(map.beats.some((beat, index) => index > 0 && Math.abs(beat.time - index * 0.5) > 0.035)).toBe(true);
+  });
+
+  it('scores against the explicit onset map before falling back to the average BPM grid', () => {
+    const engine = new AudioEngine();
+    const harness = engine as unknown as BeatWindowHarness;
+    harness.profile = {
+      ...createDefaultMusicProfile(),
+      bpm: 120,
+      beatOffset: 0,
+      beats: [{ time: 1.1, strength: 1, bass: 1, highs: 0.6, barBeat: 2 }],
+    };
+    harness.context = { currentTime: 1 };
+    harness.startedAt = 0;
+    harness.beatAnchor = 0;
+    harness.lastBeatAt = -10;
+
+    expect(engine.isInsideBeatWindow(0.04)).toBe(false);
+    harness.context = { currentTime: 1.1 };
+    expect(engine.isInsideBeatWindow(0.04)).toBe(true);
+    harness.context = { currentTime: 1.17 };
+    expect(engine.isInsideBeatWindow(0.04)).toBe(false);
   });
 });
