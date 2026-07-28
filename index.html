@@ -23,9 +23,14 @@
             <span class="system-mark__dot"></span>
             WEBGL PULSE-RACING PROTOCOL
           </div>
-          <button id="effects-toggle" class="icon-button" type="button" aria-pressed="false" title="Уменьшить вспышки">
-            FX <span>MAX</span>
-          </button>
+          <div class="menu-header__actions">
+            <button id="settings-open" class="icon-button" type="button" aria-haspopup="dialog" aria-controls="settings-dialog">
+              CFG <span>SETTINGS</span>
+            </button>
+            <button id="effects-toggle" class="icon-button" type="button" aria-pressed="false" title="Уменьшить вспышки">
+              FX <span>MAX</span>
+            </button>
+          </div>
         </header>
 
         <div class="menu-grid">
@@ -161,16 +166,104 @@
               <span><small>INITIALIZE RUN</small><strong>РАЗОГНАТЬСЯ</strong></span>
               <span class="launch-button__seed" id="seed-label">SEED // RANDOM</span>
             </button>
-            <div class="control-strip">
-              <span><kbd>A</kbd><kbd>D</kbd> WALL RIDE</span>
-              <span><kbd>SPACE</kbd> BOOST</span>
-              <span><kbd>F</kbd> / CLICK FIRE</span>
-              <span><kbd>Q</kbd> ABILITY</span>
-              <span><kbd>S</kbd> COOL</span>
+            <div class="control-strip" aria-label="Текущая раскладка управления">
+              <span><kbd data-control-hint="left">A</kbd><kbd data-control-hint="right">D</kbd> WALL RIDE</span>
+              <span><kbd data-control-hint="boost">SPACE</kbd> BOOST</span>
+              <span><kbd data-control-hint="fire">F</kbd> / CLICK FIRE</span>
+              <span><kbd data-control-hint="ability">Q</kbd> ABILITY</span>
+              <span><kbd data-control-hint="cool">S</kbd> COOL</span>
             </div>
           </section>
         </div>
       </section>
+
+      <dialog id="settings-dialog" class="settings-dialog" aria-labelledby="settings-title">
+        <div class="settings-shell panel-glass">
+          <header class="settings-header">
+            <div>
+              <span class="settings-kicker">05 // SYSTEM CONFIG</span>
+              <h2 id="settings-title">НАСТРОЙКИ</h2>
+            </div>
+            <button id="settings-close" class="settings-close" type="button" aria-label="Закрыть настройки">×</button>
+          </header>
+
+          <nav class="settings-tabs" role="tablist" aria-label="Разделы настроек">
+            <button id="settings-tab-audio" type="button" role="tab" aria-selected="true" aria-controls="settings-panel-audio" tabindex="0" data-settings-tab="audio">AUDIO</button>
+            <button id="settings-tab-graphics" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-graphics" tabindex="-1" data-settings-tab="graphics">GRAPHICS</button>
+            <button id="settings-tab-controls" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-controls" tabindex="-1" data-settings-tab="controls">CONTROLS</button>
+          </nav>
+
+          <div class="settings-body">
+            <section id="settings-panel-audio" class="settings-panel" role="tabpanel" aria-labelledby="settings-tab-audio" data-settings-panel="audio">
+              <div class="settings-section-heading"><span>AUDIO MIX</span><small>Изменения применяются сразу</small></div>
+              <label class="settings-range" for="volume-master">
+                <span><strong>Общая громкость</strong><small>MASTER OUTPUT</small></span>
+                <output id="volume-master-value" for="volume-master">90%</output>
+                <input id="volume-master" type="range" min="0" max="100" step="1" value="90" />
+              </label>
+              <label class="settings-range" for="volume-music">
+                <span><strong>Музыка</strong><small>RHYTHM TRACK</small></span>
+                <output id="volume-music-value" for="volume-music">82%</output>
+                <input id="volume-music" type="range" min="0" max="100" step="1" value="82" />
+              </label>
+              <label class="settings-range" for="volume-effects">
+                <span><strong>Эффекты</strong><small>WEAPON / IMPACT / PICKUP</small></span>
+                <output id="volume-effects-value" for="volume-effects">72%</output>
+                <input id="volume-effects" type="range" min="0" max="100" step="1" value="72" />
+              </label>
+              <label class="settings-toggle" for="audio-muted">
+                <span><strong>Отключить звук</strong><small>Анализ ритма продолжит работать</small></span>
+                <input id="audio-muted" type="checkbox" />
+                <i aria-hidden="true"></i>
+              </label>
+            </section>
+
+            <section id="settings-panel-graphics" class="settings-panel" role="tabpanel" aria-labelledby="settings-tab-graphics" data-settings-panel="graphics" hidden>
+              <div class="settings-section-heading"><span>RENDER PIPELINE</span><small>Качество применяется к превью и следующему заезду</small></div>
+              <label class="settings-select" for="graphics-quality">
+                <span><strong>Качество рендера</strong><small>Разрешение и детализация тоннеля</small></span>
+                <select id="graphics-quality">
+                  <option value="performance">PERFORMANCE</option>
+                  <option value="balanced">BALANCED</option>
+                  <option value="quality">QUALITY</option>
+                </select>
+              </label>
+              <label class="settings-toggle" for="graphics-bloom">
+                <span><strong>Свечение</strong><small>BLOOM</small></span>
+                <input id="graphics-bloom" type="checkbox" />
+                <i aria-hidden="true"></i>
+              </label>
+              <label class="settings-toggle" for="graphics-chromatic">
+                <span><strong>Хроматический импульс</strong><small>RGB DISTORTION</small></span>
+                <input id="graphics-chromatic" type="checkbox" />
+                <i aria-hidden="true"></i>
+              </label>
+              <label class="settings-toggle" for="graphics-shake">
+                <span><strong>Тряска камеры</strong><small>SPEED / IMPACT SHAKE</small></span>
+                <input id="graphics-shake" type="checkbox" />
+                <i aria-hidden="true"></i>
+              </label>
+              <label class="settings-toggle" for="graphics-reduced">
+                <span><strong>Безопасные вспышки</strong><small>REDUCED FLASHES</small></span>
+                <input id="graphics-reduced" type="checkbox" />
+                <i aria-hidden="true"></i>
+              </label>
+            </section>
+
+            <section id="settings-panel-controls" class="settings-panel" role="tabpanel" aria-labelledby="settings-tab-controls" data-settings-panel="controls" hidden>
+              <div class="settings-section-heading"><span>INPUT MATRIX</span><small>Нажми клавишу, затем введи новую</small></div>
+              <div id="settings-controls-list" class="settings-controls-list"></div>
+              <p class="settings-controls-note">ESC — отмена · BACKSPACE — очистить вторую клавишу · мышь всегда стреляет</p>
+            </section>
+          </div>
+
+          <footer class="settings-footer">
+            <button id="settings-reset" class="settings-secondary" type="button">RESET TAB</button>
+            <span id="settings-status" role="status" aria-live="polite">SETTINGS SAVED LOCALLY</span>
+            <button id="settings-done" class="settings-primary" type="button">DONE</button>
+          </footer>
+        </div>
+      </dialog>
 
       <section id="hud" class="hud">
         <div class="hud-top hud-panel">
@@ -183,7 +276,7 @@
         </div>
 
         <section id="upgrade-draft" class="upgrade-draft" aria-labelledby="upgrade-draft-label" aria-live="polite" aria-atomic="true" hidden>
-          <div id="upgrade-draft-label" class="upgrade-draft__label">ROGUELIKE INTERCEPT // ВЫБЕРИ МОДУЛЬ <span>1–3</span></div>
+          <div id="upgrade-draft-label" class="upgrade-draft__label">ROGUELIKE INTERCEPT // ВЫБЕРИ МОДУЛЬ <span id="upgrade-key-hint">1–3</span></div>
           <div id="upgrade-options" class="upgrade-choices" role="group" aria-label="Доступные улучшения"></div>
         </section>
 

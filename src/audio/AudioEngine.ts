@@ -1,6 +1,7 @@
 import { clamp, hashString } from '../core/math';
 import type { MusicProfile, MusicTransition, RhythmBeat } from '../core/types';
 import { createDefaultMusicProfile } from '../game/track';
+import type { AudioSettings } from '../settings/SettingsStore';
 
 export interface AudioBands {
   bass: number;
@@ -12,6 +13,7 @@ export interface AudioBands {
 }
 
 export type AudioSourceKind = 'synthetic' | 'catalog' | 'local';
+export type GameSound = 'fire' | 'impact' | 'pickup' | 'perfect' | 'ability' | 'upgrade' | 'destroy';
 
 export interface CatalogAudioTrack {
   id: string;
@@ -27,7 +29,11 @@ const MAX_PLAYBACK_DURATION = 108;
 export class AudioEngine {
   private context: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
-  private master: GainNode | null = null;
+  private musicInput: GainNode | null = null;
+  private musicGain: GainNode | null = null;
+  private effectsGain: GainNode | null = null;
+  private outputGain: GainNode | null = null;
+  private limiter: DynamicsCompressorNode | null = null;
   private frequencyData = new Uint8Array(256);
   private decodedTrack: AudioBuffer | null = null;
   private trackSource: AudioBufferSourceNode | null = null;
@@ -44,6 +50,13 @@ export class AudioEngine {
   private beatPulse = 0;
   private smoothedBass = 0;
   private noiseBuffer: AudioBuffer | null = null;
+  private readonly activeSources = new Map<AudioScheduledSourceNode, () => void>();
+  private audioSettings: AudioSettings = {
+    masterVolume: 0.9,
+    musicVolume: 0.82,
+    effectsVolume: 0.72,
+    muted: false,
+  };
 
   getProfile(): MusicProfile {
     return this.profile;
@@ -57,6 +70,24 @@ export class AudioEngine {
     return this.usingFile;
   }
 
+  setAudioSettings(settings: AudioSettings): void {
+    this.audioSettings = {
+      masterVolume: clamp(settings.masterVolume, 0, 1),
+      musicVolume: clamp(settings.musicVolume, 0, 1),
+      effectsVolume: clamp(settings.effectsVolume, 0, 1),
+      muted: Boolean(settings.muted),
+    };
+    this.applyAudioSettings();
+  }
+
+  private applyAudioSettings(): void {
+    if (!this.context || !this.musicGain || !this.effectsGain || !this.outputGain) return;
+    const now = this.context.currentTime;
+    this.musicGain.gain.setTargetAtTime(this.audioSettings.musicVolume, now, 0.025);
+    this.effectsGain.gain.setTargetAtTime(this.audioSettings.effectsVolume, now, 0.025);
+    this.outputGain.gain.setTargetAtTime(this.audioSettings.muted ? 0 : this.audioSettings.masterVolume, now, 0.025);
+  }
+
   private ensureContext(): AudioContext {
     if (this.context) return this.context;
     this.context = new AudioContext();
@@ -64,11 +95,27 @@ export class AudioEngine {
     this.analyser.fftSize = 512;
     this.analyser.smoothingTimeConstant = 0.76;
     this.frequencyData = new Uint8Array(this.analyser.frequencyBinCount);
-    this.master = this.context.createGain();
-    this.master.gain.value = 0.22;
-    this.master.connect(this.analyser);
-    this.analyser.connect(this.context.destination);
+    this.musicInput = this.context.createGain();
+    this.musicGain = this.context.createGain();
+    this.effectsGain = this.context.createGain();
+    this.outputGain = this.context.createGain();
+    this.limiter = this.context.createDynamicsCompressor();
+    this.musicGain.gain.value = this.audioSettings.musicVolume;
+    this.effectsGain.gain.value = this.audioSettings.effectsVolume;
+    this.outputGain.gain.value = this.audioSettings.muted ? 0 : this.audioSettings.masterVolume;
+    this.limiter.threshold.value = -3;
+    this.limiter.knee.value = 3;
+    this.limiter.ratio.value = 12;
+    this.limiter.attack.value = 0.003;
+    this.limiter.release.value = 0.18;
+    this.musicInput.connect(this.analyser);
+    this.analyser.connect(this.musicGain);
+    this.musicGain.connect(this.outputGain);
+    this.effectsGain.connect(this.outputGain);
+    this.outputGain.connect(this.limiter);
+    this.limiter.connect(this.context.destination);
     this.noiseBuffer = this.createNoiseBuffer(this.context);
+    this.applyAudioSettings();
     return this.context;
   }
 
@@ -83,13 +130,39 @@ export class AudioEngine {
     this.trackSource = null;
   }
 
+  private registerSource(source: AudioScheduledSourceNode, cleanup: () => void): void {
+    this.activeSources.set(source, cleanup);
+    source.addEventListener('ended', () => this.releaseSource(source), { once: true });
+  }
+
+  private releaseSource(source: AudioScheduledSourceNode): void {
+    const cleanup = this.activeSources.get(source);
+    if (!cleanup) return;
+    this.activeSources.delete(source);
+    source.disconnect();
+    cleanup();
+  }
+
+  private clearActiveSources(): void {
+    for (const [source, cleanup] of this.activeSources) {
+      try {
+        source.stop();
+      } catch {
+        // A source that has already ended is safe to release.
+      }
+      source.disconnect();
+      cleanup();
+    }
+    this.activeSources.clear();
+  }
+
   private startDecodedTrack(context: AudioContext, startAt: number): void {
     if (!this.decodedTrack) throw new Error('Decoded track is not available');
     this.clearTrackSource();
     const source = context.createBufferSource();
     source.buffer = this.decodedTrack;
     source.loop = true;
-    source.connect(this.master!);
+    source.connect(this.musicInput!);
     source.start(startAt);
     this.trackSource = source;
   }
@@ -216,6 +289,7 @@ export class AudioEngine {
   stop(): void {
     this.running = false;
     this.clearTrackSource();
+    this.clearActiveSources();
     if (this.context) this.startedAt = this.context.currentTime;
     if (this.context?.state === 'running') void this.context.suspend();
   }
@@ -297,8 +371,83 @@ export class AudioEngine {
     return buffer;
   }
 
+  playEffect(sound: GameSound, amount = 1): void {
+    if (!this.context || !this.effectsGain || this.context.state !== 'running') return;
+    const context = this.context;
+    const destination = this.effectsGain;
+    const time = context.currentTime;
+    const intensity = clamp(amount, 0.05, 1.5);
+
+    const tone = (
+      type: OscillatorType,
+      from: number,
+      to: number,
+      duration: number,
+      level: number,
+      delay = 0,
+    ): void => {
+      const start = time + delay;
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      oscillator.type = type;
+      oscillator.frequency.setValueAtTime(Math.max(20, from), start);
+      oscillator.frequency.exponentialRampToValueAtTime(Math.max(20, to), start + duration);
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(Math.max(0.0001, level * intensity), start + 0.008);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+      oscillator.connect(gain);
+      gain.connect(destination);
+      this.registerSource(oscillator, () => gain.disconnect());
+      oscillator.start(start);
+      oscillator.stop(start + duration + 0.015);
+    };
+
+    const noise = (frequency: number, duration: number, level: number): void => {
+      if (!this.noiseBuffer) return;
+      const source = context.createBufferSource();
+      const filter = context.createBiquadFilter();
+      const gain = context.createGain();
+      source.buffer = this.noiseBuffer;
+      filter.type = 'bandpass';
+      filter.frequency.value = frequency;
+      filter.Q.value = 1.4;
+      gain.gain.setValueAtTime(Math.max(0.0001, level * intensity), time);
+      gain.gain.exponentialRampToValueAtTime(0.0001, time + duration);
+      source.connect(filter);
+      filter.connect(gain);
+      gain.connect(destination);
+      this.registerSource(source, () => {
+        filter.disconnect();
+        gain.disconnect();
+      });
+      source.start(time);
+      source.stop(time + duration);
+    };
+
+    if (sound === 'fire') tone('square', 760, 190, 0.085, 0.075);
+    else if (sound === 'impact') {
+      noise(170, 0.12, 0.28);
+      tone('sawtooth', 105, 42, 0.18, 0.13);
+    } else if (sound === 'pickup') {
+      tone('sine', 620, 980, 0.14, 0.1);
+      tone('sine', 930, 1320, 0.12, 0.055, 0.055);
+    } else if (sound === 'perfect') {
+      tone('triangle', 880, 1320, 0.16, 0.075);
+      tone('sine', 1320, 1760, 0.13, 0.045, 0.07);
+    } else if (sound === 'ability') {
+      tone('sawtooth', 120, 720, 0.24, 0.12);
+      tone('sine', 360, 1080, 0.26, 0.06, 0.025);
+    } else if (sound === 'upgrade') {
+      tone('triangle', 440, 660, 0.18, 0.08);
+      tone('triangle', 660, 990, 0.2, 0.065, 0.09);
+    } else {
+      noise(520, 0.1, 0.18);
+      tone('square', 190, 58, 0.14, 0.08);
+    }
+  }
+
   private scheduleSynth(): void {
-    if (!this.context || !this.master || !this.noiseBuffer) return;
+    if (!this.context || !this.musicInput || !this.noiseBuffer) return;
     const stepDuration = 60 / this.profile.bpm / 4;
     while (this.nextStepTime < this.context.currentTime + 0.12) {
       const step = this.stepIndex % 16;
@@ -311,7 +460,7 @@ export class AudioEngine {
   }
 
   private scheduleKick(time: number, amount: number): void {
-    if (!this.context || !this.master) return;
+    if (!this.context || !this.musicInput) return;
     const oscillator = this.context.createOscillator();
     const gain = this.context.createGain();
     oscillator.frequency.setValueAtTime(145, time);
@@ -320,13 +469,14 @@ export class AudioEngine {
     gain.gain.exponentialRampToValueAtTime(0.55 * amount, time + 0.008);
     gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.2);
     oscillator.connect(gain);
-    gain.connect(this.master);
+    gain.connect(this.musicInput);
+    this.registerSource(oscillator, () => gain.disconnect());
     oscillator.start(time);
     oscillator.stop(time + 0.22);
   }
 
   private scheduleHat(time: number, amount: number): void {
-    if (!this.context || !this.master || !this.noiseBuffer) return;
+    if (!this.context || !this.musicInput || !this.noiseBuffer) return;
     const source = this.context.createBufferSource();
     const filter = this.context.createBiquadFilter();
     const gain = this.context.createGain();
@@ -337,13 +487,17 @@ export class AudioEngine {
     gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.055);
     source.connect(filter);
     filter.connect(gain);
-    gain.connect(this.master);
+    gain.connect(this.musicInput);
+    this.registerSource(source, () => {
+      filter.disconnect();
+      gain.disconnect();
+    });
     source.start(time);
     source.stop(time + 0.065);
   }
 
   private scheduleBass(time: number, step: number): void {
-    if (!this.context || !this.master) return;
+    if (!this.context || !this.musicInput) return;
     const notes = [55, 55, 65.41, 49, 73.42, 49];
     const oscillator = this.context.createOscillator();
     const filter = this.context.createBiquadFilter();
@@ -359,7 +513,11 @@ export class AudioEngine {
     gain.gain.exponentialRampToValueAtTime(0.0001, time + 0.19);
     oscillator.connect(filter);
     filter.connect(gain);
-    gain.connect(this.master);
+    gain.connect(this.musicInput);
+    this.registerSource(oscillator, () => {
+      filter.disconnect();
+      gain.disconnect();
+    });
     oscillator.start(time);
     oscillator.stop(time + 0.2);
   }
@@ -641,8 +799,12 @@ export class AudioEngine {
   async dispose(): Promise<void> {
     this.stop();
     this.decodedTrack = null;
-    this.master?.disconnect();
+    this.musicInput?.disconnect();
     this.analyser?.disconnect();
+    this.musicGain?.disconnect();
+    this.effectsGain?.disconnect();
+    this.outputGain?.disconnect();
+    this.limiter?.disconnect();
     if (this.context && this.context.state !== 'closed') await this.context.close();
     this.context = null;
   }

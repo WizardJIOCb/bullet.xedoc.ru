@@ -2,6 +2,15 @@ import './styles.css';
 import { AudioEngine, type CatalogAudioTrack } from './audio/AudioEngine';
 import { ABILITIES, TRACKS, WEAPONS, type AbilityId, type GarageState, type RunConfig, type RunResult, type RunStats, type TrackId, type UpgradeDefinition, type UpgradeId, type WeaponId } from './core/types';
 import { BallisticGame } from './game/Game';
+import {
+  DEFAULT_SETTINGS,
+  cloneSettings,
+  isBindableCode,
+  loadSettings,
+  saveSettings,
+  type ControlBindings,
+  type InputAction,
+} from './settings/SettingsStore';
 
 const query = <T extends Element>(selector: string): T => {
   const element = document.querySelector<T>(selector);
@@ -63,7 +72,9 @@ const musicLibrary = query<HTMLFieldSetElement>('#music-library');
 const musicCatalog = query<HTMLSelectElement>('#music-catalog');
 const musicCatalogRetry = query<HTMLButtonElement>('#music-catalog-retry');
 const musicCatalogError = query<HTMLElement>('#music-catalog-error');
+let settings = loadSettings();
 const audio = new AudioEngine();
+audio.setAudioSettings(settings.audio);
 let garage = loadGarage();
 let selectedTrack: TrackId = 'aurora';
 let selectedWeapon: WeaponId = 'pulse';
@@ -71,7 +82,6 @@ let selectedAbility: AbilityId = 'phase';
 let lastRunSeed = randomSeed();
 let lastConfig: RunConfig | null = null;
 let toastTimer = 0;
-let reducedEffects = localStorage.getItem('ballistic-edge-reduced-fx') === '1';
 let musicLoading = false;
 let musicCatalogReady = false;
 let musicCatalogEntries: MusicCatalogEntry[] = [];
@@ -87,7 +97,204 @@ const game = new BallisticGame(query<HTMLCanvasElement>('#game-canvas'), audio, 
     setText('#section-label', `SECTOR 0${index} // ${name}`);
     showToast(`SECTOR 0${index}`, name, index === 3 ? 'gold' : 'cyan');
   },
-});
+}, settings);
+
+type SettingsTab = 'audio' | 'graphics' | 'controls';
+
+interface BindingCapture {
+  action: InputAction;
+  slot: 0 | 1;
+}
+
+const settingsDialog = query<HTMLDialogElement>('#settings-dialog');
+const settingsStatus = query<HTMLElement>('#settings-status');
+let activeSettingsTab: SettingsTab = 'audio';
+let bindingCapture: BindingCapture | null = null;
+
+const CONTROL_GROUPS: Array<{ label: string; actions: Array<{ id: InputAction; name: string; detail: string }> }> = [
+  {
+    label: 'MOVEMENT',
+    actions: [
+      { id: 'left', name: 'Влево', detail: 'WALL RIDE LEFT' },
+      { id: 'right', name: 'Вправо', detail: 'WALL RIDE RIGHT' },
+      { id: 'boost', name: 'Ускорение', detail: 'BOOST' },
+      { id: 'cool', name: 'Охлаждение', detail: 'COOL REACTOR' },
+    ],
+  },
+  {
+    label: 'COMBAT',
+    actions: [
+      { id: 'fire', name: 'Огонь', detail: 'FIRE WEAPON' },
+      { id: 'ability', name: 'Способность', detail: 'ACTIVE MODULE' },
+    ],
+  },
+  {
+    label: 'ROGUELIKE',
+    actions: [
+      { id: 'upgrade1', name: 'Улучшение 1', detail: 'FIRST MODULE' },
+      { id: 'upgrade2', name: 'Улучшение 2', detail: 'SECOND MODULE' },
+      { id: 'upgrade3', name: 'Улучшение 3', detail: 'THIRD MODULE' },
+    ],
+  },
+];
+
+const KEY_LABELS: Record<string, string> = {
+  Space: 'SPACE',
+  Enter: 'ENTER',
+  NumpadEnter: 'NUM ENTER',
+  ArrowLeft: '←',
+  ArrowRight: '→',
+  ArrowUp: '↑',
+  ArrowDown: '↓',
+  ShiftLeft: 'L SHIFT',
+  ShiftRight: 'R SHIFT',
+  Backspace: 'BACKSPACE',
+  Delete: 'DELETE',
+  PageUp: 'PG UP',
+  PageDown: 'PG DOWN',
+};
+
+function formatKeyCode(code: string | null): string {
+  if (!code) return 'UNBOUND';
+  if (KEY_LABELS[code]) return KEY_LABELS[code];
+  if (code.startsWith('Key')) return code.slice(3);
+  if (code.startsWith('Digit')) return code.slice(5);
+  if (code.startsWith('Numpad')) return `NUM ${code.slice(6).toUpperCase()}`;
+  return code.replace(/([a-z])([A-Z])/g, '$1 $2').toUpperCase();
+}
+
+function formatAriaKeyShortcut(code: string): string {
+  if (code.startsWith('Key')) return code.slice(3);
+  if (code.startsWith('Digit')) return code.slice(5);
+  if (code.startsWith('Numpad')) return code.slice(6);
+  if (code.startsWith('Shift')) return 'Shift';
+  return code;
+}
+
+function setSettingsStatus(message: string): void {
+  settingsStatus.textContent = message;
+}
+
+function isCodeAllowedForAction(code: string, action: InputAction): boolean {
+  const match = code.match(/^(?:Digit|Numpad)([1-3])$/);
+  return !match || action === `upgrade${match[1]}`;
+}
+
+function persistSettings(message = 'SAVED // LOCAL PROFILE'): void {
+  settings = saveSettings(settings);
+  setSettingsStatus(message);
+}
+
+function updateEffectsButton(): void {
+  const button = query<HTMLButtonElement>('#effects-toggle');
+  const reduced = settings.graphics.reducedFlashes;
+  button.setAttribute('aria-pressed', String(reduced));
+  button.classList.toggle('is-active', reduced);
+  button.querySelector('span')!.textContent = reduced ? 'SAFE' : 'MAX';
+}
+
+function updateControlHints(): void {
+  for (const hint of queryAll<HTMLElement>('[data-control-hint]')) {
+    const action = hint.dataset.controlHint as InputAction;
+    hint.textContent = formatKeyCode(settings.controls[action][0]);
+  }
+  const upgradeKeys = (['upgrade1', 'upgrade2', 'upgrade3'] as InputAction[])
+    .map((action) => formatKeyCode(settings.controls[action][0]));
+  setText('#upgrade-key-hint', upgradeKeys.join(' / '));
+}
+
+function renderControlsSettings(): void {
+  const list = query<HTMLElement>('#settings-controls-list');
+  list.innerHTML = CONTROL_GROUPS.map((group) => `
+    <div class="settings-control-group">${group.label}</div>
+    ${group.actions.map((action) => {
+      const bindings = settings.controls[action.id];
+      return `
+        <div class="settings-control-row">
+          <span><strong>${action.name}</strong><small>${action.detail}</small></span>
+          ${bindings.map((code, slot) => {
+            const capturing = bindingCapture?.action === action.id && bindingCapture.slot === slot;
+            const label = capturing ? 'PRESS KEY' : formatKeyCode(code);
+            const ariaLabel = capturing
+              ? `${action.name}, нажмите новую клавишу. Escape — отмена`
+              : `${action.name}, ${slot === 0 ? 'основная' : 'дополнительная'} клавиша: ${formatKeyCode(code)}`;
+            return `<button class="settings-key ${capturing ? 'is-capturing' : ''} ${code ? '' : 'is-empty'}" type="button" data-binding-action="${action.id}" data-binding-slot="${slot}" aria-label="${ariaLabel}">${label}</button>`;
+          }).join('')}
+        </div>
+      `;
+    }).join('')}
+  `).join('');
+
+  for (const button of Array.from(list.querySelectorAll<HTMLButtonElement>('[data-binding-action]'))) {
+    button.addEventListener('click', () => {
+      bindingCapture = {
+        action: button.dataset.bindingAction as InputAction,
+        slot: Number(button.dataset.bindingSlot) as 0 | 1,
+      };
+      game.setInputCapture(true);
+      setSettingsStatus('PRESS A KEY // ESC TO CANCEL');
+      renderControlsSettings();
+      list.querySelector<HTMLButtonElement>(`[data-binding-action="${bindingCapture.action}"][data-binding-slot="${bindingCapture.slot}"]`)?.focus();
+    });
+  }
+}
+
+function syncSettingsUi(): void {
+  const volumeFields: Array<[keyof typeof settings.audio, string, string]> = [
+    ['masterVolume', '#volume-master', '#volume-master-value'],
+    ['musicVolume', '#volume-music', '#volume-music-value'],
+    ['effectsVolume', '#volume-effects', '#volume-effects-value'],
+  ];
+  for (const [field, inputSelector, outputSelector] of volumeFields) {
+    const percent = Math.round(Number(settings.audio[field]) * 100);
+    query<HTMLInputElement>(inputSelector).value = String(percent);
+    query<HTMLOutputElement>(outputSelector).value = `${percent}%`;
+  }
+  query<HTMLInputElement>('#audio-muted').checked = settings.audio.muted;
+  query<HTMLSelectElement>('#graphics-quality').value = settings.graphics.quality;
+  query<HTMLInputElement>('#graphics-bloom').checked = settings.graphics.bloom;
+  query<HTMLInputElement>('#graphics-chromatic').checked = settings.graphics.chromaticAberration;
+  query<HTMLInputElement>('#graphics-shake').checked = settings.graphics.cameraShake;
+  query<HTMLInputElement>('#graphics-reduced').checked = settings.graphics.reducedFlashes;
+  updateEffectsButton();
+  updateControlHints();
+  renderControlsSettings();
+}
+
+function setSettingsTab(tab: SettingsTab, focus = false): void {
+  if (bindingCapture && tab !== activeSettingsTab) {
+    bindingCapture = null;
+    game.setInputCapture(true);
+    setSettingsStatus('KEY CAPTURE CANCELLED // TAB CHANGED');
+    renderControlsSettings();
+  }
+  activeSettingsTab = tab;
+  for (const button of queryAll<HTMLButtonElement>('[data-settings-tab]')) {
+    const selected = button.dataset.settingsTab === tab;
+    button.setAttribute('aria-selected', String(selected));
+    button.tabIndex = selected ? 0 : -1;
+    if (selected && focus) button.focus();
+  }
+  for (const panel of queryAll<HTMLElement>('[data-settings-panel]')) {
+    panel.hidden = panel.dataset.settingsPanel !== tab;
+  }
+  query<HTMLButtonElement>('#settings-reset').textContent = tab === 'controls' ? 'RESET KEYS' : 'RESET TAB';
+}
+
+function cancelBindingCapture(message = 'KEY CAPTURE CANCELLED'): void {
+  if (!bindingCapture) return;
+  const cancelled = bindingCapture;
+  bindingCapture = null;
+  game.setInputCapture(settingsDialog.open);
+  setSettingsStatus(message);
+  renderControlsSettings();
+  query<HTMLButtonElement>(`[data-binding-action="${cancelled.action}"][data-binding-slot="${cancelled.slot}"]`)?.focus();
+}
+
+function closeSettings(): void {
+  cancelBindingCapture();
+  if (settingsDialog.open) settingsDialog.close();
+}
 
 function selectRadio<T extends string>(selector: string, value: T, attribute: string): void {
   for (const button of queryAll<HTMLButtonElement>(selector)) {
@@ -160,7 +367,9 @@ function updateHud(stats: RunStats): void {
   query<HTMLElement>('#flux-fill').style.height = `${stats.flux}%`;
   query<HTMLElement>('#rhythm-ring').style.setProperty('--pulse', String(stats.rhythmPulse));
   query<HTMLElement>('#weapon-ready').style.setProperty('--cooldown', String(Math.min(1, stats.weaponCooldown * 2)));
-  setText('#ability-ready', stats.abilityCooldown <= 0 ? 'READY // Q' : `${stats.abilityCooldown.toFixed(1)} SEC`);
+  setText('#ability-ready', stats.abilityCooldown <= 0
+    ? `READY // ${formatKeyCode(settings.controls.ability[0])}`
+    : `${stats.abilityCooldown.toFixed(1)} SEC`);
   app.classList.toggle('is-overheated', stats.overheated);
   app.classList.toggle('is-phasing', stats.phaseActive);
   app.classList.toggle('is-low-shield', stats.shield <= 1);
@@ -206,15 +415,19 @@ function upgradeIcon(id: UpgradeId): string {
 
 function renderUpgradeState(pending: UpgradeDefinition[], installed: UpgradeDefinition[]): void {
   upgradeDraft.hidden = pending.length === 0;
-  upgradeOptions.innerHTML = pending.map((upgrade, index) => `
-    <button class="upgrade-choice upgrade-choice--${upgrade.tone}" data-upgrade-choice="${upgrade.id}" type="button" aria-keyshortcuts="${index + 1}" aria-label="${index + 1}: ${upgrade.name}. ${upgrade.description}">
-      <span class="upgrade-choice__key">${index + 1}</span>
+  upgradeOptions.innerHTML = pending.map((upgrade, index) => {
+    const action = `upgrade${index + 1}` as InputAction;
+    const keyLabel = formatKeyCode(settings.controls[action][0]);
+    return `
+    <button class="upgrade-choice upgrade-choice--${upgrade.tone}" data-upgrade-choice="${upgrade.id}" type="button" aria-keyshortcuts="${formatAriaKeyShortcut(settings.controls[action][0])}" aria-label="${keyLabel}: ${upgrade.name}. ${upgrade.description}">
+      <span class="upgrade-choice__key">${keyLabel}</span>
       <span class="upgrade-choice__icon">${upgradeIcon(upgrade.id)}</span>
       <span class="upgrade-choice__copy"><strong>${upgrade.name}</strong><small>${upgrade.tag}</small></span>
       <span class="upgrade-choice__description">${upgrade.description}</span>
       <span class="upgrade-choice__tooltip" role="tooltip">${upgrade.description}</span>
     </button>
-  `).join('');
+  `;
+  }).join('');
   for (const button of Array.from(upgradeOptions.querySelectorAll<HTMLButtonElement>('[data-upgrade-choice]'))) {
     button.addEventListener('click', () => {
       game.chooseUpgrade(button.dataset.upgradeChoice as UpgradeId);
@@ -528,14 +741,173 @@ musicCatalog.addEventListener('change', () => {
 
 musicCatalogRetry.addEventListener('click', () => void loadMusicCatalog());
 
-query<HTMLButtonElement>('#effects-toggle').addEventListener('click', (event) => {
-  reducedEffects = !reducedEffects;
-  localStorage.setItem('ballistic-edge-reduced-fx', reducedEffects ? '1' : '0');
-  game.setReducedEffects(reducedEffects);
-  const button = event.currentTarget as HTMLButtonElement;
-  button.setAttribute('aria-pressed', String(reducedEffects));
-  button.classList.toggle('is-active', reducedEffects);
-  button.querySelector('span')!.textContent = reducedEffects ? 'SAFE' : 'MAX';
+query<HTMLButtonElement>('#settings-open').addEventListener('click', () => {
+  if (settingsDialog.open) return;
+  game.setInputCapture(true);
+  syncSettingsUi();
+  settingsDialog.showModal();
+  setSettingsTab(activeSettingsTab, true);
+  setSettingsStatus('SETTINGS SAVED LOCALLY');
+});
+
+query<HTMLButtonElement>('#settings-close').addEventListener('click', closeSettings);
+query<HTMLButtonElement>('#settings-done').addEventListener('click', closeSettings);
+
+settingsDialog.addEventListener('cancel', (event) => {
+  if (!bindingCapture) return;
+  event.preventDefault();
+  cancelBindingCapture();
+});
+
+settingsDialog.addEventListener('close', () => {
+  bindingCapture = null;
+  game.setInputCapture(false);
+  query<HTMLButtonElement>('#settings-open').focus();
+});
+
+settingsDialog.addEventListener('pointerdown', (event) => {
+  if (event.target === settingsDialog) closeSettings();
+});
+
+const settingsTabButtons = queryAll<HTMLButtonElement>('[data-settings-tab]');
+for (const button of settingsTabButtons) {
+  button.addEventListener('click', () => setSettingsTab(button.dataset.settingsTab as SettingsTab));
+  button.addEventListener('keydown', (event) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const index = settingsTabButtons.indexOf(button);
+    const next = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? settingsTabButtons.length - 1
+        : (index + (event.key === 'ArrowLeft' ? -1 : 1) + settingsTabButtons.length) % settingsTabButtons.length;
+    setSettingsTab(settingsTabButtons[next].dataset.settingsTab as SettingsTab, true);
+  });
+}
+
+const volumeInputs: Array<{ selector: string; output: string; field: 'masterVolume' | 'musicVolume' | 'effectsVolume' }> = [
+  { selector: '#volume-master', output: '#volume-master-value', field: 'masterVolume' },
+  { selector: '#volume-music', output: '#volume-music-value', field: 'musicVolume' },
+  { selector: '#volume-effects', output: '#volume-effects-value', field: 'effectsVolume' },
+];
+for (const binding of volumeInputs) {
+  const input = query<HTMLInputElement>(binding.selector);
+  input.addEventListener('input', (event) => {
+    const percent = Number((event.currentTarget as HTMLInputElement).value);
+    settings.audio[binding.field] = percent / 100;
+    query<HTMLOutputElement>(binding.output).value = `${percent}%`;
+    audio.setAudioSettings(settings.audio);
+  });
+  input.addEventListener('change', () => {
+    persistSettings(`AUDIO // ${Math.round(settings.audio[binding.field] * 100)}%`);
+  });
+}
+
+query<HTMLInputElement>('#audio-muted').addEventListener('change', (event) => {
+  settings.audio.muted = (event.currentTarget as HTMLInputElement).checked;
+  persistSettings(settings.audio.muted ? 'AUDIO MUTED' : 'AUDIO ONLINE');
+  audio.setAudioSettings(settings.audio);
+});
+
+query<HTMLSelectElement>('#graphics-quality').addEventListener('change', (event) => {
+  settings.graphics.quality = (event.currentTarget as HTMLSelectElement).value as typeof settings.graphics.quality;
+  persistSettings(`RENDER // ${settings.graphics.quality.toUpperCase()}`);
+  game.setGraphicsSettings(settings.graphics);
+  game.previewTrack(selectedTrack, lastRunSeed);
+});
+
+const graphicsToggles: Array<{ selector: string; field: 'bloom' | 'chromaticAberration' | 'cameraShake' | 'reducedFlashes'; message: string }> = [
+  { selector: '#graphics-bloom', field: 'bloom', message: 'BLOOM' },
+  { selector: '#graphics-chromatic', field: 'chromaticAberration', message: 'RGB DISTORTION' },
+  { selector: '#graphics-shake', field: 'cameraShake', message: 'CAMERA SHAKE' },
+  { selector: '#graphics-reduced', field: 'reducedFlashes', message: 'SAFE FLASHES' },
+];
+for (const toggle of graphicsToggles) {
+  query<HTMLInputElement>(toggle.selector).addEventListener('change', (event) => {
+    const enabled = (event.currentTarget as HTMLInputElement).checked;
+    settings.graphics[toggle.field] = enabled;
+    persistSettings(`${toggle.message} // ${enabled ? 'ON' : 'OFF'}`);
+    game.setGraphicsSettings(settings.graphics);
+    updateEffectsButton();
+  });
+}
+
+query<HTMLButtonElement>('#settings-reset').addEventListener('click', () => {
+  if (bindingCapture) {
+    bindingCapture = null;
+    game.setInputCapture(true);
+  }
+  const defaults = cloneSettings(DEFAULT_SETTINGS);
+  if (activeSettingsTab === 'audio') {
+    settings.audio = { ...defaults.audio };
+    audio.setAudioSettings(settings.audio);
+  } else if (activeSettingsTab === 'graphics') {
+    settings.graphics = { ...defaults.graphics };
+    game.setGraphicsSettings(settings.graphics);
+    game.previewTrack(selectedTrack, lastRunSeed);
+  } else {
+    settings.controls = Object.fromEntries(
+      Object.entries(defaults.controls).map(([action, values]) => [action, [...values]]),
+    ) as ControlBindings;
+    game.setControlBindings(settings.controls);
+  }
+  persistSettings(`RESET // ${activeSettingsTab.toUpperCase()}`);
+  syncSettingsUi();
+});
+
+window.addEventListener('keydown', (event) => {
+  if (!bindingCapture) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  if (event.code === 'Escape') {
+    cancelBindingCapture();
+    return;
+  }
+  if (event.code === 'Backspace' || event.code === 'Delete') {
+    if (bindingCapture.slot === 0) {
+      setSettingsStatus('PRIMARY KEY CANNOT BE EMPTY');
+      return;
+    }
+    settings.controls[bindingCapture.action][1] = null;
+  } else {
+    if (!isBindableCode(event.code) || !isCodeAllowedForAction(event.code, bindingCapture.action)) {
+      setSettingsStatus('KEY RESERVED // TRY ANOTHER');
+      return;
+    }
+    const current = bindingCapture;
+    let conflict: BindingCapture | null = null;
+    for (const group of CONTROL_GROUPS) {
+      for (const action of group.actions) {
+        const slot = settings.controls[action.id].findIndex((code) => code === event.code);
+        if (slot >= 0) conflict = { action: action.id, slot: slot as 0 | 1 };
+      }
+    }
+    if (conflict && (conflict.action !== current.action || conflict.slot !== current.slot)) {
+      setSettingsStatus(`${formatKeyCode(event.code)} USED BY ${conflict.action.toUpperCase()} // CHOOSE ANOTHER`);
+      return;
+    }
+    settings.controls[current.action][current.slot] = event.code;
+  }
+  const changedBinding = bindingCapture;
+  const changedAction = changedBinding.action;
+  bindingCapture = null;
+  persistSettings(`BOUND // ${formatKeyCode(settings.controls[changedAction][0])}`);
+  game.setControlBindings(settings.controls);
+  game.setInputCapture(true);
+  updateControlHints();
+  renderControlsSettings();
+  query<HTMLButtonElement>(`[data-binding-action="${changedBinding.action}"][data-binding-slot="${changedBinding.slot}"]`)?.focus();
+}, true);
+
+window.addEventListener('blur', () => {
+  if (bindingCapture) cancelBindingCapture('KEY CAPTURE CANCELLED // WINDOW BLUR');
+});
+
+query<HTMLButtonElement>('#effects-toggle').addEventListener('click', () => {
+  settings.graphics.reducedFlashes = !settings.graphics.reducedFlashes;
+  persistSettings(settings.graphics.reducedFlashes ? 'FX // SAFE' : 'FX // MAX');
+  game.setGraphicsSettings(settings.graphics);
+  syncSettingsUi();
 });
 
 startButton.addEventListener('click', () => void launchRun(false));
@@ -568,11 +940,10 @@ for (const button of queryAll<HTMLButtonElement>('[data-control]')) {
 query<HTMLButtonElement>('[data-action="fire"]').addEventListener('pointerdown', (event) => { event.preventDefault(); game.fire(); });
 query<HTMLButtonElement>('[data-action="ability"]').addEventListener('pointerdown', (event) => { event.preventDefault(); game.activateAbility(); });
 
-game.setReducedEffects(reducedEffects);
-const effectsButton = query<HTMLButtonElement>('#effects-toggle');
-effectsButton.setAttribute('aria-pressed', String(reducedEffects));
-effectsButton.classList.toggle('is-active', reducedEffects);
-effectsButton.querySelector('span')!.textContent = reducedEffects ? 'SAFE' : 'MAX';
+audio.setAudioSettings(settings.audio);
+game.setGraphicsSettings(settings.graphics);
+game.setControlBindings(settings.controls);
+syncSettingsUi();
 updateGarageUi();
 selectRadio('[data-track]', selectedTrack, 'track');
 selectRadio('[data-weapon]', selectedWeapon, 'weapon');

@@ -21,6 +21,7 @@ import {
   type UpgradeDefinition,
   type UpgradeId,
 } from '../core/types';
+import type { ControlBindings, GraphicsSettings, InputAction, SettingsState } from '../settings/SettingsStore';
 import { generateTrack, radialAt, sampleTrackFrame, type TrackFrame, type TrackPlan } from './track';
 
 type GameState = 'menu' | 'countdown' | 'playing' | 'finished';
@@ -138,16 +139,22 @@ export class BallisticGame {
   private lastBands: AudioBands = { bass: 0, mids: 0, highs: 0, overall: 0, pulse: 0, onBeat: false };
   private cameraRadial = 0;
   private damageKick = 0;
-  private reducedEffects = false;
+  private graphicsSettings: GraphicsSettings;
+  private controlBindings: ControlBindings;
+  private inputCapture = false;
   private disposed = false;
   private visibilityPaused = false;
 
-  constructor(canvas: HTMLCanvasElement, audio: AudioEngine, hooks: GameHooks) {
+  constructor(canvas: HTMLCanvasElement, audio: AudioEngine, hooks: GameHooks, settings: Pick<SettingsState, 'graphics' | 'controls'>) {
     this.canvas = canvas;
     this.audio = audio;
     this.hooks = hooks;
+    this.graphicsSettings = { ...settings.graphics };
+    this.controlBindings = Object.fromEntries(
+      Object.entries(settings.controls).map(([action, bindings]) => [action, [...bindings]]),
+    ) as ControlBindings;
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false, powerPreference: 'high-performance' });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.6));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.pixelRatioLimit()));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.08;
@@ -156,9 +163,11 @@ export class BallisticGame {
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
     this.bloomPass = new UnrealBloomPass(new THREE.Vector2(1, 1), 1.18, 0.66, 0.12);
+    this.bloomPass.enabled = this.graphicsSettings.bloom;
     this.composer.addPass(this.bloomPass);
     this.rgbPass = new ShaderPass(RGBShiftShader);
     this.rgbPass.uniforms.amount.value = 0.00025;
+    this.rgbPass.enabled = this.graphicsSettings.chromaticAberration && !this.graphicsSettings.reducedFlashes;
     this.composer.addPass(this.rgbPass);
     this.composer.addPass(new OutputPass());
 
@@ -200,10 +209,42 @@ export class BallisticGame {
     this.demoDistance = Math.min(this.plan.length * 0.08, 800);
   }
 
-  setReducedEffects(enabled: boolean): void {
-    this.reducedEffects = enabled;
-    this.bloomPass.strength = enabled ? 0.72 : 1.18;
-    this.rgbPass.enabled = !enabled;
+  setGraphicsSettings(settings: GraphicsSettings): void {
+    this.graphicsSettings = { ...settings };
+    this.bloomPass.enabled = settings.bloom;
+    this.rgbPass.enabled = settings.chromaticAberration && !settings.reducedFlashes;
+    this.resize();
+  }
+
+  setControlBindings(bindings: ControlBindings): void {
+    this.controlBindings = Object.fromEntries(
+      Object.entries(bindings).map(([action, values]) => [action, [...values]]),
+    ) as ControlBindings;
+    this.releaseInputs();
+  }
+
+  setInputCapture(enabled: boolean): void {
+    this.inputCapture = enabled;
+    if (enabled) this.releaseInputs();
+  }
+
+  releaseInputs = (): void => {
+    this.keys.clear();
+    this.mobileInput.clear();
+  };
+
+  private pixelRatioLimit(): number {
+    if (this.graphicsSettings.quality === 'performance') return 0.8;
+    if (this.graphicsSettings.quality === 'balanced') return 1.15;
+    return 1.6;
+  }
+
+  private isBound(action: InputAction, code: string): boolean {
+    return this.controlBindings[action].includes(code);
+  }
+
+  private isActionPressed(action: InputAction): boolean {
+    return this.controlBindings[action].some((code) => code && this.keys.has(code));
   }
 
   async startRun(config: RunConfig): Promise<void> {
@@ -221,6 +262,7 @@ export class BallisticGame {
   chooseUpgrade(id: UpgradeId): boolean {
     if (this.state !== 'playing' || !this.pendingUpgradeOptions.some((upgrade) => upgrade.id === id)) return false;
     this.runUpgrades.add(id);
+    this.audio.playEffect('upgrade');
     if (id === 'glass-cannon') {
       this.maxShield = Math.max(1, this.maxShield - 1);
       this.shield = Math.min(this.shield, this.maxShield);
@@ -243,6 +285,7 @@ export class BallisticGame {
   fire(): void {
     if (this.state !== 'playing' || !this.config || this.weaponCooldown > 0 || this.overheatTimer > 0) return;
     const weapon = WEAPONS[this.config.weapon];
+    this.audio.playEffect('fire', weapon.id === 'rail' ? 1.25 : weapon.id === 'scatter' ? 0.9 : 0.72);
     const perfect = this.audio.isInsideBeatWindow();
     const levelDamage = 1 + this.config.garage.weapon * 0.1;
     const upgradeDamage = this.runUpgrades.has('glass-cannon') ? 1.65 : 1;
@@ -263,6 +306,7 @@ export class BallisticGame {
   activateAbility(): void {
     if (this.state !== 'playing' || !this.config || this.abilityCooldown > 0) return;
     const ability = ABILITIES[this.config.ability];
+    this.audio.playEffect('ability');
     const cooldownFactor = this.runUpgrades.has('phase-battery') ? 0.75 : 1;
     this.abilityCooldown = ability.cooldown * cooldownFactor;
     if (ability.id === 'phase') {
@@ -298,10 +342,13 @@ export class BallisticGame {
   private readonly resize = (): void => {
     const width = Math.max(1, this.canvas.clientWidth || window.innerWidth);
     const height = Math.max(1, this.canvas.clientHeight || window.innerHeight);
+    const pixelRatio = Math.min(window.devicePixelRatio, this.pixelRatioLimit());
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
     this.chaseCamera.aspect = width / height;
     this.chaseCamera.updateProjectionMatrix();
+    this.renderer.setPixelRatio(pixelRatio);
+    this.composer.setPixelRatio(pixelRatio);
     this.renderer.setSize(width, height, false);
     this.composer.setSize(width, height);
   };
@@ -309,24 +356,27 @@ export class BallisticGame {
   private bindInput(): void {
     window.addEventListener('keydown', this.handleKeyDown);
     window.addEventListener('keyup', this.handleKeyUp);
+    window.addEventListener('blur', this.releaseInputs);
     this.canvas.addEventListener('pointerdown', this.handleCanvasPointerDown);
   }
 
   private readonly handleKeyDown = (event: KeyboardEvent): void => {
     const target = event.target;
     const isEditing = target instanceof HTMLElement && Boolean(target.closest('input, select, textarea, [contenteditable="true"]'));
-    const upgradeDigit = event.code.match(/^(?:Digit|Numpad)([1-3])$/)?.[1]
-      ?? (['1', '2', '3'].includes(event.key) ? event.key : null);
-    const upgradeIndex = upgradeDigit ? Number(upgradeDigit) - 1 : -1;
-    if (!isEditing && !event.repeat && upgradeIndex >= 0 && this.pendingUpgradeOptions[upgradeIndex]) {
+    if (this.inputCapture || isEditing) return;
+    const upgradeActions: InputAction[] = ['upgrade1', 'upgrade2', 'upgrade3'];
+    const upgradeIndex = upgradeActions.findIndex((action) => this.isBound(action, event.code));
+    if (!event.repeat && upgradeIndex >= 0 && this.pendingUpgradeOptions[upgradeIndex]) {
       event.preventDefault();
       this.chooseUpgrade(this.pendingUpgradeOptions[upgradeIndex].id);
       return;
     }
-    if (['ArrowLeft', 'ArrowRight', 'ArrowDown', 'Space'].includes(event.code)) event.preventDefault();
+    if (this.state !== 'playing' && this.state !== 'countdown') return;
+    const gameplayActions: InputAction[] = ['left', 'right', 'cool', 'boost', 'fire', 'ability'];
+    if (gameplayActions.some((action) => this.isBound(action, event.code))) event.preventDefault();
     this.keys.add(event.code);
-    if (!event.repeat && ['KeyF', 'Enter'].includes(event.code)) this.fire();
-    if (!event.repeat && ['KeyQ', 'KeyE'].includes(event.code)) this.activateAbility();
+    if (!event.repeat && this.isBound('fire', event.code)) this.fire();
+    if (!event.repeat && this.isBound('ability', event.code)) this.activateAbility();
   };
 
   private readonly handleKeyUp = (event: KeyboardEvent): void => {
@@ -346,8 +396,15 @@ export class BallisticGame {
     this.scene.background = new THREE.Color(theme.colors.background);
     this.scene.fog = new THREE.FogExp2(theme.colors.fog, 0.0021);
 
-    const tubeSegments = clamp(Math.ceil(this.plan.length / 18), 620, 1050);
-    const tubeGeometry = new THREE.TubeGeometry(this.plan.curve, tubeSegments, this.plan.radius, 20, false);
+    const quality = this.graphicsSettings.quality;
+    const tubeDivisor = quality === 'performance' ? 29 : quality === 'balanced' ? 23 : 18;
+    const tubeSegments = clamp(
+      Math.ceil(this.plan.length / tubeDivisor),
+      quality === 'performance' ? 360 : quality === 'balanced' ? 480 : 620,
+      quality === 'performance' ? 620 : quality === 'balanced' ? 820 : 1050,
+    );
+    const radialSegments = quality === 'performance' ? 12 : quality === 'balanced' ? 16 : 20;
+    const tubeGeometry = new THREE.TubeGeometry(this.plan.curve, tubeSegments, this.plan.radius, radialSegments, false);
     this.tunnelMaterial = this.createTunnelMaterial(theme.colors.primary, theme.colors.secondary);
     const tunnel = new THREE.Mesh(tubeGeometry, this.tunnelMaterial);
     tunnel.frustumCulled = false;
@@ -688,7 +745,7 @@ export class BallisticGame {
 
   private addExteriorParticles(color: number, seed: number): void {
     const random = mulberry32(seed ^ 0xfade);
-    const count = 900;
+    const count = this.graphicsSettings.quality === 'performance' ? 360 : this.graphicsSettings.quality === 'balanced' ? 620 : 900;
     const positions = new Float32Array(count * 3);
     for (let index = 0; index < count; index += 1) {
       const distance = random() * this.plan.length;
@@ -713,7 +770,8 @@ export class BallisticGame {
       this.streakLines = null;
     }
     const random = mulberry32(seed ^ 0x51eed);
-    this.streaks = Array.from({ length: 72 }, () => ({
+    const streakCount = this.graphicsSettings.quality === 'performance' ? 30 : this.graphicsSettings.quality === 'balanced' ? 50 : 72;
+    this.streaks = Array.from({ length: streakCount }, () => ({
       angle: random() * TAU,
       radial: this.plan.radius - (0.7 + random() * 4.2),
       offset: 18 + random() * 220,
@@ -1011,10 +1069,10 @@ export class BallisticGame {
     if (!this.config) return;
     const baseSpeed = this.plan.length / this.plan.runDuration;
     const theme = TRACKS[this.config.track];
-    const left = this.keys.has('KeyA') || this.keys.has('ArrowLeft') || this.mobileInput.get('left');
-    const right = this.keys.has('KeyD') || this.keys.has('ArrowRight') || this.mobileInput.get('right');
-    const cooling = this.keys.has('KeyS') || this.keys.has('ArrowDown') || this.mobileInput.get('cool');
-    const boostHeld = this.keys.has('Space') || this.keys.has('ShiftLeft') || this.keys.has('ShiftRight') || this.mobileInput.get('boost');
+    const left = this.isActionPressed('left') || this.mobileInput.get('left');
+    const right = this.isActionPressed('right') || this.mobileInput.get('right');
+    const cooling = this.isActionPressed('cool') || this.mobileInput.get('cool');
+    const boostHeld = this.isActionPressed('boost') || this.mobileInput.get('boost');
     const steering = (left ? 1 : 0) - (right ? 1 : 0);
     const steeringForce = 6.8 * theme.handling * (1 + this.config.garage.engine * 0.025);
     this.angularVelocity += steering * steeringForce * dt;
@@ -1172,6 +1230,7 @@ export class BallisticGame {
     this.sync = 0;
     this.invulnerableTimer = 0.9;
     this.damageKick = 1;
+    this.audio.playEffect('impact');
     const visual = this.eventVisuals.get(event.id);
     if (visual) this.spawnBurst(visual.getWorldPosition(new THREE.Vector3()), TRACKS[this.trackId].colors.danger, 22);
     this.hooks.onToast('IMPACT', this.shield > 0 ? `SHIELD ${this.shield}/${this.maxShield}` : 'HULL FAILURE', 'red');
@@ -1179,6 +1238,7 @@ export class BallisticGame {
   }
 
   private collectEvent(event: TrackEvent, label: string): void {
+    this.audio.playEffect('pickup', label.startsWith('SLIPSTREAM') ? 1.15 : 0.82);
     const visual = this.eventVisuals.get(event.id);
     if (visual) {
       this.spawnBurst(visual.getWorldPosition(new THREE.Vector3()), TRACKS[this.trackId].colors.primary, 12);
@@ -1231,6 +1291,7 @@ export class BallisticGame {
     this.kills += 1;
     this.score += event.kind === 'drone' ? 620 : 280;
     this.flux = Math.min(100, this.flux + (event.kind === 'drone' ? 13 : 7));
+    this.audio.playEffect('destroy', event.kind === 'drone' ? 1.1 : 0.72);
     const visual = this.eventVisuals.get(event.id);
     if (visual) {
       const position = visual.getWorldPosition(new THREE.Vector3());
@@ -1253,7 +1314,7 @@ export class BallisticGame {
     const available = UPGRADES.filter((upgrade) => !this.runUpgrades.has(upgrade.id));
     this.pendingUpgradeOptions = pickDistinct(available, Math.min(3, available.length), random);
     this.emitUpgradeState();
-    this.hooks.onToast('MODULE DROP', 'Выбери 1 / 2 / 3 — движение продолжается', 'violet');
+    this.hooks.onToast('MODULE DROP', 'ВЫБЕРИ МОДУЛЬ СВЕРХУ — ДВИЖЕНИЕ ПРОДОЛЖАЕТСЯ', 'violet');
   }
 
   private emitUpgradeState(): void {
@@ -1268,6 +1329,7 @@ export class BallisticGame {
     this.flux = Math.min(100, this.flux + 5);
     if (this.runUpgrades.has('cryo-loop')) this.heat = Math.max(0, this.heat - 7);
     if (this.runUpgrades.has('echo-shield') && this.sync % 8 === 0) this.shield = Math.min(this.maxShield, this.shield + 1);
+    this.audio.playEffect('perfect', this.sync % 4 === 0 ? 1 : 0.45);
     if (this.sync % 4 === 0) this.hooks.onToast('PERFECT', `${label} / SYNC ×${this.sync}`, 'gold');
   }
 
@@ -1331,7 +1393,9 @@ export class BallisticGame {
     const cameraRadialDistance = Math.max(0.6, this.cameraRadial - 3.35);
     const cameraTarget = frame.position.clone().add(radial.clone().multiplyScalar(cameraRadialDistance)).add(frame.tangent.clone().multiplyScalar(-6.8));
     const inward = radial.clone().multiplyScalar(-1);
-    const shake = this.reducedEffects ? 0 : (speedRatio * 0.025 + this.damageKick * 0.16) * (0.3 + this.lastBands.bass);
+    const shake = (!this.graphicsSettings.cameraShake || this.graphicsSettings.reducedFlashes)
+      ? 0
+      : (speedRatio * 0.025 + this.damageKick * 0.16) * (0.3 + this.lastBands.bass);
     cameraTarget.add(circumferential.clone().multiplyScalar(Math.sin(performance.now() * 0.037) * shake));
     cameraTarget.add(inward.clone().multiplyScalar(Math.cos(performance.now() * 0.031) * shake));
     if (this.camera.position.lengthSq() === 0) this.camera.position.copy(cameraTarget);
@@ -1351,9 +1415,13 @@ export class BallisticGame {
       this.tunnelMaterial.uniforms.uPulse.value = this.lastBands.pulse;
       this.tunnelMaterial.uniforms.uSpeed.value = speedRatio;
     }
-    this.bloomPass.strength = this.reducedEffects ? 0.62 : 0.92 + this.lastBands.pulse * 0.58 + speedRatio * 0.25;
+    this.bloomPass.enabled = this.graphicsSettings.bloom;
+    this.bloomPass.strength = this.graphicsSettings.reducedFlashes ? 0.62 : 0.92 + this.lastBands.pulse * 0.58 + speedRatio * 0.25;
     this.bloomPass.radius = 0.48 + this.lastBands.highs * 0.22;
-    this.rgbPass.uniforms.amount.value = this.reducedEffects ? 0 : 0.00015 + speedRatio * 0.00055 + (this.overdriveTimer > 0 ? 0.0012 : 0) + this.damageKick * 0.0018;
+    this.rgbPass.enabled = this.graphicsSettings.chromaticAberration && !this.graphicsSettings.reducedFlashes;
+    this.rgbPass.uniforms.amount.value = this.rgbPass.enabled
+      ? 0.00015 + speedRatio * 0.00055 + (this.overdriveTimer > 0 ? 0.0012 : 0) + this.damageKick * 0.0018
+      : 0;
     this.renderer.toneMappingExposure = 0.98 + this.lastBands.pulse * 0.15;
 
     this.updateEventVisuals(dt, activeDistance);
@@ -1529,6 +1597,7 @@ export class BallisticGame {
     document.removeEventListener('visibilitychange', this.handleVisibilityChange);
     window.removeEventListener('keydown', this.handleKeyDown);
     window.removeEventListener('keyup', this.handleKeyUp);
+    window.removeEventListener('blur', this.releaseInputs);
     this.canvas.removeEventListener('pointerdown', this.handleCanvasPointerDown);
     this.disposeGroup(this.world);
     this.disposeGroup(this.dynamicLayer);
