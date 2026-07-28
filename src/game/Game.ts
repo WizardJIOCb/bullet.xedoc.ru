@@ -56,6 +56,7 @@ import {
   type RivalAISnapshot,
   type RivalAIState,
 } from './rivalAI';
+import { resolveOpponentVisualQuaternion } from './opponentVisual';
 import {
   generateTrack,
   getTrackEventSafeCorridors,
@@ -1847,26 +1848,34 @@ export class BallisticGame {
     }
   }
 
-  private pulseOpponentBeacon(visual: OpponentVisual, pulse: number, ahead = 0): void {
+  private pulseOpponentBeacon(
+    visual: OpponentVisual,
+    pulse: number,
+    ahead = 0,
+    cameraDistance = Math.abs(ahead) + 10,
+  ): void {
     const visibility = clamp(this.graphicsSettings.rivalVisibility, 0, 1);
     // Sprites are world-sized, so compensate for the chase camera distance to
     // keep their projected size readable instead of filling the screen during
     // contact or collapsing into a few pixels farther down the tunnel.
-    const screenAssist = clamp((Math.abs(ahead) + 10) / 52, 0.24, 2.05);
+    const safeCameraDistance = Number.isFinite(cameraDistance) ? Math.max(0, cameraDistance) : Math.abs(ahead) + 10;
+    const screenAssist = clamp(safeCameraDistance / 52, 0.24, 2.05);
     const pulseAmount = clamp(pulse, 0, 1);
     const beaconSize = (7.4 + visibility * 2.6) * screenAssist * (1 + pulseAmount * 0.1);
     const locatorSize = (8.2 + visibility * 2.8) * screenAssist * (1 + pulseAmount * 0.14);
     visual.beacon.scale.set(beaconSize, beaconSize, 1);
     visual.locator.scale.set(locatorSize, locatorSize, 1);
-    const behindCameraFade = ahead < -1 ? clamp((ahead + 8) / 7, 0, 1) : 1;
-    visual.beacon.material.opacity = (0.34 + visibility * 0.62) * behindCameraFade;
-    visual.locator.material.opacity = (0.42 + visibility * 0.58) * behindCameraFade;
+    // Visibility is already culled by the scene/camera. A longitudinal cutoff
+    // is wrong on curved track sections where a rival behind the player can
+    // still be plainly visible around the side of the tunnel.
+    visual.beacon.material.opacity = 0.34 + visibility * 0.62;
+    visual.locator.material.opacity = 0.42 + visibility * 0.58;
     const craftAssist = 1 + clamp((Math.abs(ahead) - 28) / 180, 0, 1) * (0.12 + visibility * 0.24);
     visual.craft.scale.copy(visual.craftBaseScale).multiplyScalar(craftAssist);
     if (visual.nameplate && visual.nameplateBaseScale) {
       const labelScale = (0.94 + visibility * 0.24) * screenAssist;
       visual.nameplate.scale.copy(visual.nameplateBaseScale).multiplyScalar(labelScale);
-      visual.nameplate.material.opacity = (0.74 + visibility * 0.26) * behindCameraFade;
+      visual.nameplate.material.opacity = 0.74 + visibility * 0.26;
     }
   }
 
@@ -3338,10 +3347,14 @@ export class BallisticGame {
       if (!rival.mesh.visible) continue;
       const frame = sampleTrackFrame(this.plan, clamp(rival.ai.distance / this.plan.length, 0, 0.9999));
       const radial = radialAt(frame, rival.ai.angle);
-      const circumferential = frame.normal.clone().multiplyScalar(-Math.sin(rival.ai.angle))
-        .add(frame.binormal.clone().multiplyScalar(Math.cos(rival.ai.angle))).normalize();
       rival.mesh.position.copy(frame.position).add(radial.clone().multiplyScalar(this.plan.radius - 1.4));
-      rival.mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(circumferential, radial, frame.tangent));
+      resolveOpponentVisualQuaternion(
+        frame.tangent,
+        radial,
+        rival.mesh.position,
+        this.camera.position,
+        rival.mesh.quaternion,
+      );
       const boost = rival.ai.boost;
       const beatGlow = rival.ai.beatImpulse * 7;
       const visibilityGain = 0.9 + this.graphicsSettings.rivalVisibility * 1.08;
@@ -3356,7 +3369,12 @@ export class BallisticGame {
         material.opacity = clamp((0.16 + boost * 0.38) * visibilityGain, 0.16, 0.84);
         trail.scale.set(1 + boost * 0.18, 1 + boost * 0.18, 1 + boost * 1.25);
       }
-      this.pulseOpponentBeacon(rival.visual, Math.max(rival.ai.beatImpulse, boost * 0.65), ahead);
+      this.pulseOpponentBeacon(
+        rival.visual,
+        Math.max(rival.ai.beatImpulse, boost * 0.65),
+        ahead,
+        rival.mesh.position.distanceTo(this.camera.position),
+      );
     }
     const interpolation = 1 - Math.exp(-Math.max(0, dt) * 14);
     for (const racer of this.remoteRacers.values()) {
@@ -3372,12 +3390,21 @@ export class BallisticGame {
       if (!racer.mesh.visible) continue;
       const frame = sampleTrackFrame(this.plan, clamp(racer.progress, 0, 0.9999));
       const radial = radialAt(frame, racer.angle);
-      const circumferential = frame.normal.clone().multiplyScalar(-Math.sin(racer.angle))
-        .add(frame.binormal.clone().multiplyScalar(Math.cos(racer.angle))).normalize();
       racer.mesh.position.copy(frame.position).add(radial.clone().multiplyScalar(this.plan.radius - 1.32));
-      racer.mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(circumferential, radial, frame.tangent));
+      resolveOpponentVisualQuaternion(
+        frame.tangent,
+        radial,
+        racer.mesh.position,
+        this.camera.position,
+        racer.mesh.quaternion,
+      );
       const speedPulse = clamp(racer.speed / Math.max(1, this.maxRunSpeed || racer.speed), 0, 1);
-      this.pulseOpponentBeacon(racer.visual, 0.16 + speedPulse * 0.42 + this.lastBands.pulse * 0.32, ahead);
+      this.pulseOpponentBeacon(
+        racer.visual,
+        0.16 + speedPulse * 0.42 + this.lastBands.pulse * 0.32,
+        ahead,
+        racer.mesh.position.distanceTo(this.camera.position),
+      );
     }
   }
 

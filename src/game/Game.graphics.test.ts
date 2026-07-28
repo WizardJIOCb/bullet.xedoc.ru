@@ -40,7 +40,7 @@ interface OpponentVisualProbe {
     nameplate: THREE.Sprite | null;
   };
   applyOpponentVisibility: (visual: unknown) => void;
-  pulseOpponentBeacon: (visual: unknown, pulse: number, ahead?: number) => void;
+  pulseOpponentBeacon: (visual: unknown, pulse: number, ahead?: number, cameraDistance?: number) => void;
 }
 
 function stubCanvasDocument(): void {
@@ -267,5 +267,42 @@ describe('BallisticGame graphics intensity controls', () => {
     expect(locator.scale.x).toBeCloseTo(baseLocatorScale * 0.24);
     expect(beacon.scale.x).toBeCloseTo(10 * 0.24);
     expect(locator.scale.x).toBeLessThan(baseLocatorScale * 0.3);
+
+    game.pulseOpponentBeacon(visual, 0, 0, 52);
+
+    // The same longitudinal position can still be far across the tunnel. Its
+    // marker must use real camera distance instead of contact-sized scaling.
+    expect(locator.scale.x).toBeCloseTo(baseLocatorScale);
+    expect(beacon.scale.x).toBeCloseTo(10);
+  });
+
+  it('does not hide the locator only because a still-rendered rival is more than eight metres behind', () => {
+    const game = Object.assign(Object.create(BallisticGame.prototype) as object, {
+      graphicsSettings: { ...cloneSettings().graphics, rivalVisibility: 1 },
+    }) as unknown as OpponentVisualProbe;
+    const craft = new THREE.Group();
+    craft.scale.setScalar(0.72);
+    craft.add(new THREE.Mesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshBasicMaterial({ color: 0x05070a }),
+    ));
+    const beacon = new THREE.Sprite(new THREE.SpriteMaterial({ transparent: true }));
+    const locator = new THREE.Sprite(new THREE.SpriteMaterial({ transparent: true, depthTest: false }));
+    const nameplate = new THREE.Sprite(new THREE.SpriteMaterial({ transparent: true, depthTest: false }));
+    nameplate.scale.set(6.2, 1.16, 1);
+    const visual = game.prepareOpponentVisual(craft, 'ai', 0xff5c82, beacon, locator, nameplate);
+
+    // updateRivalVisuals deliberately keeps opponents rendered down to -100 m.
+    // A distance-only opacity cutoff at -8 m makes the screen-space locator and
+    // label disappear even when Three.js would still project them into view.
+    game.pulseOpponentBeacon(visual, 0, -30);
+
+    expect(locator.material.opacity).toBeGreaterThan(0);
+    expect(nameplate.material.opacity).toBeGreaterThan(0);
+
+    game.pulseOpponentBeacon(visual, 0, -99);
+
+    expect(locator.material.opacity).toBeGreaterThan(0);
+    expect(nameplate.material.opacity).toBeGreaterThan(0);
   });
 });
