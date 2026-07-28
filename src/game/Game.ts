@@ -22,6 +22,7 @@ import {
   type UpgradeId,
 } from '../core/types';
 import type { ControlBindings, GraphicsSettings, InputAction, SettingsState } from '../settings/SettingsStore';
+import { resolveBoostVisualTarget, stepBoostVisualIntensity } from './boost';
 import { computeObstacleKnockback, isObstacleCollision } from './collision';
 import { classifyMusicEventTiming, isInsideMusicEventWindow, synchronizeDistanceToMusic } from './rhythm';
 import { stepWallRideSteering, type SteeringInput } from './steering';
@@ -92,6 +93,27 @@ interface ChaseImpactEffect {
   sparkPeakOpacity: number;
 }
 
+interface BoostStreakSpec {
+  angle: number;
+  radius: number;
+  offset: number;
+  speed: number;
+  length: number;
+}
+
+interface ChaseBoostEffect {
+  group: THREE.Group;
+  shell: THREE.Mesh;
+  shellMaterial: THREE.ShaderMaterial;
+  streaks: THREE.LineSegments;
+  streakMaterial: THREE.LineBasicMaterial;
+  streakSpecs: BoostStreakSpec[];
+  rings: THREE.Mesh[];
+  ringMaterials: THREE.MeshBasicMaterial[];
+  kickRing: THREE.Mesh;
+  kickMaterial: THREE.MeshBasicMaterial;
+}
+
 interface StreakSpec {
   angle: number;
   radial: number;
@@ -125,8 +147,10 @@ export class BallisticGame {
   private readonly rivals: Rival[] = [];
   private readonly vehicle: THREE.Group;
   private readonly engineGlow: THREE.Group;
+  private readonly vehicleThrustTrails: THREE.Mesh[];
   private readonly vehicleImpactGlow: THREE.Group;
   private readonly vehicleImpactMaterial: THREE.MeshBasicMaterial;
+  private readonly chaseBoostEffect: ChaseBoostEffect;
   private streakGeometry: THREE.BufferGeometry | null = null;
   private streakLines: THREE.LineSegments | null = null;
   private streaks: StreakSpec[] = [];
@@ -157,6 +181,10 @@ export class BallisticGame {
   private weaponCooldown = 0;
   private phaseTimer = 0;
   private overdriveTimer = 0;
+  private boostVisualTarget = 0;
+  private boostVisualIntensity = 0;
+  private boostVisualKick = 0;
+  private boostVisualClock = 0;
   private overheatTimer = 0;
   private invulnerableTimer = 0;
   private perfects = 0;
@@ -218,6 +246,7 @@ export class BallisticGame {
     const craft = this.createCraft(0x37f6ff, 0xa55cff, 1.16);
     this.vehicle = craft.group;
     this.engineGlow = craft.engineGlow;
+    this.vehicleThrustTrails = craft.thrustTrails;
     this.vehicleImpactGlow = craft.impactGlow;
     this.vehicleImpactMaterial = craft.impactMaterial;
     this.vehicle.traverse((object) => {
@@ -231,6 +260,8 @@ export class BallisticGame {
         ? object.userData.chaseLayer
         : materials.some((material) => material.transparent) ? 34 : 32;
     });
+    this.chaseBoostEffect = this.createChaseBoostEffect();
+    this.vehicle.add(this.chaseBoostEffect.group);
     this.chaseScene.add(this.vehicle);
 
     this.plan = generateTrack(TRACKS.aurora, this.audio.getProfile(), 1);
@@ -374,6 +405,7 @@ export class BallisticGame {
   backToMenu(): void {
     this.audio.stop();
     this.state = 'menu';
+    this.resetBoostVisuals();
     this.config = null;
     this.pendingUpgradeOptions = [];
     this.queuedUpgradePicks = 0;
@@ -473,6 +505,7 @@ export class BallisticGame {
         uEnergy: { value: 0.25 },
         uPulse: { value: 0 },
         uSpeed: { value: 0 },
+        uBoost: { value: 0 },
         uPrimary: { value: new THREE.Color(primary) },
         uSecondary: { value: new THREE.Color(secondary) },
       },
@@ -492,6 +525,7 @@ export class BallisticGame {
         uniform float uEnergy;
         uniform float uPulse;
         uniform float uSpeed;
+        uniform float uBoost;
         uniform vec3 uPrimary;
         uniform vec3 uSecondary;
 
@@ -505,10 +539,14 @@ export class BallisticGame {
           float lanes = line(vUv.y * 12.0, 0.022);
           float micro = line(vUv.x * 720.0 - uTime * (0.2 + uSpeed * 0.8), 0.012) * 0.18;
           float pulseWave = pow(max(0.0, sin(vUv.x * 82.0 - uTime * 6.0)), 14.0) * (0.12 + uPulse * 0.5);
+          float warpBands = pow(max(0.0, sin(vUv.x * (105.0 + uBoost * 48.0) - uTime * (8.0 + uBoost * 15.0))), 24.0);
+          float warpLanes = line(vUv.y * 24.0 + uTime * uBoost * 0.35, 0.014) * uBoost;
           vec3 base = vec3(0.003, 0.006, 0.013) + uPrimary * 0.014;
           vec3 railColor = mix(uPrimary, uSecondary, smoothstep(0.1, 0.9, vUv.y));
           float edge = pow(1.0 - abs(dot(normalize(vNormal), vec3(0.0, 0.0, 1.0))), 2.0);
           vec3 color = base + railColor * (ribs * (0.34 + uEnergy * 0.9) + lanes * 0.4 + micro + pulseWave);
+          color += mix(railColor, vec3(0.72, 0.94, 1.0), 0.66)
+            * uBoost * (warpBands * 0.18 + warpLanes * 0.065 + micro * 0.24);
           color += uSecondary * edge * 0.018;
           gl_FragColor = vec4(color, 1.0);
         }
@@ -973,6 +1011,7 @@ export class BallisticGame {
   private createCraft(primary: number, secondary: number, scale: number): {
     group: THREE.Group;
     engineGlow: THREE.Group;
+    thrustTrails: THREE.Mesh[];
     impactGlow: THREE.Group;
     impactMaterial: THREE.MeshBasicMaterial;
   } {
@@ -1061,6 +1100,7 @@ export class BallisticGame {
 
     const engineGlow = new THREE.Group();
     engineGlow.position.z = -1.9;
+    const thrustTrails: THREE.Mesh[] = [];
     const engineCasingGeometry = new THREE.CylinderGeometry(0.34, 0.42, 0.74, 10);
     engineCasingGeometry.rotateX(Math.PI / 2);
     for (const x of [-0.72, 0.72]) {
@@ -1101,6 +1141,8 @@ export class BallisticGame {
         }),
       );
       trail.position.set(x, 0, -1.62);
+      trail.userData.baseOpacity = 0.14;
+      thrustTrails.push(trail);
       group.add(trail);
     }
     const reactorMaterial = glowMaterial.clone();
@@ -1149,7 +1191,275 @@ export class BallisticGame {
       engineGlow,
       impactGlow,
     );
-    return { group, engineGlow, impactGlow, impactMaterial };
+    return { group, engineGlow, thrustTrails, impactGlow, impactMaterial };
+  }
+
+  private createChaseBoostEffect(): ChaseBoostEffect {
+    const group = new THREE.Group();
+    group.visible = false;
+    group.name = 'player-boost-warp';
+
+    const shellMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uIntensity: { value: 0 },
+        uPrimary: { value: new THREE.Color(0x56f7ff) },
+        uSecondary: { value: new THREE.Color(0xa66cff) },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        varying vec3 vViewNormal;
+        void main() {
+          vUv = uv;
+          vViewNormal = normalize(normalMatrix * normal);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        varying vec2 vUv;
+        varying vec3 vViewNormal;
+        uniform float uTime;
+        uniform float uIntensity;
+        uniform vec3 uPrimary;
+        uniform vec3 uSecondary;
+
+        void main() {
+          float bandPhase = (vUv.y * 10.0 - uTime * 5.4) * 6.2831853;
+          float bands = pow(max(0.0, sin(bandPhase)), 18.0);
+          float rim = pow(1.0 - abs(vViewNormal.z), 1.7);
+          float taperFade = smoothstep(0.0, 0.16, vUv.y) * (1.0 - smoothstep(0.72, 1.0, vUv.y));
+          float shimmer = 0.72 + 0.28 * sin(uTime * 8.0 + vUv.x * 12.0);
+          vec3 color = mix(uPrimary, uSecondary, 0.5 + 0.5 * sin(vUv.x * 9.0 + uTime * 1.8));
+          float alpha = uIntensity * taperFade * shimmer * (0.018 + bands * 0.12 + rim * 0.045);
+          gl_FragColor = vec4(color, alpha);
+        }
+      `,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthTest: false,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      toneMapped: false,
+    });
+    const shellGeometry = new THREE.ConeGeometry(2.65, 9.4, 32, 1, true);
+    shellGeometry.rotateX(Math.PI / 2);
+    const shell = new THREE.Mesh(shellGeometry, shellMaterial);
+    shell.position.z = 3.15;
+    shell.renderOrder = 26;
+    shell.frustumCulled = false;
+    group.add(shell);
+
+    const random = mulberry32(0xb0057eed);
+    const streakCount = 64;
+    const streakSpecs: BoostStreakSpec[] = [];
+    const streakPositions = new Float32Array(streakCount * 6);
+    const streakColors = new Float32Array(streakCount * 6);
+    const cyan = new THREE.Color(0x77fbff);
+    const violet = new THREE.Color(0xb277ff);
+    const white = new THREE.Color(0xeaffff);
+    for (let index = 0; index < streakCount; index += 1) {
+      streakSpecs.push({
+        angle: random() * TAU,
+        radius: 2.5 + random() * 4.8,
+        offset: random(),
+        speed: 0.72 + random() * 0.76,
+        length: 1.8 + random() * 4.6,
+      });
+      const base = index % 3 === 0 ? violet : cyan;
+      streakColors.set([
+        base.r * 0.36,
+        base.g * 0.36,
+        base.b * 0.36,
+        white.r,
+        white.g,
+        white.b,
+      ], index * 6);
+    }
+    const streakGeometry = new THREE.BufferGeometry();
+    streakGeometry.setAttribute('position', new THREE.BufferAttribute(streakPositions, 3));
+    streakGeometry.setAttribute('color', new THREE.BufferAttribute(streakColors, 3));
+    const streakMaterial = new THREE.LineBasicMaterial({
+      vertexColors: true,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+    });
+    const streaks = new THREE.LineSegments(streakGeometry, streakMaterial);
+    streaks.renderOrder = 27;
+    streaks.frustumCulled = false;
+    group.add(streaks);
+
+    const rings: THREE.Mesh[] = [];
+    const ringMaterials: THREE.MeshBasicMaterial[] = [];
+    for (let index = 0; index < 5; index += 1) {
+      const material = new THREE.MeshBasicMaterial({
+        color: index % 2 === 0 ? 0x75fbff : 0xb77aff,
+        transparent: true,
+        opacity: 0,
+        blending: THREE.AdditiveBlending,
+        depthTest: false,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        toneMapped: false,
+      });
+      const ring = new THREE.Mesh(new THREE.RingGeometry(0.95, 1.08, 40), material);
+      ring.renderOrder = 28;
+      ring.frustumCulled = false;
+      rings.push(ring);
+      ringMaterials.push(material);
+      group.add(ring);
+    }
+
+    const kickMaterial = new THREE.MeshBasicMaterial({
+      color: 0x9ffcff,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthTest: false,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      toneMapped: false,
+    });
+    const kickRing = new THREE.Mesh(new THREE.RingGeometry(0.84, 0.96, 48), kickMaterial);
+    kickRing.position.z = 2.35;
+    kickRing.renderOrder = 29;
+    kickRing.frustumCulled = false;
+    group.add(kickRing);
+
+    return {
+      group,
+      shell,
+      shellMaterial,
+      streaks,
+      streakMaterial,
+      streakSpecs,
+      rings,
+      ringMaterials,
+      kickRing,
+      kickMaterial,
+    };
+  }
+
+  private resetBoostVisuals(): void {
+    this.boostVisualTarget = 0;
+    this.boostVisualIntensity = 0;
+    this.boostVisualKick = 0;
+    this.boostVisualClock = 0;
+    this.chaseBoostEffect.group.visible = false;
+    this.chaseBoostEffect.shellMaterial.uniforms.uIntensity.value = 0;
+    this.chaseBoostEffect.streakMaterial.opacity = 0;
+    this.chaseBoostEffect.kickMaterial.opacity = 0;
+    this.chaseBoostEffect.kickRing.visible = false;
+    for (let index = 0; index < this.chaseBoostEffect.rings.length; index += 1) {
+      this.chaseBoostEffect.rings[index].visible = false;
+      this.chaseBoostEffect.ringMaterials[index].opacity = 0;
+    }
+    for (const trail of this.vehicleThrustTrails) {
+      (trail.material as THREE.MeshBasicMaterial).opacity = Number(trail.userData.baseOpacity) || 0.14;
+      trail.scale.set(1, 1, 1);
+    }
+    this.chaseCamera.fov = 76;
+    this.chaseCamera.updateProjectionMatrix();
+  }
+
+  private updateChaseBoostVisuals(dt: number): void {
+    const target = this.state === 'playing' ? this.boostVisualTarget : 0;
+    this.boostVisualIntensity = stepBoostVisualIntensity(this.boostVisualIntensity, target, dt);
+    this.boostVisualKick *= Math.exp(-dt * 6.4);
+    if (target <= 0 && this.boostVisualIntensity < 0.001) this.boostVisualIntensity = 0;
+    if (this.boostVisualKick < 0.001) this.boostVisualKick = 0;
+
+    const normalized = clamp(this.boostVisualIntensity / 1.2, 0, 1);
+    const kick = clamp(this.boostVisualKick, 0, 1);
+    const visible = normalized > 0.001 || kick > 0.001;
+    const effect = this.chaseBoostEffect;
+    effect.group.visible = visible;
+    if (!visible) {
+      for (const trail of this.vehicleThrustTrails) {
+        (trail.material as THREE.MeshBasicMaterial).opacity = Number(trail.userData.baseOpacity) || 0.14;
+        trail.scale.set(1, 1, 1);
+      }
+      this.chaseCamera.fov = damp(this.chaseCamera.fov, 76, 10, dt);
+      this.chaseCamera.updateProjectionMatrix();
+      return;
+    }
+
+    this.boostVisualClock += dt * (1.15 + normalized * 2.45);
+    const reduced = this.graphicsSettings.reducedFlashes;
+    effect.shellMaterial.uniforms.uTime.value = this.boostVisualClock;
+    effect.shellMaterial.uniforms.uIntensity.value = normalized * (reduced ? 0.48 : 1);
+    effect.shell.scale.setScalar(1 + Math.sin(this.boostVisualClock * 8.5) * 0.012 * normalized);
+
+    const activeStreakCount = this.graphicsSettings.quality === 'performance'
+      ? 20
+      : this.graphicsSettings.quality === 'balanced'
+        ? 42
+        : 64;
+    effect.streaks.geometry.setDrawRange(0, activeStreakCount * 2);
+    const streakAttribute = effect.streaks.geometry.getAttribute('position') as THREE.BufferAttribute;
+    const streakPositions = streakAttribute.array as Float32Array;
+    for (let index = 0; index < activeStreakCount; index += 1) {
+      const spec = effect.streakSpecs[index];
+      const progress = (this.boostVisualClock * spec.speed + spec.offset) % 1;
+      const spiral = spec.angle + Math.sin(this.boostVisualClock * 0.6 + index) * 0.035;
+      const radialScale = 0.72 + progress * 0.34;
+      const x = Math.cos(spiral) * spec.radius * radialScale;
+      const y = Math.sin(spiral) * spec.radius * radialScale;
+      const headZ = 14 - progress * 19;
+      const trailLength = spec.length * (0.58 + normalized * 1.92 + kick * 0.45);
+      const offset = index * 6;
+      streakPositions[offset] = x;
+      streakPositions[offset + 1] = y;
+      streakPositions[offset + 2] = headZ;
+      streakPositions[offset + 3] = x;
+      streakPositions[offset + 4] = y;
+      streakPositions[offset + 5] = headZ + trailLength;
+    }
+    streakAttribute.needsUpdate = true;
+    effect.streakMaterial.opacity = normalized * (reduced ? 0.27 : 0.58);
+
+    const activeRingCount = this.graphicsSettings.quality === 'performance'
+      ? 2
+      : this.graphicsSettings.quality === 'balanced'
+        ? 4
+        : 5;
+    for (let index = 0; index < effect.rings.length; index += 1) {
+      const ring = effect.rings[index];
+      const material = effect.ringMaterials[index];
+      ring.visible = index < activeRingCount;
+      if (!ring.visible) {
+        material.opacity = 0;
+        continue;
+      }
+      const progress = (this.boostVisualClock * 0.72 + index / activeRingCount) % 1;
+      const fade = Math.sin(progress * Math.PI) ** 2;
+      ring.position.z = 1.65 + progress * 11.4;
+      ring.scale.setScalar(0.76 + progress * 2.5 + kick * 0.12);
+      material.opacity = normalized * fade * (reduced ? 0.1 : 0.24)
+        * (0.86 + this.lastBands.pulse * 0.24);
+    }
+
+    const kickProgress = 1 - kick;
+    effect.kickRing.visible = kick > 0.001;
+    effect.kickRing.scale.setScalar(0.88 + kickProgress * 2.05 + normalized * 0.14);
+    effect.kickMaterial.opacity = kick * (reduced ? 0.1 : 0.34);
+
+    for (const trail of this.vehicleThrustTrails) {
+      (trail.material as THREE.MeshBasicMaterial).opacity = 0.14
+        + normalized * (reduced ? 0.17 : 0.4);
+      trail.scale.set(
+        1 + normalized * 0.16,
+        1 + normalized * 0.16,
+        1 + normalized * 1.45 + kick * 0.18,
+      );
+    }
+
+    const chaseFov = 76 + normalized * 4.8 + kick * (reduced ? 0.6 : 2.1);
+    this.chaseCamera.fov = damp(this.chaseCamera.fov, chaseFov, 10, dt);
+    this.chaseCamera.updateProjectionMatrix();
   }
 
   private resetRun(): void {
@@ -1189,6 +1499,7 @@ export class BallisticGame {
     this.weaponCooldown = 0;
     this.phaseTimer = 0;
     this.overdriveTimer = 0;
+    this.resetBoostVisuals();
     this.overheatTimer = 0;
     this.invulnerableTimer = 0;
     this.impactFlashTimer = 0;
@@ -1334,6 +1645,16 @@ export class BallisticGame {
       this.sync = 0;
       this.hooks.onToast('FORCED VENT', 'Реактор перегрет — тяга отключена', 'red');
     }
+
+    const nextBoostVisualTarget = resolveBoostVisualTarget(
+      Boolean(boosting && this.flux > 0 && this.overheatTimer <= 0),
+      overdrive,
+    );
+    if (nextBoostVisualTarget > this.boostVisualTarget + 0.12) {
+      this.boostVisualKick = 1;
+      this.boostVisualClock = 0;
+    }
+    this.boostVisualTarget = nextBoostVisualTarget;
 
     const proposedDistance = this.distance + this.speed * dt;
     this.distance = Math.min(
@@ -1634,16 +1955,26 @@ export class BallisticGame {
     const circumferential = frame.normal.clone().multiplyScalar(-Math.sin(this.angle)).add(frame.binormal.clone().multiplyScalar(Math.cos(this.angle))).normalize();
     const phaseTarget = this.phaseTimer > 0 ? this.plan.radius * 0.22 : this.plan.radius - 1.15;
     this.cameraRadial = damp(this.cameraRadial || phaseTarget, phaseTarget, this.phaseTimer > 0 ? 7 : 4, dt);
+    this.updateChaseBoostVisuals(dt);
+    const boostStrength = clamp(this.boostVisualIntensity / 1.2, 0, 1);
+    const boostKick = clamp(this.boostVisualKick, 0, 1);
     const craftLean = clamp(this.angularVelocity * 0.045, -0.24, 0.24);
     this.impactFlashTimer = Math.max(0, this.impactFlashTimer - dt);
     const impactEnvelope = clamp(this.impactFlashTimer / 0.46, 0, 1);
     const impactRecoil = this.impactSlide * impactEnvelope;
     this.vehicle.position.x = damp(this.vehicle.position.x, -craftLean * 1.35 - impactRecoil * 0.82, 10, dt);
     this.vehicle.position.y = damp(this.vehicle.position.y, -2.7, 7, dt);
-    this.vehicle.position.z = damp(this.vehicle.position.z || -8.6, -8.6, 9, dt);
-    this.vehicle.rotation.set(-0.06 + impactEnvelope * 0.035, Math.PI, craftLean + impactRecoil * 0.16);
+    const vehicleDepth = -8.6 + boostStrength * 0.3 + boostKick * 0.12;
+    this.vehicle.position.z = damp(this.vehicle.position.z || -8.6, vehicleDepth, 9, dt);
+    this.vehicle.rotation.set(
+      -0.06 - boostStrength * 0.028 + impactEnvelope * 0.035,
+      Math.PI,
+      craftLean + impactRecoil * 0.16,
+    );
     this.vehicle.visible = this.state !== 'menu' && (this.state !== 'finished' || holdingFinalImpact);
-    this.engineGlow.scale.setScalar(0.75 + this.lastBands.bass * 0.8 + (this.overdriveTimer > 0 ? 1.1 : 0));
+    this.engineGlow.scale.setScalar(
+      0.75 + this.lastBands.bass * 0.8 + boostStrength * 0.72 + (this.overdriveTimer > 0 ? 0.16 : 0),
+    );
     this.vehicleImpactGlow.visible = impactEnvelope > 0.001;
     this.vehicleImpactGlow.scale.setScalar(1 + (1 - impactEnvelope) * 0.09);
     this.vehicleImpactMaterial.opacity = (
@@ -1656,7 +1987,8 @@ export class BallisticGame {
     const inward = radial.clone().multiplyScalar(-1);
     const shake = (!this.graphicsSettings.cameraShake || this.graphicsSettings.reducedFlashes)
       ? 0
-      : (speedRatio * 0.025 + this.damageKick * 0.16) * (0.3 + this.lastBands.bass);
+      : (speedRatio * 0.025 + boostStrength * 0.035 + boostKick * 0.045 + this.damageKick * 0.16)
+        * (0.3 + this.lastBands.bass);
     cameraTarget.add(circumferential.clone().multiplyScalar(Math.sin(performance.now() * 0.037) * shake));
     cameraTarget.add(inward.clone().multiplyScalar(Math.cos(performance.now() * 0.031) * shake));
     cameraTarget.add(circumferential.clone().multiplyScalar(-impactRecoil * 0.28));
@@ -1666,7 +1998,14 @@ export class BallisticGame {
     const lookRadial = radialAt(lookFrame, this.angle).multiplyScalar(Math.max(0.5, this.cameraRadial - 1));
     const lookTarget = lookFrame.position.clone().add(lookRadial);
     this.camera.lookAt(lookTarget);
-    const targetFov = clamp(72 + speedRatio * 19 + (this.overdriveTimer > 0 ? 3 : 0), 74, 98);
+    const boostFov = this.graphicsSettings.reducedFlashes
+      ? boostStrength * 2.1 + boostKick * 0.65
+      : boostStrength * 5.4 + boostKick * 2.2;
+    const targetFov = clamp(
+      72 + speedRatio * 19 + boostFov + (this.overdriveTimer > 0 ? 2 : 0),
+      74,
+      103,
+    );
     this.camera.fov = damp(this.camera.fov, targetFov, 4.5, dt);
     this.camera.updateProjectionMatrix();
     this.damageKick *= Math.exp(-dt * 8);
@@ -1676,24 +2015,29 @@ export class BallisticGame {
       this.tunnelMaterial.uniforms.uEnergy.value = this.lastBands.overall;
       this.tunnelMaterial.uniforms.uPulse.value = this.lastBands.pulse;
       this.tunnelMaterial.uniforms.uSpeed.value = speedRatio;
+      this.tunnelMaterial.uniforms.uBoost.value = boostStrength
+        * (this.graphicsSettings.reducedFlashes ? 0.52 : 1);
     }
     this.bloomPass.enabled = this.graphicsSettings.bloom;
     this.bloomPass.strength = this.graphicsSettings.reducedFlashes
-      ? 0.62 + this.damageKick * 0.12
-      : 0.92 + this.lastBands.pulse * 0.58 + speedRatio * 0.25 + this.damageKick * 0.38;
+      ? 0.62 + boostStrength * 0.08 + this.damageKick * 0.12
+      : 0.92 + this.lastBands.pulse * 0.58 + speedRatio * 0.25 + boostStrength * 0.11
+        + boostKick * 0.06 + this.damageKick * 0.38;
     this.bloomPass.radius = 0.48 + this.lastBands.highs * 0.22;
     this.rgbPass.enabled = this.graphicsSettings.chromaticAberration && !this.graphicsSettings.reducedFlashes;
     this.rgbPass.uniforms.amount.value = this.rgbPass.enabled
-      ? 0.00015 + speedRatio * 0.00055 + (this.overdriveTimer > 0 ? 0.0012 : 0) + this.damageKick * 0.0018
+      ? 0.00015 + speedRatio * 0.00055 + boostStrength * 0.00072 + boostKick * 0.00038
+        + (this.overdriveTimer > 0 ? 0.0008 : 0) + this.damageKick * 0.0018
       : 0;
     this.renderer.toneMappingExposure = 0.98
       + this.lastBands.pulse * 0.15
+      + boostStrength * (this.graphicsSettings.reducedFlashes ? 0.008 : 0.016)
       + this.damageKick * (this.graphicsSettings.reducedFlashes ? 0.025 : 0.08);
 
     this.updateEventVisuals(dt, activeDistance);
     this.updateBulletVisuals();
     this.updateRivalVisuals();
-    this.updateStreaks(activeDistance, speedRatio);
+    this.updateStreaks(activeDistance, speedRatio, boostStrength);
     this.updateBursts(dt);
     this.updateChaseImpactEffects(dt);
     this.impactSlide *= Math.exp(-dt * 6.5);
@@ -1741,16 +2085,20 @@ export class BallisticGame {
     }
   }
 
-  private updateStreaks(activeDistance: number, speedRatio: number): void {
+  private updateStreaks(activeDistance: number, speedRatio: number, boostStrength: number): void {
     if (!this.streakGeometry) return;
     const attribute = this.streakGeometry.getAttribute('position') as THREE.BufferAttribute;
     const positions = attribute.array as Float32Array;
-    const travel = (this.audio.getTime() * (80 + speedRatio * 220)) % 220;
+    const travel = (this.audio.getTime() * (80 + speedRatio * 220 + boostStrength * 520)) % 220;
     for (let index = 0; index < this.streaks.length; index += 1) {
       const spec = this.streaks[index];
       const offset = 12 + ((spec.offset - travel + 440) % 220);
       const startDistance = clamp(activeDistance + offset, 0, this.plan.length - 2);
-      const endDistance = clamp(startDistance + spec.length * (1 + speedRatio * 2.8), 0, this.plan.length - 1);
+      const endDistance = clamp(
+        startDistance + spec.length * (1 + speedRatio * 2.8 + boostStrength * 7.2),
+        0,
+        this.plan.length - 1,
+      );
       const startFrame = sampleTrackFrame(this.plan, startDistance / this.plan.length);
       const endFrame = sampleTrackFrame(this.plan, endDistance / this.plan.length);
       const start = startFrame.position.clone().add(radialAt(startFrame, spec.angle).multiplyScalar(spec.radial));
@@ -1763,6 +2111,13 @@ export class BallisticGame {
       positions[index * 6 + 5] = end.z;
     }
     attribute.needsUpdate = true;
+    if (this.streakLines) {
+      (this.streakLines.material as THREE.LineBasicMaterial).opacity = clamp(
+        0.54 + boostStrength * (this.graphicsSettings.reducedFlashes ? 0.1 : 0.34),
+        0,
+        0.92,
+      );
+    }
   }
 
   private spawnImpactEffects(
