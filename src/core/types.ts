@@ -193,7 +193,7 @@ export const TRACKS: Record<TrackId, TrackTheme> = {
     name: 'Pulse Forge',
     kicker: 'INDUSTRIAL / 04',
     description: 'Раскалённый индустриальный коридор: плотные минные поля, ритмичные ворота и максимальная плотность событий.',
-    seed: 0xf0rge & 0xffffffff || 0xf0a6e,
+    seed: 0xf0a6e,
     radius: 11.8,
     colors: {
       background: 0x05010a,
