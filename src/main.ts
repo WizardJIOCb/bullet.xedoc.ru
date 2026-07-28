@@ -563,6 +563,7 @@ const UPGRADE_ICON_PATHS: Record<UpgradeId, string> = {
   'echo-shield': '<path d="M12 3 19 6v5c0 4.4-2.7 7.6-7 10-4.3-2.4-7-5.6-7-10V6l7-3Z"/><path d="M9 9c2-2 4-2 6 0M8 13c2.7-2.5 5.3-2.5 8 0"/>',
   afterburner: '<path d="M13 2c1 5-3 6-3 10 0 2 1 3 2 4-4 0-6-2-6-5-2 3-1 9 6 11 7-2 8-9 4-13 0 3-1 4-2 5 1-5-1-8-1-12Z"/>',
   'flux-magnet': '<path d="M5 4v9a7 7 0 0 0 14 0V4h-5v9a2 2 0 0 1-4 0V4H5Z"/><path d="M5 8h5m4 0h5"/>',
+  'temporal-core': '<circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2M5 5l2 2m10-2-2 2M9 2h6"/>',
 };
 
 function upgradeIcon(id: UpgradeId): string {

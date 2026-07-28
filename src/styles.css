@@ -265,7 +265,7 @@ label:focus-within {
 
 .track-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -381,6 +381,13 @@ label:focus-within {
 .track-card__visual--aurora { color: #42f8ff; }
 .track-card__visual--reactor { color: #ff9c31; background: radial-gradient(ellipse, rgba(255, 106, 37, 0.22), transparent 46%), linear-gradient(160deg, #301207, #070202 75%); }
 .track-card__visual--void { color: #b57cff; background: radial-gradient(ellipse, rgba(172, 83, 255, 0.24), transparent 46%), linear-gradient(160deg, #1e0b37, #030208 75%); }
+.track-card__visual--forge {
+  color: #ffc93a;
+  background:
+    repeating-conic-gradient(from 45deg at 50% 50%, rgba(255, 33, 91, 0.18) 0 8deg, transparent 8deg 22deg),
+    radial-gradient(ellipse, rgba(255, 201, 58, 0.27), transparent 48%),
+    linear-gradient(160deg, #35050f, #090106 75%);
+}
 
 .track-card__meta,
 .track-card strong,
@@ -3316,7 +3323,7 @@ kbd {
   .online-panel { grid-column: 1; }
   .track-grid {
     overflow-x: auto;
-    grid-template-columns: repeat(3, minmax(220px, 1fr));
+    grid-template-columns: repeat(4, minmax(220px, 1fr));
     padding-bottom: 6px;
   }
   .settings-dialog {
@@ -3343,7 +3350,7 @@ kbd {
   .loadout-panel { grid-row: auto; }
   .launch-panel { grid-column: 1; }
   .game-title { font-size: clamp(58px, 16vw, 100px); }
-  .track-grid { grid-template-columns: repeat(3, minmax(220px, 1fr)); }
+  .track-grid { grid-template-columns: repeat(4, minmax(220px, 1fr)); }
   .garage-grid { grid-template-columns: 1fr 1fr; }
   .hud-left { top: auto; bottom: 92px; transform: none; }
   .hud-right { top: auto; bottom: 92px; transform: none; }
@@ -3573,7 +3580,7 @@ html.is-run-active body {
   }
 
   .track-grid {
-    grid-template-columns: repeat(3, minmax(min(82vw, 340px), 1fr));
+    grid-template-columns: repeat(4, minmax(min(82vw, 340px), 1fr));
     gap: 9px;
     margin-inline: calc(-1 * max(0px, env(safe-area-inset-left)));
     padding:

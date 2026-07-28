@@ -70,9 +70,9 @@ describe('LobbyServer rooms', () => {
     send(guest, { type: 'room:join', code: created.code });
     expect(host.last('room:snapshot')!.room.players).toHaveLength(2);
 
-    send(guest, { type: 'room:settings', settings: { track: 'void', aiOpponents: 1, playerSlots: 3 } });
+    send(guest, { type: 'room:settings', settings: { track: 'forge', aiOpponents: 1, playerSlots: 3 } });
     expect(guest.last('error')?.code).toBe('HOST_ONLY');
-    send(host, { type: 'room:settings', settings: { track: 'void', aiOpponents: 1, playerSlots: 3 } });
+    send(host, { type: 'room:settings', settings: { track: 'forge', aiOpponents: 1, playerSlots: 3 } });
     send(guest, { type: 'chat:send', text: '  ready\n  now  ' });
     expect(host.last('chat:message')?.message.text).toBe('ready now');
 
@@ -81,10 +81,10 @@ describe('LobbyServer rooms', () => {
     send(host, { type: 'race:start' });
     const race = host.last('race:started')!.config;
     expect(race).toEqual(expect.objectContaining({
-      track: 'void', aiOpponents: 1, seed: 0x40000000, startsAt: 11_500,
+      track: 'forge', aiOpponents: 1, seed: 0x40000000, startsAt: 11_500,
     }));
     expect(race.humans).toHaveLength(2);
-    expect(race.humans[0].runConfig).toEqual(expect.objectContaining({ track: 'void', seed: race.seed }));
+    expect(race.humans[0].runConfig).toEqual(expect.objectContaining({ track: 'forge', seed: race.seed }));
     expect(race.humans[1].runConfig.weapon).toBe('rail');
     expect(race.humans[0].runConfig.garage).not.toBe(loadout.garage);
     expect(host.last('room:snapshot')!.room.phase).toBe('racing');

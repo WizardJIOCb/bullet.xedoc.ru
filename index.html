@@ -50,7 +50,7 @@
 
             <div class="track-heading">
               <span>01 / ВЫБЕРИ СИГНАЛ ТРАССЫ</span>
-              <span id="track-count">03 ROUTES ONLINE</span>
+              <span id="track-count">04 ROUTES ONLINE</span>
             </div>
             <div class="track-grid" role="radiogroup" aria-label="Выбор трассы">
               <button class="track-card is-selected" data-track="aurora" type="button" role="radio" aria-checked="true">
@@ -79,6 +79,12 @@
                 <span class="track-card__meta">VOID / 03</span>
                 <strong>Null Cathedral</strong>
                 <small>Штопоры / богатый Flux</small>
+              </button>
+              <button class="track-card" data-track="forge" type="button" role="radio" aria-checked="false">
+                <span class="track-card__visual track-card__visual--forge"><i></i><i></i><i></i></span>
+                <span class="track-card__meta">INDUSTRIAL / 04</span>
+                <strong>Pulse Forge</strong>
+                <small>Плотные ворота / x1.35 hazard</small>
               </button>
             </div>
           </section>
@@ -307,6 +313,7 @@
                       <option value="aurora">AURORA SPINE</option>
                       <option value="reactor">SOLAR RUPTURE</option>
                       <option value="void">NULL CATHEDRAL</option>
+                      <option value="forge">PULSE FORGE</option>
                     </select>
                   </label>
                   <label for="online-ai">AI OPPONENTS <output id="online-ai-value" for="online-ai">3</output>

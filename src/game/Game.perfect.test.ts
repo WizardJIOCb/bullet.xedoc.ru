@@ -10,6 +10,7 @@ interface PerfectHarness {
   heat: number;
   shield: number;
   maxShield: number;
+  temporalFocusTimer: number;
   runUpgrades: Set<string>;
   audio: { accentMusic: Mock; playEffect: Mock };
   hooks: { onToast: Mock };
@@ -24,6 +25,7 @@ function harness(): PerfectHarness {
     heat: 50,
     shield: 3,
     maxShield: 3,
+    temporalFocusTimer: 0,
     runUpgrades: new Set<string>(),
     audio: { accentMusic: vi.fn(), playEffect: vi.fn() },
     hooks: { onToast: vi.fn() },
@@ -45,5 +47,15 @@ describe('BallisticGame perfect music feedback', () => {
     expect(game.sync).toBe(4);
     expect(game.flux).toBe(20);
     expect(game.hooks.onToast).toHaveBeenCalledOnce();
+  });
+
+  it('makes Temporal Core reward a perfect cue and opens a short handling-focus window', () => {
+    const game = harness();
+    game.runUpgrades.add('temporal-core');
+
+    game.registerPerfect('GATE SYNC');
+
+    expect(game.score).toBeCloseTo(180 * 1.08 * 1.35);
+    expect(game.temporalFocusTimer).toBe(1.2);
   });
 });

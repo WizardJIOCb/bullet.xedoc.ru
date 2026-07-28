@@ -155,6 +155,9 @@ interface StreakSpec {
 
 const FIXED_STEP = 1 / 120;
 const UPGRADES_AT = [0.31, 0.64];
+const TEMPORAL_FOCUS_DURATION = 1.2;
+const TEMPORAL_HANDLING_MULTIPLIER = 1.28;
+const TEMPORAL_SCORE_MULTIPLIER = 1.35;
 const MAX_AI_RIVALS = 7;
 const AI_RIVAL_OFFSETS = [32, -24, 65, -52, 88, 12, -78] as const;
 const AI_RIVAL_SPEEDS = [0.987, 1.016, 1.004, 0.998, 1.009, 0.992, 1.021] as const;
@@ -237,6 +240,7 @@ export class BallisticGame {
   private weaponCooldown = 0;
   private phaseTimer = 0;
   private overdriveTimer = 0;
+  private temporalFocusTimer = 0;
   private boostVisualTarget = 0;
   private boostVisualIntensity = 0;
   private boostVisualKick = 0;
@@ -1771,6 +1775,7 @@ export class BallisticGame {
     this.weaponCooldown = 0;
     this.phaseTimer = 0;
     this.overdriveTimer = 0;
+    this.temporalFocusTimer = 0;
     this.resetBoostVisuals();
     this.overheatTimer = 0;
     this.invulnerableTimer = 0;
@@ -1891,10 +1896,11 @@ export class BallisticGame {
     const cooling = this.isActionPressed('cool') || this.mobileInput.get('cool');
     const boostHeld = this.isActionPressed('boost') || this.mobileInput.get('boost');
     const steering = ((left ? 1 : 0) - (right ? 1 : 0)) as SteeringInput;
+    const temporalHandling = this.temporalFocusTimer > 0 ? TEMPORAL_HANDLING_MULTIPLIER : 1;
     const steeringState = stepWallRideSteering(
       { angle: this.angle, angularVelocity: this.angularVelocity },
       steering,
-      theme.handling,
+      theme.handling * temporalHandling,
       this.config.garage.engine,
       dt,
     );
@@ -1906,6 +1912,7 @@ export class BallisticGame {
     if (this.mobileInput.get('fire')) this.fire();
     this.phaseTimer = Math.max(0, this.phaseTimer - dt);
     this.overdriveTimer = Math.max(0, this.overdriveTimer - dt);
+    this.temporalFocusTimer = Math.max(0, this.temporalFocusTimer - dt);
     this.overheatTimer = Math.max(0, this.overheatTimer - dt);
     this.invulnerableTimer = Math.max(0, this.invulnerableTimer - dt);
 
@@ -2192,7 +2199,9 @@ export class BallisticGame {
   private registerPerfect(label: string): void {
     this.perfects += 1;
     this.sync = Math.min(32, this.sync + 1);
-    this.score += 180 * (1 + this.sync * 0.08);
+    const temporalCore = this.runUpgrades.has('temporal-core');
+    this.score += 180 * (1 + this.sync * 0.08) * (temporalCore ? TEMPORAL_SCORE_MULTIPLIER : 1);
+    if (temporalCore) this.temporalFocusTimer = Math.max(this.temporalFocusTimer, TEMPORAL_FOCUS_DURATION);
     this.flux = Math.min(100, this.flux + 5);
     if (this.runUpgrades.has('cryo-loop')) this.heat = Math.max(0, this.heat - 7);
     if (this.runUpgrades.has('echo-shield') && this.sync % 8 === 0) this.shield = Math.min(this.maxShield, this.shield + 1);

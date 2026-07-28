@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { LobbySocket, LobbySocketEvent } from './LobbyClient';
 import { LobbyClient } from './LobbyClient';
 import type { OnlineLoadout, ServerMessage } from './protocol';
-import { encodeOnlineMessage } from './protocol';
+import { encodeOnlineMessage, ONLINE_PROTOCOL_VERSION } from './protocol';
 
 class FakeSocket implements LobbySocket {
   readyState = 0;
@@ -65,7 +65,7 @@ describe('LobbyClient', () => {
     }));
     expect(client.connectionState).toBe('connecting');
 
-    socket.message({ type: 'welcome', version: 1, playerId: 'p1', serverTime: 10 });
+    socket.message({ type: 'welcome', version: ONLINE_PROTOCOL_VERSION, playerId: 'p1', serverTime: 10 });
     await connected;
     expect(client.connectionState).toBe('online');
     expect(client.playerId).toBe('p1');
@@ -84,7 +84,7 @@ describe('LobbyClient', () => {
     });
     const connected = client.connect();
     socket.open();
-    socket.message({ type: 'welcome', version: 1, playerId: 'p1', serverTime: 10 });
+    socket.message({ type: 'welcome', version: ONLINE_PROTOCOL_VERSION, playerId: 'p1', serverTime: 10 });
     await connected;
     const state = {
       matchId: 'm1', angle: 0, progress: 0.2, speed: 2_000, shield: 3,
@@ -116,7 +116,7 @@ describe('LobbyClient', () => {
       client.on('rejoinFailed', rejoinFailed);
       const connected = client.connect();
       first.open();
-      first.message({ type: 'welcome', version: 1, playerId: 'p1', serverTime: 10 });
+      first.message({ type: 'welcome', version: ONLINE_PROTOCOL_VERSION, playerId: 'p1', serverTime: 10 });
       await connected;
       first.message(roomSnapshot());
 
@@ -128,7 +128,7 @@ describe('LobbyClient', () => {
       first.close(1006, 'network lost');
       vi.advanceTimersByTime(10);
       second.open();
-      second.message({ type: 'welcome', version: 1, playerId: 'p2', serverTime: 20 });
+      second.message({ type: 'welcome', version: ONLINE_PROTOCOL_VERSION, playerId: 'p2', serverTime: 20 });
       const join = second.sent.map((raw) => JSON.parse(raw)).find((message) => message.type === 'room:join');
       expect(join).toEqual(expect.objectContaining({ code: 'ABC234' }));
 
@@ -154,7 +154,7 @@ describe('LobbyClient', () => {
       });
       const connected = client.connect();
       first.open();
-      first.message({ type: 'welcome', version: 1, playerId: 'p1', serverTime: 10 });
+      first.message({ type: 'welcome', version: ONLINE_PROTOCOL_VERSION, playerId: 'p1', serverTime: 10 });
       await connected;
       first.message(roomSnapshot());
       first.close(1006, 'network lost');
@@ -162,7 +162,7 @@ describe('LobbyClient', () => {
       client.cancelRoomRejoin();
       vi.advanceTimersByTime(10);
       second.open();
-      second.message({ type: 'welcome', version: 1, playerId: 'p2', serverTime: 20 });
+      second.message({ type: 'welcome', version: ONLINE_PROTOCOL_VERSION, playerId: 'p2', serverTime: 20 });
       expect(second.sent.map((raw) => JSON.parse(raw)).filter((message) => message.type === 'room:join')).toEqual([]);
       client.disconnect();
     } finally {
@@ -180,7 +180,7 @@ describe('LobbyClient', () => {
     client.on('protocolError', protocolError);
     const connected = client.connect();
     socket.open();
-    socket.message({ type: 'welcome', version: 1, playerId: 'p1', serverTime: 10 });
+    socket.message({ type: 'welcome', version: ONLINE_PROTOCOL_VERSION, playerId: 'p1', serverTime: 10 });
     await connected;
     socket.message('{not-json');
     expect(protocolError).toHaveBeenCalledOnce();
@@ -196,7 +196,7 @@ describe('LobbyClient', () => {
     });
     const connected = client.connect();
     socket.open();
-    socket.message({ type: 'welcome', version: 1, playerId: 'p1', serverTime: 10_250 });
+    socket.message({ type: 'welcome', version: ONLINE_PROTOCOL_VERSION, playerId: 'p1', serverTime: 10_250 });
     await connected;
     expect(client.serverClockOffsetMs).toBe(250);
     expect(client.delayUntil(11_000)).toBe(750);

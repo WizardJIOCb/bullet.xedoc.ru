@@ -59,6 +59,13 @@ describe('online protocol boundary', () => {
     }).ok).toBe(false);
   });
 
+  it('accepts Pulse Forge as an online room track', () => {
+    expect(decodeClientMessage({
+      type: 'room:create',
+      settings: { track: 'forge', aiOpponents: 2, playerSlots: 4 },
+    })).toEqual(expect.objectContaining({ ok: true }));
+  });
+
   it('round-trips validated server room messages', () => {
     const message: ServerMessage = {
       type: 'room:snapshot',
