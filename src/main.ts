@@ -2,6 +2,7 @@ import './styles.css';
 import { AudioEngine, type CatalogAudioTrack } from './audio/AudioEngine';
 import { ABILITIES, TRACKS, WEAPONS, type AbilityId, type GarageState, type RunConfig, type RunResult, type RunStats, type TrackId, type UpgradeDefinition, type UpgradeId, type WeaponId } from './core/types';
 import { BallisticGame } from './game/Game';
+import { MusicPreviewController } from './ui/MusicPreview';
 import {
   DEFAULT_SETTINGS,
   cloneSettings,
@@ -98,6 +99,14 @@ const game = new BallisticGame(query<HTMLCanvasElement>('#game-canvas'), audio, 
     showToast(`SECTOR 0${index}`, name, index === 3 ? 'gold' : 'cyan');
   },
 }, settings);
+const musicPreview = new MusicPreviewController(audio, query<HTMLElement>('#music-preview'));
+
+function refreshCoursePreview(): void {
+  game.previewTrack(selectedTrack, lastRunSeed);
+  const timeline = game.getTimelinePreview();
+  musicPreview.render(timeline, audio.getProfile(), TRACKS[selectedTrack].name);
+  setText('#seed-label', `SEED // ${timeline.planSeed.toString(16).toUpperCase().padStart(8, '0')}`);
+}
 
 type SettingsTab = 'audio' | 'graphics' | 'controls';
 
@@ -475,24 +484,27 @@ function showResults(result: RunResult): void {
 
 async function launchRun(replay = false): Promise<void> {
   if (startButton.disabled || musicLoading) return;
-  if (!replay) lastRunSeed = randomSeed();
-  lastConfig = {
-    track: selectedTrack,
-    weapon: selectedWeapon,
-    ability: selectedAbility,
-    seed: lastRunSeed,
-    garage: { ...garage },
-  };
+  const config: RunConfig = replay && lastConfig
+    ? { ...lastConfig, garage: { ...garage } }
+    : {
+      track: selectedTrack,
+      weapon: selectedWeapon,
+      ability: selectedAbility,
+      seed: lastRunSeed,
+      garage: { ...garage },
+    };
+  lastConfig = config;
+  musicPreview.stop();
   startButton.disabled = true;
   resultsScreen.classList.remove('is-active');
   menu.classList.add('is-hidden');
   hud.classList.add('is-active');
-  setText('#hud-track', TRACKS[selectedTrack].name.toUpperCase());
-  setText('#hud-weapon', WEAPONS[selectedWeapon].name.toUpperCase());
-  setText('#hud-ability', ABILITIES[selectedAbility].name.toUpperCase());
+  setText('#hud-track', TRACKS[config.track].name.toUpperCase());
+  setText('#hud-weapon', WEAPONS[config.weapon].name.toUpperCase());
+  setText('#hud-ability', ABILITIES[config.ability].name.toUpperCase());
   setText('#section-label', 'SECTOR 01 // IGNITION');
   try {
-    await game.startRun(lastConfig);
+    await game.startRun(config);
   } catch (error) {
     console.error(error);
     game.backToMenu();
@@ -502,7 +514,7 @@ async function launchRun(replay = false): Promise<void> {
     updateMusicUi();
     hud.classList.remove('is-active');
     menu.classList.remove('is-hidden');
-    game.previewTrack(selectedTrack, lastRunSeed);
+    refreshCoursePreview();
     setMusicCatalogError('Не удалось начать воспроизведение. Включён синтетический режим.');
     setText('#music-catalog-status', 'SYNTHETIC MODE ONLINE');
     showToast('AUDIO START ERROR', 'Включён синтетический режим — запустите заезд ещё раз', 'red');
@@ -516,7 +528,7 @@ for (const button of trackButtons) {
   button.addEventListener('click', () => {
     selectedTrack = button.dataset.track as TrackId;
     selectRadio('[data-track]', selectedTrack, 'track');
-    game.previewTrack(selectedTrack, lastRunSeed);
+    refreshCoursePreview();
   });
 }
 installRadioKeyboard(trackButtons);
@@ -596,6 +608,7 @@ function renderMusicCatalog(): void {
 function setMusicLoading(loading: boolean): void {
   musicLoading = loading;
   startButton.disabled = loading;
+  musicPreview.setLoading(loading);
   musicLibrary.setAttribute('aria-busy', String(loading));
   musicCatalog.disabled = loading || !musicCatalogReady;
   query<HTMLElement>('#music-drop').classList.toggle('is-loading', loading);
@@ -647,7 +660,7 @@ async function loadCatalogTrack(entry: MusicCatalogEntry): Promise<void> {
     selectedMusicId = entry.id;
     renderMusicCatalog();
     updateMusicUi();
-    game.previewTrack(selectedTrack, lastRunSeed);
+    refreshCoursePreview();
     query<HTMLElement>('#music-drop').classList.remove('has-file');
     setText('#music-catalog-status', `ACTIVE // ${entry.title} // трасса выбирается отдельно в блоке 01`);
   } catch (error) {
@@ -656,7 +669,7 @@ async function loadCatalogTrack(entry: MusicCatalogEntry): Promise<void> {
     selectedMusicId = 'synthetic';
     renderMusicCatalog();
     updateMusicUi();
-    game.previewTrack(selectedTrack, lastRunSeed);
+    refreshCoursePreview();
     setMusicCatalogError('Трек не удалось загрузить или декодировать. Включён синтетический режим.');
     setText('#music-catalog-status', 'SYNTHETIC MODE ONLINE');
     showToast('AUDIO ERROR', 'Серверный трек не декодирован — включён синтетический режим', 'red');
@@ -679,7 +692,7 @@ async function loadMusicFile(file: File): Promise<void> {
     selectedMusicId = 'local';
     renderMusicCatalog();
     updateMusicUi();
-    game.previewTrack(selectedTrack, lastRunSeed);
+    refreshCoursePreview();
     drop.classList.add('has-file');
     setText('#music-catalog-status', `ACTIVE // ${audio.getProfile().title} // LOCAL FILE`);
   } catch (error) {
@@ -688,7 +701,7 @@ async function loadMusicFile(file: File): Promise<void> {
     selectedMusicId = 'synthetic';
     renderMusicCatalog();
     updateMusicUi();
-    game.previewTrack(selectedTrack, lastRunSeed);
+    refreshCoursePreview();
     setMusicCatalogError('Локальный файл не удалось декодировать. Включён синтетический режим.');
     setText('#music-catalog-status', 'SYNTHETIC MODE ONLINE');
     showToast('AUDIO ERROR', 'Формат не декодирован — включён синтетический трек', 'red');
@@ -728,7 +741,7 @@ musicCatalog.addEventListener('change', () => {
     selectedMusicId = value;
     renderMusicCatalog();
     updateMusicUi();
-    game.previewTrack(selectedTrack, lastRunSeed);
+    refreshCoursePreview();
     musicDrop.classList.remove('has-file');
     setMusicCatalogError(null);
     setText('#music-catalog-status', 'ACTIVE // EDGE SIGNAL // трасса выбирается отдельно в блоке 01');
@@ -813,7 +826,7 @@ query<HTMLSelectElement>('#graphics-quality').addEventListener('change', (event)
   settings.graphics.quality = (event.currentTarget as HTMLSelectElement).value as typeof settings.graphics.quality;
   persistSettings(`RENDER // ${settings.graphics.quality.toUpperCase()}`);
   game.setGraphicsSettings(settings.graphics);
-  game.previewTrack(selectedTrack, lastRunSeed);
+  refreshCoursePreview();
 });
 
 const graphicsToggles: Array<{ selector: string; field: 'bloom' | 'chromaticAberration' | 'cameraShake' | 'reducedFlashes'; message: string }> = [
@@ -844,7 +857,7 @@ query<HTMLButtonElement>('#settings-reset').addEventListener('click', () => {
   } else if (activeSettingsTab === 'graphics') {
     settings.graphics = { ...defaults.graphics };
     game.setGraphicsSettings(settings.graphics);
-    game.previewTrack(selectedTrack, lastRunSeed);
+    refreshCoursePreview();
   } else {
     settings.controls = Object.fromEntries(
       Object.entries(defaults.controls).map(([action, values]) => [action, [...values]]),
@@ -918,7 +931,7 @@ query<HTMLButtonElement>('#return-menu').addEventListener('click', () => {
   hud.classList.remove('is-active');
   menu.classList.remove('is-hidden');
   lastRunSeed = randomSeed();
-  game.previewTrack(selectedTrack, lastRunSeed);
+  refreshCoursePreview();
 });
 
 for (const button of queryAll<HTMLButtonElement>('[data-control]')) {
@@ -949,10 +962,11 @@ selectRadio('[data-track]', selectedTrack, 'track');
 selectRadio('[data-weapon]', selectedWeapon, 'weapon');
 selectRadio('[data-ability]', selectedAbility, 'ability');
 updateMusicUi();
-setText('#seed-label', 'SEED // RANDOMIZED');
+refreshCoursePreview();
 void loadMusicCatalog();
 
 window.addEventListener('beforeunload', () => {
+  musicPreview.dispose();
   game.dispose();
   void audio.dispose();
 }, { once: true });

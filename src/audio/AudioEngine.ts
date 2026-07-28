@@ -22,6 +22,15 @@ export interface CatalogAudioTrack {
   bytes?: number;
 }
 
+export interface PreviewPlaybackState {
+  available: boolean;
+  playing: boolean;
+  currentTime: number;
+  duration: number;
+}
+
+type TransportMode = 'idle' | 'preview' | 'game';
+
 const MAX_AUDIO_FILE_BYTES = 48 * 1024 * 1024;
 const MAX_AUDIO_DURATION = 3 * 60;
 const MAX_PLAYBACK_DURATION = 108;
@@ -37,6 +46,11 @@ export class AudioEngine {
   private frequencyData = new Uint8Array(256);
   private decodedTrack: AudioBuffer | null = null;
   private trackSource: AudioBufferSourceNode | null = null;
+  private transportMode: TransportMode = 'idle';
+  private previewPlaying = false;
+  private previewOffset = 0;
+  private previewStartedAt = 0;
+  private previewGeneration = 0;
   private profile: MusicProfile = createDefaultMusicProfile();
   private sourceKind: AudioSourceKind = 'synthetic';
   private usingFile = false;
@@ -68,6 +82,99 @@ export class AudioEngine {
 
   isCustomTrack(): boolean {
     return this.usingFile;
+  }
+
+  getPreviewPlaybackState(): PreviewPlaybackState {
+    return {
+      available: Boolean(this.decodedTrack),
+      playing: this.previewPlaying && this.transportMode === 'preview',
+      currentTime: this.getPreviewTime(),
+      duration: this.getPreviewDuration(),
+    };
+  }
+
+  private isGameTransport(): boolean {
+    return this.transportMode === 'game';
+  }
+
+  async playPreview(): Promise<void> {
+    if (!this.decodedTrack || this.isGameTransport() || this.previewPlaying) return;
+    const duration = this.getPreviewDuration();
+    if (duration <= 0) return;
+
+    const context = this.ensureContext();
+    const generation = ++this.previewGeneration;
+    const offset = this.previewOffset >= duration ? 0 : clamp(this.previewOffset, 0, duration);
+    try {
+      await context.resume();
+    } catch (error) {
+      if (generation === this.previewGeneration) {
+        this.previewPlaying = false;
+        this.running = false;
+      }
+      throw error;
+    }
+    if (generation !== this.previewGeneration || !this.decodedTrack || this.isGameTransport()) return;
+
+    this.transportMode = 'preview';
+    this.previewPlaying = true;
+    this.running = true;
+    try {
+      this.startPreviewSource(context, offset, generation);
+    } catch (error) {
+      if (generation === this.previewGeneration) {
+        this.clearTrackSource();
+        this.previewPlaying = false;
+        this.running = false;
+      }
+      throw error;
+    }
+  }
+
+  pausePreview(): void {
+    if (this.transportMode !== 'preview' || !this.previewPlaying) return;
+    const time = this.getPreviewTime();
+    this.previewGeneration += 1;
+    this.clearTrackSource();
+    this.previewOffset = time;
+    this.previewPlaying = false;
+    this.running = false;
+    this.resetRhythmTransport(time);
+  }
+
+  seekPreview(seconds: number): void {
+    if (!this.decodedTrack || this.transportMode === 'game') return;
+    const duration = this.getPreviewDuration();
+    const target = clamp(Number.isFinite(seconds) ? seconds : 0, 0, duration);
+    const wasPlaying = this.transportMode === 'preview' && this.previewPlaying;
+    const context = this.context;
+    const generation = ++this.previewGeneration;
+    if (wasPlaying) this.clearTrackSource();
+    this.transportMode = 'preview';
+    this.previewOffset = target;
+    this.previewPlaying = false;
+    this.running = false;
+    this.resetRhythmTransport(target);
+
+    if (!wasPlaying || !context || context.state !== 'running' || target >= duration) return;
+    this.previewPlaying = true;
+    this.running = true;
+    this.startPreviewSource(context, target, generation);
+  }
+
+  stopPreview(reset = true): void {
+    const time = this.getPreviewTime();
+    this.previewGeneration += 1;
+    this.previewPlaying = false;
+    if (this.transportMode === 'game') {
+      if (reset) this.previewOffset = 0;
+      return;
+    }
+    this.clearTrackSource();
+    this.running = false;
+    this.transportMode = 'idle';
+    this.previewOffset = reset ? 0 : time;
+    this.resetRhythmTransport(this.previewOffset);
   }
 
   setAudioSettings(settings: AudioSettings): void {
@@ -121,13 +228,14 @@ export class AudioEngine {
 
   private clearTrackSource(): void {
     if (!this.trackSource) return;
+    const source = this.trackSource;
+    this.trackSource = null;
     try {
-      this.trackSource.stop();
+      source.stop();
     } catch {
       // A source that never started or already ended is safe to discard.
     }
-    this.trackSource.disconnect();
-    this.trackSource = null;
+    source.disconnect();
   }
 
   private registerSource(source: AudioScheduledSourceNode, cleanup: () => void): void {
@@ -156,15 +264,69 @@ export class AudioEngine {
     this.activeSources.clear();
   }
 
-  private startDecodedTrack(context: AudioContext, startAt: number): void {
+  private startDecodedTrack(
+    context: AudioContext,
+    startAt: number,
+    absoluteOffset = 0,
+    onEnded?: () => void,
+  ): AudioBufferSourceNode {
     if (!this.decodedTrack) throw new Error('Decoded track is not available');
     this.clearTrackSource();
     const source = context.createBufferSource();
     source.buffer = this.decodedTrack;
     source.loop = true;
     source.connect(this.musicInput!);
-    source.start(startAt);
     this.trackSource = source;
+    source.addEventListener('ended', () => {
+      if (this.trackSource !== source) return;
+      this.trackSource = null;
+      source.disconnect();
+      onEnded?.();
+    }, { once: true });
+    const bufferDuration = Math.max(Number.EPSILON, this.decodedTrack.duration);
+    const offset = ((absoluteOffset % bufferDuration) + bufferDuration) % bufferDuration;
+    source.start(startAt, offset);
+    return source;
+  }
+
+  private getPreviewDuration(): number {
+    return this.decodedTrack ? Math.max(0, this.profile.runDuration) : 0;
+  }
+
+  private getPreviewTime(): number {
+    const duration = this.getPreviewDuration();
+    if (!duration) return 0;
+    if (!this.previewPlaying || this.transportMode !== 'preview' || !this.context) {
+      return clamp(this.previewOffset, 0, duration);
+    }
+    return clamp(this.context.currentTime - this.previewStartedAt, 0, duration);
+  }
+
+  private resetRhythmTransport(time: number): void {
+    this.lastBeatAt = -10;
+    this.beatAnchor = this.profile.beatOffset || 0;
+    this.lastObservedTime = time;
+    this.beatPulse = 0;
+  }
+
+  private startPreviewSource(context: AudioContext, absoluteOffset: number, generation: number): void {
+    const duration = this.getPreviewDuration();
+    const offset = clamp(absoluteOffset, 0, duration);
+    const remaining = duration - offset;
+    if (!this.decodedTrack || remaining <= 0) return;
+
+    const startAt = context.currentTime;
+    this.previewOffset = offset;
+    this.previewStartedAt = startAt - offset;
+    this.resetRhythmTransport(offset);
+    const source = this.startDecodedTrack(context, startAt, offset, () => {
+      if (generation !== this.previewGeneration || this.transportMode !== 'preview') return;
+      this.previewPlaying = false;
+      this.running = false;
+      this.previewOffset = duration;
+      this.resetRhythmTransport(duration);
+    });
+    source.stop(startAt + remaining);
   }
 
   private async validateAudioBlob(blob: Blob, label: string): Promise<void> {
@@ -257,31 +419,41 @@ export class AudioEngine {
     return this.profile;
   }
 
-  async start(): Promise<void> {
+  async start(paused = false): Promise<void> {
     const context = this.ensureContext();
+    this.stopPreview(true);
+    this.clearTrackSource();
+    if (paused) {
+      // Resume once inside the trusted Start click to satisfy autoplay policy,
+      // then freeze the clock before the game source is created for countdown.
+      if (context.state !== 'running') await context.resume();
+      if (context.state === 'running') await context.suspend();
+    } else if (context.state !== 'running') {
+      await context.resume();
+    }
     const startAt = context.currentTime;
-    const resumePromise = context.resume();
-    if (this.usingFile) this.startDecodedTrack(context, startAt);
-    await resumePromise;
-    this.running = true;
+    this.transportMode = 'game';
+    if (this.usingFile) this.startDecodedTrack(context, startAt, 0);
+    this.running = !paused;
     this.lastBeatAt = -10;
     this.beatAnchor = this.profile.beatOffset || 0;
     this.lastObservedTime = 0;
     this.beatPulse = 0;
     this.stepIndex = 0;
-    this.nextStepTime = context.currentTime + 0.05;
+    this.nextStepTime = startAt + 0.05;
     // Decoded audio starts at startAt. The synth's first kick is scheduled on
     // nextStepTime, so its transport epoch must start on that exact sample too.
     this.startedAt = this.usingFile ? startAt : this.nextStepTime;
   }
 
   pause(): void {
-    if (!this.running) return;
+    if (this.transportMode !== 'game' || !this.running) return;
     this.running = false;
     if (this.context?.state === 'running') void this.context.suspend();
   }
 
   async resume(): Promise<void> {
+    if (this.transportMode !== 'game') return;
     const context = this.ensureContext();
     await context.resume();
     this.running = true;
@@ -292,6 +464,10 @@ export class AudioEngine {
   }
 
   stop(): void {
+    this.previewGeneration += 1;
+    this.previewPlaying = false;
+    this.previewOffset = 0;
+    this.transportMode = 'idle';
     this.running = false;
     this.clearTrackSource();
     this.clearActiveSources();
@@ -308,6 +484,8 @@ export class AudioEngine {
 
   getTransportTime(): number {
     if (!this.context) return 0;
+    if (this.transportMode === 'preview') return this.getPreviewTime();
+    if (this.transportMode !== 'game') return 0;
     return Math.max(0, this.context.currentTime - this.startedAt);
   }
 

@@ -103,6 +103,62 @@
             </label>
             <p class="privacy-note"><span>LOCAL</span> Аудио анализируется только в браузере и не загружается на сервер.</p>
 
+            <section id="music-preview" class="music-preview" aria-labelledby="music-preview-title" hidden>
+              <header class="music-preview__header">
+                <h3 id="music-preview-title">COURSE TIMELINE</h3>
+                <span id="music-preview-course">AURORA SPINE // COURSE MAP</span>
+              </header>
+
+              <div class="music-preview__transport">
+                <button
+                  id="music-preview-play"
+                  class="music-preview__play"
+                  type="button"
+                  aria-label="Воспроизвести предпросмотр музыки"
+                  aria-pressed="false"
+                  aria-controls="music-preview-seek"
+                >
+                  <svg class="music-preview__play-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.4 18.5 12 8 18.6Z" /></svg>
+                  <svg class="music-preview__pause-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h3.5v14H7zm6.5 0H17v14h-3.5z" /></svg>
+                </button>
+                <div class="music-preview__clock" aria-label="Позиция предпросмотра">
+                  <span id="music-preview-current">00:00</span>
+                  <i aria-hidden="true">/</i>
+                  <span id="music-preview-duration">00:00</span>
+                </div>
+                <output id="music-preview-bpm" class="music-preview__bpm">— BPM</output>
+              </div>
+
+              <div class="music-preview__timeline">
+                <canvas id="music-preview-waveform" width="720" height="144" aria-hidden="true"></canvas>
+                <div id="music-preview-markers" class="music-preview__markers" role="group" aria-label="Препятствия и музыкальные переходы на трассе"></div>
+                <span id="music-preview-playhead" class="music-preview__playhead" aria-hidden="true"></span>
+              </div>
+              <input
+                id="music-preview-seek"
+                class="music-preview__seek"
+                type="range"
+                min="0"
+                max="0"
+                step="0.01"
+                value="0"
+                aria-label="Позиция в музыкальной трассе"
+                aria-valuetext="00:00 из 00:00"
+                aria-describedby="music-preview-detail"
+              />
+
+              <p id="music-preview-detail" class="music-preview__detail">Выберите маркер, чтобы увидеть время и тип препятствия.</p>
+              <ul id="music-preview-legend" class="music-preview__legend" aria-label="Легенда таймлайна">
+                <li><i class="music-preview__legend-icon music-preview__legend-icon--wall" aria-hidden="true">▯</i><span>GATE / WALL</span></li>
+                <li><i class="music-preview__legend-icon music-preview__legend-icon--rotor" aria-hidden="true">✣</i><span>BLADE / CROSS</span></li>
+                <li><i class="music-preview__legend-icon music-preview__legend-icon--drone" aria-hidden="true">◆</i><span>DRONE</span></li>
+                <li><i class="music-preview__legend-icon music-preview__legend-icon--reward" aria-hidden="true">◇</i><span>BOOST / COOL</span></li>
+                <li><i class="music-preview__legend-icon music-preview__legend-icon--transition" aria-hidden="true">▲</i><span>DROP</span></li>
+                <li><i class="music-preview__legend-icon music-preview__legend-icon--beat" aria-hidden="true">│</i><span>BEAT</span></li>
+              </ul>
+              <p id="music-preview-status" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></p>
+            </section>
+
             <div class="panel-label panel-label--spaced"><span>03</span> COMBAT LOADOUT</div>
             <div class="selector-block">
               <div class="selector-block__title">WEAPON</div>

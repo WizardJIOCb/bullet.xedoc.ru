@@ -24,6 +24,7 @@ import {
 import type { ControlBindings, GraphicsSettings, InputAction, SettingsState } from '../settings/SettingsStore';
 import { synchronizeDistanceToMusic } from './rhythm';
 import { generateTrack, radialAt, sampleTrackFrame, type TrackFrame, type TrackPlan } from './track';
+import { createTrackTimeline, type TrackTimeline } from './timeline';
 
 type GameState = 'menu' | 'countdown' | 'playing' | 'finished';
 
@@ -98,6 +99,7 @@ export class BallisticGame {
   private streaks: StreakSpec[] = [];
   private tunnelMaterial: THREE.ShaderMaterial | null = null;
   private plan: TrackPlan;
+  private timelinePreview!: TrackTimeline;
   private trackId: TrackId = 'aurora';
   private config: RunConfig | null = null;
   private state: GameState = 'menu';
@@ -210,6 +212,10 @@ export class BallisticGame {
     this.demoDistance = Math.min(this.plan.length * 0.08, 800);
   }
 
+  getTimelinePreview(): TrackTimeline {
+    return this.timelinePreview;
+  }
+
   setGraphicsSettings(settings: GraphicsSettings): void {
     this.graphicsSettings = { ...settings };
     this.bloomPass.enabled = settings.bloom;
@@ -253,8 +259,7 @@ export class BallisticGame {
     this.trackId = config.track;
     this.buildWorld(config.track, config.seed);
     this.resetRun();
-    await this.audio.start();
-    this.audio.pause();
+    await this.audio.start(true);
     this.state = 'countdown';
     this.countdown = 2.8;
     this.hooks.onCountdown('3');
@@ -392,6 +397,7 @@ export class BallisticGame {
     const profile = this.audio.getProfile();
     const theme = TRACKS[trackId];
     this.plan = generateTrack(theme, profile, seed);
+    this.timelinePreview = createTrackTimeline(this.plan, profile);
     this.disposeGroup(this.world);
     this.eventVisuals.clear();
     this.scene.background = new THREE.Color(theme.colors.background);
