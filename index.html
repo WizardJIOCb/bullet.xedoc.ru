@@ -342,7 +342,11 @@
           <div class="hud-brand"><strong>BE</strong><span id="hud-track">AURORA SPINE</span></div>
           <div class="race-progress">
             <span id="section-label">SECTOR 01 // IGNITION</span>
-            <div class="race-progress__bar"><i id="progress-fill"></i><b class="rival-dot rival-dot--one"></b><b class="rival-dot rival-dot--two"></b><b class="rival-dot rival-dot--three"></b></div>
+            <div class="race-progress__bar" role="progressbar" aria-label="Прогресс трассы и карта препятствий" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <i id="progress-fill"></i>
+              <div id="race-course-markers" class="race-course-markers" aria-hidden="true"></div>
+              <b class="rival-dot rival-dot--one"></b><b class="rival-dot rival-dot--two"></b><b class="rival-dot rival-dot--three"></b>
+            </div>
           </div>
           <div class="rank"><strong id="rank-value">4</strong><span>/ 4<br />POSITION</span></div>
         </div>

@@ -3,6 +3,7 @@ import { AudioEngine, AudioImportError, type CatalogAudioTrack } from './audio/A
 import { ABILITIES, TRACKS, WEAPONS, type AbilityId, type GarageState, type RunConfig, type RunResult, type RunStats, type TrackId, type UpgradeDefinition, type UpgradeId, type WeaponId } from './core/types';
 import { BallisticGame } from './game/Game';
 import { MusicPreviewController } from './ui/MusicPreview';
+import { RaceTimelineController } from './ui/RaceTimeline';
 import {
   DEFAULT_SETTINGS,
   cloneSettings,
@@ -68,6 +69,7 @@ const upgradeDraft = query<HTMLElement>('#upgrade-draft');
 const upgradeOptions = query<HTMLElement>('#upgrade-options');
 const installedUpgrades = query<HTMLElement>('#installed-upgrades');
 const resultsScreen = query<HTMLElement>('#results-screen');
+const raceTimeline = new RaceTimelineController(query<HTMLElement>('#race-course-markers'));
 const startButton = query<HTMLButtonElement>('#start-run');
 const musicLibrary = query<HTMLFieldSetElement>('#music-library');
 const musicCatalog = query<HTMLSelectElement>('#music-catalog');
@@ -92,6 +94,7 @@ let musicUiEpoch = 0;
 
 const game = new BallisticGame(query<HTMLCanvasElement>('#game-canvas'), audio, {
   onHud: updateHud,
+  onTimeline: (timeline) => raceTimeline.render(timeline),
   onToast: showToast,
   onUpgradeState: renderUpgradeState,
   onFinish: showResults,
@@ -402,6 +405,7 @@ function updateHud(stats: RunStats): void {
   setText('#heat-value', Math.round(stats.heat).toString().padStart(2, '0'));
   setText('#flux-value', Math.round(stats.flux).toString());
   query<HTMLElement>('#progress-fill').style.width = `${stats.progress * 100}%`;
+  raceTimeline.update(stats.progress);
   query<HTMLElement>('#heat-fill').style.height = `${stats.heat}%`;
   query<HTMLElement>('#flux-fill').style.height = `${stats.flux}%`;
   query<HTMLElement>('#rhythm-ring').style.setProperty('--pulse', String(stats.rhythmPulse));

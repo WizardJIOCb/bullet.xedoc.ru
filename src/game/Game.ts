@@ -30,6 +30,7 @@ type GameState = 'menu' | 'countdown' | 'playing' | 'finished';
 
 interface GameHooks {
   onHud: (stats: RunStats) => void;
+  onTimeline: (timeline: TrackTimeline) => void;
   onToast: (message: string, detail?: string, tone?: 'cyan' | 'gold' | 'red' | 'violet') => void;
   onUpgradeState: (pending: UpgradeDefinition[], installed: UpgradeDefinition[]) => void;
   onFinish: (result: RunResult) => void;
@@ -398,6 +399,7 @@ export class BallisticGame {
     const theme = TRACKS[trackId];
     this.plan = generateTrack(theme, profile, seed);
     this.timelinePreview = createTrackTimeline(this.plan, profile);
+    this.hooks.onTimeline(this.timelinePreview);
     this.disposeGroup(this.world);
     this.eventVisuals.clear();
     this.scene.background = new THREE.Color(theme.colors.background);

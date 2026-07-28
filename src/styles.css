@@ -2004,6 +2004,7 @@ kbd {
 }
 
 .race-progress {
+  min-width: 0;
   text-align: center;
 }
 
@@ -2016,14 +2017,145 @@ kbd {
 
 .race-progress__bar > i {
   position: absolute;
+  z-index: 1;
   inset: 0 auto 0 0;
   width: 0;
   background: var(--cyan);
   box-shadow: 0 0 11px var(--cyan);
 }
 
+.race-course-markers {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  overflow: visible;
+}
+
+.race-course-marker {
+  --marker-color: var(--red);
+  --marker-scale: 0.9;
+  position: absolute;
+  top: var(--marker-top, 6px);
+  left: clamp(3px, var(--course-position, 0%), calc(100% - 3px));
+  width: max(1px, var(--course-span, 0%));
+  height: 6px;
+  color: var(--marker-color);
+  opacity: var(--marker-opacity, 0.72);
+  filter: drop-shadow(0 0 3px color-mix(in srgb, currentColor 72%, transparent));
+  transition: opacity 160ms ease, filter 160ms ease;
+}
+
+.race-course-marker::before,
+.race-course-marker::after {
+  content: "";
+  position: absolute;
+  z-index: 2;
+  left: 0;
+  top: 0;
+  box-sizing: border-box;
+  transform-origin: center;
+}
+
+.race-course-marker__span {
+  position: absolute;
+  z-index: 1;
+  top: 2px;
+  left: 1px;
+  width: 100%;
+  height: 1px;
+  background: currentColor;
+  opacity: 0.32;
+}
+
+.race-course-marker[data-count="1"] .race-course-marker__span {
+  display: none;
+}
+
+.race-course-marker[data-kind="gate"]::before {
+  width: 6px;
+  height: 7px;
+  transform: translate(-50%, -1px) scale(var(--marker-scale));
+  border: 1px solid currentColor;
+  background: rgba(255, 29, 75, 0.14);
+}
+
+.race-course-marker[data-kind="halfwall"]::before {
+  width: 7px;
+  height: 7px;
+  transform: translate(-50%, -1px) scale(var(--marker-scale));
+  border: 1px solid currentColor;
+  background: linear-gradient(90deg, currentColor 0 48%, transparent 49%);
+}
+
+.race-course-marker[data-kind="blade"] {
+  --marker-color: #b56eff;
+}
+
+.race-course-marker[data-kind="blade"]::before,
+.race-course-marker[data-kind="blade"]::after {
+  width: 1px;
+  height: 9px;
+  background: currentColor;
+}
+
+.race-course-marker[data-kind="blade"]::before {
+  transform: translate(-50%, -2px) rotate(48deg) scale(var(--marker-scale));
+}
+
+.race-course-marker[data-kind="blade"]::after {
+  transform: translate(-50%, -2px) rotate(-48deg) scale(var(--marker-scale));
+}
+
+.race-course-marker[data-kind="cross"] {
+  --marker-color: #9d78ff;
+}
+
+.race-course-marker[data-kind="cross"]::before {
+  width: 9px;
+  height: 1px;
+  transform: translate(-50%, 2px) scale(var(--marker-scale));
+  background: currentColor;
+}
+
+.race-course-marker[data-kind="cross"]::after {
+  width: 1px;
+  height: 9px;
+  transform: translate(-50%, -2px) scale(var(--marker-scale));
+  background: currentColor;
+}
+
+.race-course-marker[data-kind="drone"] {
+  --marker-color: var(--gold);
+}
+
+.race-course-marker[data-kind="drone"]::before {
+  width: 6px;
+  height: 6px;
+  transform: translate(-50%, 0) rotate(45deg) scale(var(--marker-scale));
+  border: 1px solid currentColor;
+  background: color-mix(in srgb, currentColor 24%, rgba(4, 12, 18, 0.92));
+}
+
+.race-course-marker[data-state="passed"] {
+  opacity: 0.12;
+  filter: grayscale(1);
+}
+
+.race-course-marker[data-state="active"] {
+  opacity: 1;
+  color: #fff;
+  filter: drop-shadow(0 0 6px currentColor);
+}
+
+.race-course-marker[data-state="next"] {
+  opacity: 1;
+  filter: brightness(1.65) drop-shadow(0 0 5px currentColor);
+  animation: race-marker-pulse 900ms ease-in-out infinite;
+}
+
 .rival-dot {
   position: absolute;
+  z-index: 4;
   top: -3px;
   width: 7px;
   height: 7px;
@@ -2565,6 +2697,7 @@ kbd {
 @keyframes denied { 35% { transform: translateX(-4px); } 70% { transform: translateX(4px); } }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes danger-pulse { 50% { opacity: 0.28; } }
+@keyframes race-marker-pulse { 50% { opacity: 0.52; filter: brightness(1.15) drop-shadow(0 0 2px currentColor); } }
 @keyframes countdown { 0% { opacity: 0; transform: translate(-50%, -50%) scale(1.45); } 20% { opacity: 1; } 100% { opacity: 0.08; transform: translate(-50%, -50%) scale(0.9); } }
 
 @media (max-width: 1280px) {
