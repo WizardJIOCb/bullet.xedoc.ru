@@ -17,7 +17,7 @@
       <div class="visual-overlay visual-overlay--scanlines" aria-hidden="true"></div>
       <div id="damage-flash" aria-hidden="true"></div>
 
-      <section id="menu" class="screen screen--menu">
+      <section id="menu" class="screen screen--menu" data-active-pane="race">
         <header class="menu-header">
           <div class="system-mark">
             <span class="system-mark__dot"></span>
@@ -33,8 +33,15 @@
           </div>
         </header>
 
+        <nav class="mobile-menu-nav" aria-label="Разделы главного меню">
+          <button class="is-active" data-menu-tab="race" type="button" aria-pressed="true"><span>01</span> ТРАССА</button>
+          <button data-menu-tab="loadout" type="button" aria-pressed="false"><span>02</span> МУЗЫКА</button>
+          <button data-menu-tab="garage" type="button" aria-pressed="false"><span>03</span> ГАРАЖ</button>
+          <button data-menu-tab="online" type="button" aria-pressed="false"><span>04</span> ОНЛАЙН</button>
+        </nav>
+
         <div class="menu-grid">
-          <section class="hero-panel">
+          <section class="hero-panel" data-menu-pane="race">
             <div class="hero-panel__eyebrow">MACH // ROGUELIKE // RHYTHM</div>
             <h1 class="game-title"><span>BALLISTIC</span><strong>EDGE</strong></h1>
             <p class="hero-panel__lead">
@@ -76,7 +83,7 @@
             </div>
           </section>
 
-          <aside class="loadout-panel panel-glass">
+          <aside class="loadout-panel panel-glass" data-menu-pane="loadout">
             <div class="panel-label"><span>02</span> MUSIC MATRIX</div>
             <fieldset id="music-library" class="music-library" aria-busy="true">
               <legend class="music-library__legend">SERVER LIBRARY</legend>
@@ -221,7 +228,7 @@
             </div>
           </aside>
 
-          <section class="garage-panel panel-glass">
+          <section class="garage-panel panel-glass" data-menu-pane="garage">
             <div class="garage-panel__header">
               <div>
                 <div class="panel-label"><span>04</span> BOLIDE GARAGE</div>
@@ -257,7 +264,7 @@
             </div>
           </section>
 
-          <section id="online-panel" class="online-panel panel-glass" aria-labelledby="online-title">
+          <section id="online-panel" class="online-panel panel-glass" data-menu-pane="online" aria-labelledby="online-title">
             <header class="online-panel__header">
               <div>
                 <div class="panel-label"><span>05</span> ONLINE GRID</div>
@@ -526,9 +533,29 @@
         </div>
       </section>
 
-      <div class="mobile-controls" aria-label="Сенсорное управление">
-        <div><button data-control="left" type="button">◀</button><button data-control="right" type="button">▶</button></div>
-        <div><button data-control="cool" type="button">COOL</button><button data-action="fire" type="button">FIRE</button><button data-control="boost" type="button">BOOST</button><button data-action="ability" type="button">Q</button></div>
+      <div id="mobile-controls" class="mobile-controls" aria-label="Сенсорное управление" aria-hidden="true" hidden>
+        <div class="mobile-controls__steering" role="group" aria-label="Поворот болида">
+          <button class="touch-control touch-control--steer" data-control="left" type="button" aria-label="Поворот влево" aria-pressed="false">
+            <span aria-hidden="true">‹</span><small>LEFT</small>
+          </button>
+          <button class="touch-control touch-control--steer" data-control="right" type="button" aria-label="Поворот вправо" aria-pressed="false">
+            <span aria-hidden="true">›</span><small>RIGHT</small>
+          </button>
+        </div>
+        <div class="mobile-controls__actions" role="group" aria-label="Действия болида">
+          <button class="touch-control touch-control--utility" data-control="cool" type="button" aria-label="Охлаждение реактора" aria-pressed="false">
+            <span aria-hidden="true">❄</span><small>COOL</small>
+          </button>
+          <button class="touch-control touch-control--utility" data-action="ability" type="button" aria-label="Активировать способность" aria-pressed="false">
+            <span aria-hidden="true">Q</span><small id="mobile-ability-name">PHASE</small><i id="mobile-ability-state">READY</i>
+          </button>
+          <button class="touch-control touch-control--primary touch-control--fire" data-control="fire" type="button" aria-label="Огонь, можно удерживать" aria-pressed="false">
+            <span aria-hidden="true">●</span><small>FIRE</small><i id="mobile-fire-state">HOLD</i>
+          </button>
+          <button class="touch-control touch-control--primary touch-control--boost" data-control="boost" type="button" aria-label="Ускорение" aria-pressed="false">
+            <span aria-hidden="true">»</span><small>BOOST</small>
+          </button>
+        </div>
       </div>
     </main>
     <noscript>Для Ballistic Edge нужен JavaScript и поддержка WebGL.</noscript>

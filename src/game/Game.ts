@@ -30,6 +30,7 @@ import {
   type InputAction,
   type SettingsState,
 } from '../settings/SettingsStore';
+import type { TouchInputAction } from '../input/TouchInputRouter';
 import { resolveBoostVisualTarget, stepBoostVisualIntensity } from './boost';
 import { computeObstacleKnockback, isObstacleCollision } from './collision';
 import { ChaseDeathFx } from './deathFx';
@@ -193,7 +194,7 @@ export class BallisticGame {
   private readonly dynamicLayer = new THREE.Group();
   private readonly eventVisuals = new Map<number, THREE.Object3D>();
   private readonly keys = new Set<string>();
-  private readonly mobileInput = new Map<string, boolean>();
+  private readonly mobileInput = new Map<TouchInputAction, boolean>();
   private readonly bullets: Bullet[] = [];
   private readonly bursts: Burst[] = [];
   private readonly chaseImpactEffects: ChaseImpactEffect[] = [];
@@ -501,6 +502,7 @@ export class BallisticGame {
   }
 
   async startRun(config: RunConfig): Promise<void> {
+    this.releaseInputs();
     this.visibilityPaused = false;
     this.config = config;
     this.trackId = config.track;
@@ -531,7 +533,7 @@ export class BallisticGame {
     return true;
   }
 
-  setMobileControl(control: 'left' | 'right' | 'boost' | 'cool', active: boolean): void {
+  setMobileControl(control: TouchInputAction, active: boolean): void {
     this.mobileInput.set(control, active);
   }
 
@@ -582,6 +584,7 @@ export class BallisticGame {
   }
 
   backToMenu(): void {
+    this.releaseInputs();
     this.audio.stop();
     this.state = 'menu';
     this.visibilityPaused = false;
@@ -1866,12 +1869,13 @@ export class BallisticGame {
   };
 
   private readonly handleVisibilityChange = (): void => {
-    if (document.hidden && (this.state === 'playing' || this.state === 'dying')) {
+    if (document.hidden && (this.state === 'countdown' || this.state === 'playing' || this.state === 'dying')) {
+      this.releaseInputs();
       this.visibilityPaused = true;
       this.audio.pause();
       return;
     }
-    if (!document.hidden && this.visibilityPaused && (this.state === 'playing' || this.state === 'dying')) {
+    if (!document.hidden && this.visibilityPaused && (this.state === 'countdown' || this.state === 'playing' || this.state === 'dying')) {
       this.visibilityPaused = false;
       this.lastFrameTime = performance.now();
       void this.audio.resume();
@@ -1899,6 +1903,7 @@ export class BallisticGame {
 
     this.abilityCooldown = Math.max(0, this.abilityCooldown - dt);
     this.weaponCooldown = Math.max(0, this.weaponCooldown - dt);
+    if (this.mobileInput.get('fire')) this.fire();
     this.phaseTimer = Math.max(0, this.phaseTimer - dt);
     this.overdriveTimer = Math.max(0, this.overdriveTimer - dt);
     this.overheatTimer = Math.max(0, this.overheatTimer - dt);
@@ -2217,6 +2222,7 @@ export class BallisticGame {
       this.beginDeathSequence(result);
       return;
     }
+    this.releaseInputs();
     this.state = 'finished';
     this.audio.stop();
     this.pendingResult = result;
@@ -2279,6 +2285,7 @@ export class BallisticGame {
     this.resultDelay = 0;
     this.deathSequence = null;
     this.state = 'finished';
+    this.releaseInputs();
     if (wasDying) {
       this.audio.stop();
       this.deathFx.reset();

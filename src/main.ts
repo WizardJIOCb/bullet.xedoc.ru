@@ -2,6 +2,7 @@ import './styles.css';
 import { AudioEngine, AudioImportError, type CatalogAudioTrack } from './audio/AudioEngine';
 import { ABILITIES, TRACKS, WEAPONS, type AbilityId, type GarageState, type RemoteRacerState, type RunConfig, type RunResult, type RunStats, type TrackId, type UpgradeDefinition, type UpgradeId, type WeaponId } from './core/types';
 import { BallisticGame } from './game/Game';
+import { TouchInputRouter, type TouchInputAction } from './input/TouchInputRouter';
 import { MusicPreviewController } from './ui/MusicPreview';
 import { RaceTimelineController } from './ui/RaceTimeline';
 import { createBrowserMusicLibrary, type MusicLibrarySnapshot } from './music/MusicLibrary';
@@ -15,6 +16,7 @@ import {
 } from './online';
 import {
   DEFAULT_SETTINGS,
+  SETTINGS_KEY,
   cloneSettings,
   isBindableCode,
   loadSettings,
@@ -74,6 +76,7 @@ function randomSeed(): number {
 const app = query<HTMLElement>('#app');
 const menu = query<HTMLElement>('#menu');
 const hud = query<HTMLElement>('#hud');
+const mobileControls = query<HTMLElement>('#mobile-controls');
 const damageFlash = query<HTMLElement>('#damage-flash');
 const upgradeDraft = query<HTMLElement>('#upgrade-draft');
 const upgradeOptions = query<HTMLElement>('#upgrade-options');
@@ -89,7 +92,17 @@ const playlistSelect = query<HTMLSelectElement>('#playlist-select');
 const playlistTrackSelect = query<HTMLSelectElement>('#playlist-track-select');
 const localMusicLibrary = createBrowserMusicLibrary();
 const onlineNameInput = query<HTMLInputElement>('#online-name');
+const hasTouchInput = navigator.maxTouchPoints > 0 || window.matchMedia('(hover: none) and (pointer: coarse)').matches;
+app.classList.toggle('has-touch', hasTouchInput);
 let settings = loadSettings();
+try {
+  if (hasTouchInput && localStorage.getItem(SETTINGS_KEY) === null) {
+    settings.graphics.quality = 'balanced';
+    settings = saveSettings(settings);
+  }
+} catch {
+  // Storage can be unavailable; the in-memory defaults remain usable.
+}
 const audio = new AudioEngine();
 audio.setAudioSettings(settings.audio);
 let garage = loadGarage();
@@ -129,6 +142,45 @@ const game = new BallisticGame(query<HTMLCanvasElement>('#game-canvas'), audio, 
     showToast(`SECTOR 0${index}`, name, index === 3 ? 'gold' : 'cyan');
   },
 }, settings);
+const mobileHoldButtons = queryAll<HTMLButtonElement>('[data-control]');
+const mobileAbilityButton = query<HTMLButtonElement>('[data-action="ability"]');
+const mobileFireButton = query<HTMLButtonElement>('[data-control="fire"]');
+const mobileFireState = query<HTMLElement>('#mobile-fire-state');
+const mobileAbilityName = query<HTMLElement>('#mobile-ability-name');
+const mobileAbilityState = query<HTMLElement>('#mobile-ability-state');
+const mobileAbilityPointers = new Set<number>();
+const touchInputRouter = new TouchInputRouter((action, active) => {
+  game.setMobileControl(action, active);
+  for (const button of mobileHoldButtons) {
+    if (button.dataset.control !== action) continue;
+    button.classList.toggle('is-pressed', active);
+    button.setAttribute('aria-pressed', String(active));
+  }
+});
+
+function pulseHaptic(duration = 8): void {
+  if (!hasTouchInput) return;
+  try {
+    navigator.vibrate?.(duration);
+  } catch {
+    // Haptics are optional and may be blocked by the browser.
+  }
+}
+
+function releaseTouchControls(): void {
+  touchInputRouter.releaseAll();
+  mobileAbilityPointers.clear();
+  mobileAbilityButton.classList.remove('is-pressed');
+  mobileAbilityButton.setAttribute('aria-pressed', 'false');
+}
+
+function setRunUiActive(active: boolean): void {
+  app.classList.toggle('is-run-active', active);
+  document.documentElement.classList.toggle('is-run-active', active);
+  mobileControls.hidden = !active || !hasTouchInput;
+  mobileControls.setAttribute('aria-hidden', String(!active || !hasTouchInput));
+  if (!active) releaseTouchControls();
+}
 const musicPreview = new MusicPreviewController(audio, query<HTMLElement>('#music-preview'), {
   onMusicVolumeInput: applyMusicVolume,
   onMusicVolumeCommit: commitMusicVolume,
@@ -266,7 +318,7 @@ function updateControlHints(): void {
   }
   const upgradeKeys = (['upgrade1', 'upgrade2', 'upgrade3'] as InputAction[])
     .map((action) => formatKeyCode(settings.controls[action][0]));
-  setText('#upgrade-key-hint', upgradeKeys.join(' / '));
+  setText('#upgrade-key-hint', hasTouchInput ? 'TAP' : upgradeKeys.join(' / '));
 }
 
 function renderControlsSettings(): void {
@@ -441,6 +493,14 @@ function updateHud(stats: RunStats): void {
   query<HTMLElement>('#flux-fill').style.height = `${stats.flux}%`;
   query<HTMLElement>('#rhythm-ring').style.setProperty('--pulse', String(stats.rhythmPulse));
   query<HTMLElement>('#weapon-ready').style.setProperty('--cooldown', String(Math.min(1, stats.weaponCooldown * 2)));
+  const mobileFireCooldown = Math.min(1, stats.weaponCooldown * WEAPONS[selectedWeapon].fireRate);
+  mobileFireButton.style.setProperty('--cooldown', String(mobileFireCooldown));
+  mobileFireButton.classList.toggle('is-cooling-down', mobileFireCooldown > 0);
+  mobileFireState.textContent = mobileFireCooldown > 0 ? 'WAIT' : 'READY';
+  const abilityCooldown = Math.min(1, stats.abilityCooldown / ABILITIES[selectedAbility].cooldown);
+  mobileAbilityButton.style.setProperty('--cooldown', String(abilityCooldown));
+  mobileAbilityButton.classList.toggle('is-cooling-down', abilityCooldown > 0);
+  mobileAbilityState.textContent = stats.abilityCooldown <= 0 ? 'READY' : stats.abilityCooldown.toFixed(1);
   setText('#ability-ready', stats.abilityCooldown <= 0
     ? `READY // ${formatKeyCode(settings.controls.ability[0])}`
     : `${stats.abilityCooldown.toFixed(1)} SEC`);
@@ -553,6 +613,7 @@ function showResults(result: RunResult): void {
   garage.bestScore = Math.max(garage.bestScore, result.score);
   saveGarage(garage);
   updateGarageUi();
+  setRunUiActive(false);
   hud.classList.remove('is-active');
   app.classList.remove('is-overheated', 'is-phasing', 'is-low-shield');
   setText('#result-rank', rankFromResult(result));
@@ -579,10 +640,12 @@ async function startConfiguredRun(config: RunConfig, online = false): Promise<vo
   query<HTMLButtonElement>('#replay-run').hidden = online;
   menu.classList.add('is-hidden');
   hud.classList.add('is-active');
+  setRunUiActive(true);
   setText('#rank-total', `/ ${1 + (config.aiOpponents ?? 3) + (onlineMatch?.humans.length ? onlineMatch.humans.length - 1 : 0)}`);
   setText('#hud-track', TRACKS[config.track].name.toUpperCase());
   setText('#hud-weapon', WEAPONS[config.weapon].name.toUpperCase());
   setText('#hud-ability', ABILITIES[config.ability].name.toUpperCase());
+  mobileAbilityName.textContent = ABILITIES[config.ability].name.split(' ')[0].toUpperCase();
   setText('#section-label', 'SECTOR 01 // IGNITION');
   try {
     await game.startRun(config);
@@ -593,6 +656,7 @@ async function startConfiguredRun(config: RunConfig, online = false): Promise<vo
     selectedMusicId = 'synthetic';
     renderMusicCatalog();
     updateMusicUi();
+    setRunUiActive(false);
     hud.classList.remove('is-active');
     menu.classList.remove('is-hidden');
     refreshCoursePreview();
@@ -621,6 +685,29 @@ async function launchRun(replay = false): Promise<void> {
   await startConfiguredRun(config, false);
 }
 
+type MobileMenuPane = 'race' | 'loadout' | 'garage' | 'online';
+
+const mobileMenuTabs = queryAll<HTMLButtonElement>('[data-menu-tab]');
+
+function selectMobileMenuPane(pane: MobileMenuPane, scrollToTop = false): void {
+  menu.dataset.activePane = pane;
+  for (const button of mobileMenuTabs) {
+    const selected = button.dataset.menuTab === pane;
+    button.classList.toggle('is-active', selected);
+    button.setAttribute('aria-pressed', String(selected));
+  }
+  if (scrollToTop && window.matchMedia('(max-width: 960px)').matches) {
+    menu.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+}
+
+for (const button of mobileMenuTabs) {
+  button.addEventListener('click', () => {
+    selectMobileMenuPane(button.dataset.menuTab as MobileMenuPane, true);
+  });
+}
+selectMobileMenuPane('race');
+
 const trackButtons = queryAll<HTMLButtonElement>('[data-track]');
 for (const button of trackButtons) {
   button.addEventListener('click', () => {
@@ -647,6 +734,7 @@ for (const button of abilityButtons) {
     selectedAbility = button.dataset.ability as AbilityId;
     selectRadio('[data-ability]', selectedAbility, 'ability');
     setText('#ability-description', ABILITIES[selectedAbility].description);
+    mobileAbilityName.textContent = ABILITIES[selectedAbility].name.split(' ')[0].toUpperCase();
   });
 }
 installRadioKeyboard(abilityButtons);
@@ -1747,36 +1835,76 @@ startButton.addEventListener('click', () => void launchRun(false));
 query<HTMLButtonElement>('#replay-run').addEventListener('click', () => void launchRun(true));
 query<HTMLButtonElement>('#return-menu').addEventListener('click', () => {
   game.backToMenu();
+  setRunUiActive(false);
   currentRunIsOnline = false;
   onlineMatch = null;
   remoteRaceStates.clear();
   resultsScreen.classList.remove('is-active');
   hud.classList.remove('is-active');
   menu.classList.remove('is-hidden');
+  menu.scrollTo({ top: 0 });
   query<HTMLButtonElement>('#replay-run').hidden = false;
   if (onlineRoom) renderOnlineRoom(onlineRoom);
   lastRunSeed = randomSeed();
   refreshCoursePreview();
 });
 
-for (const button of queryAll<HTMLButtonElement>('[data-control]')) {
-  const control = button.dataset.control as 'left' | 'right' | 'boost' | 'cool';
+for (const button of mobileHoldButtons) {
+  const control = button.dataset.control as TouchInputAction;
   const down = (event: PointerEvent) => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
     event.preventDefault();
-    button.setPointerCapture(event.pointerId);
-    game.setMobileControl(control, true);
+    const wasActive = touchInputRouter.isActive(control);
+    touchInputRouter.press(event.pointerId, control);
+    if (!wasActive) pulseHaptic(control === 'boost' ? 12 : 7);
+    try {
+      button.setPointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture is best-effort on older mobile WebViews.
+    }
   };
   const up = (event: PointerEvent) => {
     event.preventDefault();
-    game.setMobileControl(control, false);
+    touchInputRouter.release(event.pointerId);
   };
   button.addEventListener('pointerdown', down);
   button.addEventListener('pointerup', up);
   button.addEventListener('pointercancel', up);
+  button.addEventListener('lostpointercapture', up);
 }
 
-query<HTMLButtonElement>('[data-action="fire"]').addEventListener('pointerdown', (event) => { event.preventDefault(); game.fire(); });
-query<HTMLButtonElement>('[data-action="ability"]').addEventListener('pointerdown', (event) => { event.preventDefault(); game.activateAbility(); });
+const pressAbility = (event: PointerEvent): void => {
+  if (event.pointerType === 'mouse' && event.button !== 0) return;
+  event.preventDefault();
+  mobileAbilityPointers.add(event.pointerId);
+  mobileAbilityButton.classList.add('is-pressed');
+  mobileAbilityButton.setAttribute('aria-pressed', 'true');
+  try {
+    mobileAbilityButton.setPointerCapture(event.pointerId);
+  } catch {
+    // Pointer capture is best-effort on older mobile WebViews.
+  }
+  pulseHaptic(14);
+  game.activateAbility();
+};
+const releaseAbility = (event: PointerEvent): void => {
+  event.preventDefault();
+  mobileAbilityPointers.delete(event.pointerId);
+  if (mobileAbilityPointers.size > 0) return;
+  mobileAbilityButton.classList.remove('is-pressed');
+  mobileAbilityButton.setAttribute('aria-pressed', 'false');
+};
+mobileAbilityButton.addEventListener('pointerdown', pressAbility);
+mobileAbilityButton.addEventListener('pointerup', releaseAbility);
+mobileAbilityButton.addEventListener('pointercancel', releaseAbility);
+mobileAbilityButton.addEventListener('lostpointercapture', releaseAbility);
+mobileControls.addEventListener('contextmenu', (event) => event.preventDefault());
+window.addEventListener('blur', releaseTouchControls);
+window.addEventListener('orientationchange', releaseTouchControls);
+window.addEventListener('pagehide', releaseTouchControls);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) releaseTouchControls();
+});
 
 audio.setAudioSettings(settings.audio);
 game.setGraphicsSettings(settings.graphics);
