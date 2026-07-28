@@ -1,4 +1,4 @@
-export type TrackId = 'aurora' | 'reactor' | 'void';
+export type TrackId = 'aurora' | 'reactor' | 'void' | 'forge';
 export type WeaponId = 'pulse' | 'scatter' | 'rail';
 export type AbilityId = 'phase' | 'emp' | 'overdrive';
 export type UpgradeId =
@@ -10,7 +10,8 @@ export type UpgradeId =
   | 'glass-cannon'
   | 'echo-shield'
   | 'afterburner'
-  | 'flux-magnet';
+  | 'flux-magnet'
+  | 'temporal-core';
 
 export interface TrackTheme {
   id: TrackId;
@@ -187,6 +188,23 @@ export const TRACKS: Record<TrackId, TrackTheme> = {
     handling: 1.12,
     hazardRate: 1,
   },
+  forge: {
+    id: 'forge',
+    name: 'Pulse Forge',
+    kicker: 'INDUSTRIAL / 04',
+    description: 'Раскалённый индустриальный коридор: плотные минные поля, ритмичные ворота и максимальная плотность событий.',
+    seed: 0xf0r6e,
+    radius: 11.8,
+    colors: {
+      background: 0x05010a,
+      fog: 0x120318,
+      primary: 0xff5c8a,
+      secondary: 0xffc93a,
+      danger: 0xff1a4a,
+    },
+    handling: 0.98,
+    hazardRate: 1.35,
+  },
 };
 
 export const WEAPONS: Record<WeaponId, WeaponDefinition> = {
@@ -253,4 +271,5 @@ export const UPGRADES: UpgradeDefinition[] = [
   { id: 'echo-shield', name: 'Echo Shield', description: 'Каждые 8 успешных ритм-действий восстанавливают сегмент щита.', tag: 'SHIELD', tone: 'violet' },
   { id: 'afterburner', name: 'Afterburner', description: 'Overdrive и идеальный boost длятся на 1,2 сек. дольше.', tag: 'BOOST', tone: 'gold' },
   { id: 'flux-magnet', name: 'Flux Magnet', description: 'Удваивает радиус сбора кристаллов и их ценность.', tag: 'ECONOMY', tone: 'cyan' },
+  { id: 'temporal-core', name: 'Temporal Core', description: 'Синхронизация с битом даёт +35% к счёту и временно замедляет время для точных манёвров.', tag: 'RHYTHM', tone: 'gold' },
 ];
