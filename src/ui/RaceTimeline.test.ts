@@ -48,11 +48,11 @@ describe('race HUD course markers', () => {
       pattern(2, 'halfwall', 20, 21),
       pattern(3, 'blade', 30, 31),
       pattern(4, 'cross', 40, 42),
-      pattern(5, 'drone', 50),
+      pattern(5, 'bastion', 50),
       pattern(6, 'boost', 60, 60, 'reward'),
     ]));
 
-    expect(markers.map((marker) => marker.kind)).toEqual(['gate', 'halfwall', 'blade', 'cross', 'drone']);
+    expect(markers.map((marker) => marker.kind)).toEqual(['gate', 'halfwall', 'blade', 'cross', 'bastion']);
     expect(markers.map((marker) => marker.startProgress)).toEqual([0.1, 0.2, 0.3, 0.4, 0.5]);
     expect(markers[3]).toMatchObject({ endProgress: 0.42, count: 2, label: 'крестовина, серия из 2' });
     expect(Object.isFrozen(markers)).toBe(true);
@@ -64,7 +64,7 @@ describe('race HUD course markers', () => {
       pattern(3, 'cross', 11.2),
       pattern(1, 'gate', 10),
       pattern(2, 'blade', 10.7),
-      pattern(4, 'drone', 18),
+      pattern(4, 'bastion', 18),
     ]));
 
     expect(markers.map((marker) => marker.id)).toEqual([

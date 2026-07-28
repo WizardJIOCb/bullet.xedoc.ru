@@ -63,6 +63,18 @@ interface EventTuning {
   trigger?: TrackEventTrigger;
 }
 
+type EncounterPattern =
+  | 'gate'
+  | 'halfwall'
+  | 'blade'
+  | 'cross'
+  | 'bastion'
+  | 'pickup'
+  | 'compression'
+  | 'shutter'
+  | 'scissor'
+  | 'cathedral';
+
 const NOMINAL_SPEED = 170;
 
 function sampleProfile(values: number[], progress: number): number {
@@ -203,7 +215,7 @@ function mergeTransitionAnchors(
       (minimum, beat) => Math.min(minimum, Math.abs(beat.time - transition.time)),
       Number.POSITIVE_INFINITY,
     );
-    if (nearestDelta <= Math.min(0.08, interval * 0.18)) continue;
+    if (nearestDelta <= 0.001) continue;
     const gridOrdinal = Math.max(0, Math.round((transition.time - Math.max(0, profile.beatOffset)) / interval));
     const bass = profileValueAtTime(profile, profile.bass, transition.time, runDuration);
     const highs = profileValueAtTime(profile, profile.highs, transition.time, runDuration);
@@ -480,15 +492,15 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
     const energy = profileValueAtTime(profile, profile.energy, beat.time, runDuration);
     const bass = clamp((beat.bass + profileValueAtTime(profile, profile.bass, beat.time, runDuration)) * 0.5, 0, 1);
     const eventStrength = clamp(tuning.strength ?? beat.strength * 0.58 + energy * 0.25 + bass * 0.17, 0, 1);
-    const hazard = kind === 'gate' || kind === 'halfwall' || kind === 'blade' || kind === 'cross' || kind === 'drone';
+    const hazard = kind === 'gate' || kind === 'halfwall' || kind === 'blade' || kind === 'cross' || kind === 'bastion';
     const finalAngle = wrapPositive(angle);
     events.push({
       id: -1,
       kind,
       distance: (beat.time / runDuration) * length,
       angle: finalAngle,
-      gapWidth: tuning.gapWidth ?? (kind === 'gate' ? 0.82 : kind === 'halfwall' ? 1.36 : kind === 'blade' || kind === 'cross' ? 0.2 : 0.32),
-      health: kind === 'drone' ? 2 + Math.floor(eventStrength * 3) : 1,
+      gapWidth: tuning.gapWidth ?? (kind === 'gate' ? 0.82 : kind === 'halfwall' ? 1.36 : kind === 'blade' || kind === 'cross' ? 0.2 : kind === 'bastion' ? 0.36 : 0.32),
+      health: kind === 'bastion' ? 3 + Math.floor(eventStrength * 3) : 1,
       resolved: false,
       destroyed: false,
       beatIndex: beat.beatIndex,
@@ -522,7 +534,7 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
   const startIndex = Math.max(0, beats.findIndex((beat) => beat.time >= safeStartTime));
   let barOrdinal = 0;
   let fallbackCycleIndex = Math.floor(
-    patternRandom(beats[startIndex]?.beatIndex ?? 0, 0x4f13)() * 6,
+    patternRandom(beats[startIndex]?.beatIndex ?? 0, 0x4f13)() * 5,
   );
   let lastPatternStartTime = Number.NEGATIVE_INFINITY;
   let lastPatternEndTime = Number.NEGATIVE_INFINITY;
@@ -530,8 +542,8 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
   const hazardCadence = Math.max(1, Math.round(1.35 / theme.hazardRate));
   const basePatternGap = clamp(1.05 / theme.hazardRate, 0.78, 1.25);
   const patternRecovery = Math.max(0.22, beatInterval * 0.55);
-  const patternCycle = ['gate', 'halfwall', 'blade', 'pickup', 'cross', 'drone'] as const;
-  const accentPatternCycle = ['gate', 'blade', 'halfwall', 'cross', 'drone'] as const;
+  const patternCycle: readonly EncounterPattern[] = ['gate', 'halfwall', 'blade', 'pickup', 'cross'];
+  const accentPatternCycle: readonly EncounterPattern[] = ['gate', 'blade', 'halfwall', 'cross'];
   let accentCycleIndex = Math.floor(
     patternRandom(beats[startIndex]?.beatIndex ?? 0, 0x71ac)() * accentPatternCycle.length,
   );
@@ -664,36 +676,30 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
     const kick = anchor.kick ?? (cue === 'kick' ? anchor.strength : 0);
     const transient = anchor.transient ?? (cue === 'transient' ? anchor.strength : 0);
 
-    let pattern: typeof patternCycle[number];
+    let pattern: EncounterPattern;
     if (nearbyTransition) {
       if (nearbyTransition.kind === 'drop') {
-        if (nearbyTransition.strength >= 0.86 || (energy > 0.72 && bass > 0.58)) pattern = 'cross';
-        else if (highs > bass + 0.1) pattern = 'blade';
-        else if (bass > 0.66) pattern = 'gate';
-        else pattern = 'halfwall';
+        pattern = 'cathedral';
       } else if (nearbyTransition.kind === 'build') {
-        if (highs > 0.64 && transient > 0.48) pattern = 'blade';
-        else if (bass > 0.68 && energy > 0.64) pattern = 'cross';
-        else pattern = 'halfwall';
+        pattern = 'shutter';
       } else if (nearbyTransition.kind === 'fill') {
-        if (bass > highs + 0.12) pattern = 'gate';
-        else if (highs > 0.58 || transient > kick) pattern = 'blade';
-        else pattern = 'drone';
+        pattern = 'scissor';
       } else {
-        pattern = energy > 0.72 && cue === 'kick' ? 'gate' : 'pickup';
+        pattern = 'pickup';
       }
     } else if (cue === 'kick') {
-      if (kick > 0.82 && energy > 0.58) pattern = random() > 0.58 ? 'cross' : 'gate';
-      else pattern = random() > 0.48 ? 'gate' : 'halfwall';
+      if (kick > 0.88) pattern = 'compression';
+      else if (bass > 0.72 && energy > 0.58) pattern = 'bastion';
+      else pattern = bass > 0.58 ? 'gate' : 'halfwall';
     } else if (cue === 'transient') {
-      pattern = transient > 0.78 || highs > 0.64 ? 'blade' : random() > 0.55 ? 'halfwall' : 'drone';
+      pattern = 'scissor';
     } else if (isLocalAccent && !isDownbeat) {
       pattern = accentPatternCycle[accentCycleIndex % accentPatternCycle.length];
       accentCycleIndex += 1;
     } else if (highs > 0.72) {
       pattern = 'blade';
     } else if (bass > 0.7 && energy > 0.6) {
-      pattern = random() > 0.48 ? 'gate' : 'cross';
+      pattern = 'cross';
     } else if (energy < 0.48) {
       pattern = 'pickup';
     } else {
@@ -735,7 +741,82 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
       }
       return best;
     };
-    if (pattern === 'gate') {
+    if (pattern === 'compression') {
+      const safeStep = direction * clamp(beatInterval * 0.75, 0.18, 0.4);
+      const preferredCount = kick > 0.9 && activity > 0.74 ? 3 : 2;
+      const secondBeat = at(1);
+      const thirdBeat = preferredCount > 2 ? at(2) : undefined;
+      const patternBeats = secondBeat
+        ? [anchor, secondBeat, ...(thirdBeat ? [thirdBeat] : [])]
+        : [anchor];
+      for (let step = 0; step < patternBeats.length; step += 1) {
+        emit('gate', patternBeats[step], baseAngle + safeStep * step, {
+          gapWidth: clamp(1.02 - energy * 0.1, 0.9, 1.02),
+          strength: clamp(anchor.strength + step * 0.025, 0, 1),
+        });
+      }
+    } else if (pattern === 'shutter') {
+      const turn = direction * clamp(beatInterval * 0.7, 0.16, 0.34);
+      const preferredCount = nearbyTransition?.strength && nearbyTransition.strength > 0.88 ? 4 : 3;
+      const secondBeat = at(1);
+      const thirdBeat = at(2);
+      const fourthBeat = preferredCount > 3 ? at(3) : undefined;
+      const patternBeats = secondBeat && thirdBeat
+        ? [anchor, secondBeat, thirdBeat, ...(fourthBeat ? [fourthBeat] : [])]
+        : [anchor];
+      for (let step = 0; step < patternBeats.length; step += 1) {
+        emit('halfwall', patternBeats[step], baseAngle + turn * step, {
+          gapWidth: clamp(1.38 + energy * 0.08, 1.38, 1.46),
+        });
+      }
+    } else if (pattern === 'scissor') {
+      const twist = direction * clamp(beatInterval * 0.62, 0.15, 0.31);
+      const preferredCount = transient > 0.9 || (nearbyTransition?.strength ?? 0) > 0.9 ? 3 : 2;
+      const secondBeat = at(1);
+      const thirdBeat = preferredCount > 2 ? at(2) : undefined;
+      const patternBeats = secondBeat
+        ? [anchor, secondBeat, ...(thirdBeat ? [thirdBeat] : [])]
+        : [anchor];
+      for (let step = 0; step < patternBeats.length; step += 1) {
+        emit('blade', patternBeats[step], baseAngle + twist * step, {
+          gapWidth: 0.18 + energy * 0.045,
+          rotationRate: (step % 2 === 0 ? direction : -direction) * (0.07 + highs * 0.11),
+          armCount: patternBeats.length > 1 ? 3 : 2,
+        });
+      }
+    } else if (pattern === 'cathedral') {
+      const corridorStep = direction * clamp(beatInterval * 0.65, 0.14, 0.3);
+      const firstSafeAngle = baseAngle;
+      const secondCrossBeat = at(1);
+      const finalCrossBeat = at(2);
+      if (!secondCrossBeat || !finalCrossBeat) {
+        emit('cross', anchor, firstSafeAngle - Math.PI / 4, {
+          gapWidth: 0.24,
+          rotationRate: direction * 0.045,
+          armCount: 4,
+          strength: clamp(anchor.strength + 0.08, 0, 1),
+        });
+      } else {
+        emit('cross', anchor, firstSafeAngle - Math.PI / 4, {
+          gapWidth: clamp(0.24 + energy * 0.035, 0.24, 0.275),
+          rotationRate: direction * (0.045 + highs * 0.025),
+          armCount: 4,
+          strength: clamp(anchor.strength + 0.1, 0, 1),
+        });
+        emit('cross', secondCrossBeat, firstSafeAngle + corridorStep - Math.PI / 4, {
+          gapWidth: clamp(0.24 + energy * 0.035, 0.24, 0.275),
+          rotationRate: -direction * (0.045 + highs * 0.025),
+          armCount: 4,
+          strength: clamp(anchor.strength + 0.06, 0, 1),
+        });
+        emit('cross', finalCrossBeat, firstSafeAngle + corridorStep * 2 - Math.PI / 4, {
+          gapWidth: clamp(0.24 + energy * 0.035, 0.24, 0.275),
+          rotationRate: direction * (0.045 + highs * 0.025),
+          armCount: 4,
+          strength: clamp(anchor.strength + 0.12, 0, 1),
+        });
+      }
+    } else if (pattern === 'gate') {
       emit('gate', anchor, baseAngle, {
         gapWidth: 0.78 + (1 - energy) * 0.24,
         strength: clamp(anchor.strength + 0.08, 0, 1),
@@ -781,8 +862,8 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
           strength: clamp(anchor.strength + step * 0.035, 0, 1),
         });
       }
-    } else if (pattern === 'drone') {
-      emit('drone', anchor, baseAngle, { warningDistance: 300 + energy * 150 });
+    } else if (pattern === 'bastion') {
+      emit('bastion', anchor, baseAngle, { warningDistance: 420 + energy * 120 });
       emit('shard', at(1), baseAngle + direction * 0.22);
     } else {
       const rewardKind: TrackEvent['kind'] = nearbyTransition?.kind === 'break' ? 'coolant' : random() > 0.52 ? 'boost' : 'shard';

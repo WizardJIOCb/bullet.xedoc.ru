@@ -1253,12 +1253,13 @@ label:focus-within {
   background: transparent;
 }
 
-.music-preview__marker[data-kind="drone"]::before {
-  width: 9px;
-  height: 9px;
-  transform: translateX(-50%) rotate(45deg) scale(var(--marker-scale));
+.music-preview__marker[data-kind="bastion"]::before {
+  width: 11px;
+  height: 12px;
+  transform: translateX(-50%) scale(var(--marker-scale));
   border-color: var(--gold);
-  background: rgba(255, 212, 94, 0.28);
+  border-width: 2px 1px;
+  background: linear-gradient(90deg, rgba(255, 212, 94, 0.42) 0 22%, transparent 23% 77%, rgba(255, 212, 94, 0.42) 78%);
 }
 
 .music-preview__marker[data-kind="boost"],
@@ -1432,7 +1433,7 @@ label:focus-within {
 }
 
 .music-preview__legend-icon--rotor { color: var(--violet); }
-.music-preview__legend-icon--drone { color: var(--gold); }
+.music-preview__legend-icon--bastion { color: var(--gold); }
 .music-preview__legend-icon--reward { color: #72ffc2; }
 .music-preview__legend-icon--transition { color: var(--cyan); }
 .music-preview__legend-icon--beat { color: var(--gold); }
@@ -2124,16 +2125,16 @@ kbd {
   background: currentColor;
 }
 
-.race-course-marker[data-kind="drone"] {
+.race-course-marker[data-kind="bastion"] {
   --marker-color: var(--gold);
 }
 
-.race-course-marker[data-kind="drone"]::before {
-  width: 6px;
-  height: 6px;
-  transform: translate(-50%, 0) rotate(45deg) scale(var(--marker-scale));
-  border: 1px solid currentColor;
-  background: color-mix(in srgb, currentColor 24%, rgba(4, 12, 18, 0.92));
+.race-course-marker[data-kind="bastion"]::before {
+  width: 8px;
+  height: 8px;
+  transform: translate(-50%, -1px) scale(var(--marker-scale));
+  border: 2px solid currentColor;
+  background: linear-gradient(90deg, currentColor 0 20%, transparent 21% 79%, currentColor 80%);
 }
 
 .race-course-marker[data-state="passed"] {

@@ -37,7 +37,7 @@ describe('procedural track generation', () => {
     expect(first.events.map((event) => event.id)).toEqual(first.events.map((_, index) => index));
     expect(first.events.every((event) => event.musicTime >= 0.7 && event.musicTime < first.runDuration)).toBe(true);
     expect(first.events.filter((event) => event.kind === 'gate').every((event) => event.gapWidth >= 0.7)).toBe(true);
-    const hazardKinds = new Set(['gate', 'halfwall', 'blade', 'cross', 'drone']);
+    const hazardKinds = new Set(['gate', 'halfwall', 'blade', 'cross', 'bastion']);
     const patternIdsByBeat = new Map<number, Set<number>>();
     for (const event of first.events.filter((candidate) => hazardKinds.has(candidate.kind))) {
       const patternIds = patternIdsByBeat.get(event.beatIndex) || new Set<number>();
@@ -51,7 +51,7 @@ describe('procedural track generation', () => {
     const profile = createDefaultMusicProfile();
     const aurora = generateTrack(TRACKS.aurora, profile, 44);
     const reactor = generateTrack(TRACKS.reactor, profile, 44);
-    const hazardKinds = new Set(['gate', 'halfwall', 'blade', 'cross', 'drone']);
+    const hazardKinds = new Set(['gate', 'halfwall', 'blade', 'cross', 'bastion']);
     const countHazards = (plan: ReturnType<typeof generateTrack>): number => plan.events.filter((event) => hazardKinds.has(event.kind)).length;
 
     expect(countHazards(reactor)).toBeGreaterThan(countHazards(aurora));
@@ -88,16 +88,18 @@ describe('procedural track generation', () => {
     expect(new Set(blades.map((event) => event.patternId)).size).toBeLessThan(blades.length);
     expect(new Set(crosses.map((event) => event.patternId)).size).toBeLessThan(crosses.length);
     expect(halfwalls.every((event) => event.gapWidth < Math.PI / 2)).toBe(true);
-    expect(blades.every((event) => event.armCount === 2 && event.gapWidth <= 0.24)).toBe(true);
-    expect(crosses.every((event) => event.armCount === 4 && event.gapWidth <= 0.22)).toBe(true);
+    expect(blades.every((event) => (event.armCount === 2 || event.armCount === 3) && event.gapWidth <= 0.24)).toBe(true);
+    expect(crosses.every((event) => event.armCount === 4 && event.gapWidth <= 0.28)).toBe(true);
     expect([...blades, ...crosses].some((event) => Math.abs(event.rotationRate) > 0.05)).toBe(true);
   });
 
-  it('never generates the removed small mine hazards on any route', () => {
+  it('never generates the removed low-profile drone or mine hazards on any route', () => {
     const profile = createDefaultMusicProfile();
     for (const track of Object.values(TRACKS)) {
       for (const seed of [1, 17, 91, 712]) {
-        expect(generateTrack(track, profile, seed).events.map((event) => event.kind)).not.toContain('mine');
+        const kinds = generateTrack(track, profile, seed).events.map((event) => event.kind as string);
+        expect(kinds).not.toContain('mine');
+        expect(kinds).not.toContain('drone');
       }
     }
   });
@@ -136,7 +138,7 @@ describe('procedural track generation', () => {
     const runDuration = 58;
     const kickIndex = 21;
     const transientIndex = 29;
-    const weakIndex = 23;
+    const weakIndex = 25;
     const beats: RhythmBeat[] = Array.from({ length: 116 }, (_, index) => ({
       time: 0.25 + index * 0.5,
       strength: index === kickIndex || index === transientIndex ? 0.96 : 0.24,
@@ -162,12 +164,60 @@ describe('procedural track generation', () => {
       transitions: [],
     };
     const plan = generateTrack(TRACKS.aurora, profile, 2048);
-    const kickHazards = new Set(['gate', 'halfwall', 'cross']);
-    const transientHazards = new Set(['blade', 'halfwall', 'drone']);
+    const kickHazards = new Set(['gate', 'halfwall']);
+    const transientHazards = new Set(['blade']);
+    const kickStart = plan.events.find((event) => event.musicTime === beats[kickIndex].time && event.kind === 'gate');
+    const transientStart = plan.events.find((event) => event.musicTime === beats[transientIndex].time && event.kind === 'blade');
+    const kickPattern = plan.events.filter((event) => event.patternId === kickStart?.patternId && event.kind === 'gate');
+    const transientPattern = plan.events.filter((event) => event.patternId === transientStart?.patternId && event.kind === 'blade');
 
     expect(plan.events.some((event) => event.musicTime === beats[kickIndex].time && kickHazards.has(event.kind))).toBe(true);
     expect(plan.events.some((event) => event.musicTime === beats[transientIndex].time && transientHazards.has(event.kind))).toBe(true);
     expect(plan.events.some((event) => event.musicTime === beats[weakIndex].time && kickHazards.has(event.kind))).toBe(false);
+    expect(kickPattern.length).toBeGreaterThanOrEqual(2);
+    expect(kickPattern.every((event) => event.trigger === 'kick' && event.gapWidth >= 0.9)).toBe(true);
+    expect(kickPattern.every((event, index) => index === 0 || Math.abs(Math.atan2(
+      Math.sin(event.angle - kickPattern[index - 1].angle),
+      Math.cos(event.angle - kickPattern[index - 1].angle),
+    )) <= 0.41)).toBe(true);
+    expect(transientPattern.length).toBeGreaterThanOrEqual(2);
+    expect(transientPattern.every((event) => event.trigger === 'transient' && event.armCount === 3)).toBe(true);
+  });
+
+  it('replaces the low drone with a large destructible bastion on a heavy bass hit', () => {
+    const runDuration = 42;
+    const hitIndex = 36;
+    const beats: RhythmBeat[] = Array.from({ length: 84 }, (_, index) => ({
+      time: 0.25 + index * 0.5,
+      strength: index === hitIndex ? 0.86 : 0.24,
+      bass: index === hitIndex ? 0.84 : 0.34,
+      highs: 0.32,
+      barBeat: (index % 4) as RhythmBeat['barBeat'],
+      cue: index === hitIndex ? 'kick' as const : 'beat' as const,
+      onset: index === hitIndex ? 0.9 : 0.08,
+      kick: index === hitIndex ? 0.82 : 0,
+      transient: 0,
+    })).filter((beat) => beat.time <= runDuration);
+    const hitTime = beats[hitIndex].time;
+    const profile: MusicProfile = {
+      ...createDefaultMusicProfile(),
+      duration: runDuration,
+      runDuration,
+      bpm: 120,
+      beatOffset: 0.25,
+      energy: Array(192).fill(0.62),
+      bass: Array(192).fill(0.74),
+      mids: Array(192).fill(0.48),
+      highs: Array(192).fill(0.32),
+      beats,
+      transitions: [],
+    };
+    const plan = generateTrack(TRACKS.aurora, profile, 922);
+    const bastion = plan.events.find((event) => event.musicTime === hitTime && event.kind === 'bastion');
+
+    expect(bastion).toMatchObject({ trigger: 'kick', gapWidth: 0.36 });
+    expect(bastion?.health).toBeGreaterThanOrEqual(3);
+    expect(plan.events.map((event) => event.kind as string)).not.toContain('drone');
   });
 
   it('keeps multi-part patterns on readable grid beats when an off-grid hit is nearby', () => {
@@ -246,7 +296,7 @@ describe('procedural track generation', () => {
       beats,
       transitions: [],
     };
-    const hazards = new Set(['gate', 'halfwall', 'blade', 'cross', 'drone']);
+    const hazards = new Set(['gate', 'halfwall', 'blade', 'cross', 'bastion']);
 
     expect(generateTrack(TRACKS.reactor, profile, 707).events.some((event) => hazards.has(event.kind))).toBe(false);
   });
@@ -327,6 +377,100 @@ describe('procedural track generation', () => {
     }
   });
 
+  it('uses stable arrangement motifs at the exact transition time, including near-grid shifts', () => {
+    const runDuration = 58;
+    const beats: RhythmBeat[] = Array.from({ length: 116 }, (_, index) => ({
+      time: 0.25 + index * 0.5,
+      strength: 0.34,
+      bass: 0.46,
+      highs: 0.44,
+      barBeat: (index % 4) as RhythmBeat['barBeat'],
+    })).filter((beat) => beat.time <= runDuration);
+    const transitions = [
+      { time: 12.31, strength: 0.9, kind: 'build' as const },
+      { time: 24.31, strength: 0.88, kind: 'fill' as const },
+      { time: 36.31, strength: 0.96, kind: 'drop' as const },
+      { time: 48.31, strength: 0.82, kind: 'break' as const },
+    ];
+    const profile: MusicProfile = {
+      ...createDefaultMusicProfile(),
+      duration: runDuration,
+      runDuration,
+      bpm: 120,
+      beatOffset: 0.25,
+      energy: Array(192).fill(0.58),
+      bass: Array(192).fill(0.5),
+      mids: Array(192).fill(0.48),
+      highs: Array(192).fill(0.46),
+      beats,
+      transitions,
+    };
+    const motifAt = (seed: number, time: number) => {
+      const plan = generateTrack(TRACKS.aurora, profile, seed);
+      const first = plan.events.find((event) => event.musicTime === time);
+      return {
+        first,
+        events: plan.events
+          .filter((event) => event.patternId === first?.patternId)
+          .sort((left, right) => left.musicTime - right.musicTime),
+      };
+    };
+
+    for (const seed of [41, 912]) {
+      const build = motifAt(seed, transitions[0].time);
+      const fill = motifAt(seed, transitions[1].time);
+      const drop = motifAt(seed, transitions[2].time);
+      const rest = motifAt(seed, transitions[3].time);
+
+      expect(build.first?.trigger).toBe('build');
+      expect(build.events.map((event) => event.kind)).toEqual(['halfwall', 'halfwall', 'halfwall', 'halfwall']);
+      expect(fill.first?.trigger).toBe('fill');
+      expect(fill.events.map((event) => event.kind)).toEqual(['blade', 'blade']);
+      expect(fill.events.every((event) => event.armCount === 3)).toBe(true);
+      expect(drop.first?.trigger).toBe('drop');
+      expect(drop.events.map((event) => event.kind)).toEqual(['cross', 'cross', 'cross']);
+      expect(rest.first?.trigger).toBe('break');
+      expect(rest.events.every((event) => !['gate', 'halfwall', 'blade', 'cross', 'bastion'].includes(event.kind))).toBe(true);
+    }
+  });
+
+  it('falls back to one safe cathedral cross when the next arrangement anchor is one beat away', () => {
+    const runDuration = 42;
+    const beats: RhythmBeat[] = Array.from({ length: 84 }, (_, index) => ({
+      time: 0.25 + index * 0.5,
+      strength: 0.34,
+      bass: 0.46,
+      highs: 0.44,
+      barBeat: (index % 4) as RhythmBeat['barBeat'],
+    })).filter((beat) => beat.time <= runDuration);
+    const dropTime = 20.31;
+    const profile: MusicProfile = {
+      ...createDefaultMusicProfile(),
+      duration: runDuration,
+      runDuration,
+      bpm: 120,
+      beatOffset: 0.25,
+      energy: Array(192).fill(0.58),
+      bass: Array(192).fill(0.5),
+      mids: Array(192).fill(0.48),
+      highs: Array(192).fill(0.46),
+      beats,
+      transitions: [
+        { time: dropTime, strength: 0.96, kind: 'drop' },
+        { time: dropTime + 0.5, strength: 0.92, kind: 'fill' },
+      ],
+    };
+    const plan = generateTrack(TRACKS.aurora, profile, 217);
+    const dropStart = plan.events.find((event) => event.musicTime === dropTime && event.trigger === 'drop');
+    const dropPattern = plan.events
+      .filter((event) => event.patternId === dropStart?.patternId)
+      .sort((left, right) => left.musicTime - right.musicTime);
+
+    expect(dropStart?.kind).toBe('cross');
+    expect(dropPattern.map((event) => event.kind)).toEqual(['cross']);
+    expect(dropPattern[0]?.trigger).toBe('drop');
+  });
+
   it('gives a nearby transition priority over the onset accent immediately before it', () => {
     const runDuration = 58;
     const accentIndex = 29;
@@ -352,10 +496,23 @@ describe('procedural track generation', () => {
       transitions: [{ time: beats[dropIndex].time + 0.12, strength: 1, kind: 'drop' }],
     };
     const plan = generateTrack(TRACKS.reactor, profile, 118);
-    const hazardKinds = new Set(['gate', 'halfwall', 'blade', 'cross', 'drone']);
+    const hazardKinds = new Set(['gate', 'halfwall', 'blade', 'cross', 'bastion']);
 
     expect(plan.events.some((event) => event.beatIndex === accentIndex && hazardKinds.has(event.kind))).toBe(false);
-    expect(plan.events.some((event) => event.musicTime === beats[dropIndex].time + 0.12 && event.kind === 'cross')).toBe(true);
+    const dropTime = beats[dropIndex].time + 0.12;
+    const dropStart = plan.events.find((event) => event.musicTime === dropTime && event.kind === 'cross');
+    const dropPattern = plan.events
+      .filter((event) => event.patternId === dropStart?.patternId && hazardKinds.has(event.kind))
+      .sort((left, right) => left.musicTime - right.musicTime);
+
+    expect(dropStart).toBeDefined();
+    expect(dropPattern.map((event) => event.kind)).toEqual(['cross', 'cross', 'cross']);
+    expect(dropPattern.every((event) => event.trigger === 'drop')).toBe(true);
+    const safeAngles = dropPattern.map((event) => event.rotationPhase + Math.PI / 4);
+    expect(safeAngles.every((angle, index) => index === 0 || Math.abs(Math.atan2(
+      Math.sin(angle - safeAngles[index - 1]),
+      Math.cos(angle - safeAngles[index - 1]),
+    )) <= 0.31)).toBe(true);
   });
 
   it('keeps high-BPM syncopated accents readable while preserving route density and variety', () => {
@@ -385,7 +542,7 @@ describe('procedural track generation', () => {
       beats,
       transitions: [],
     };
-    const hazardKinds = new Set(['gate', 'halfwall', 'blade', 'cross', 'drone']);
+    const hazardKinds = new Set(['gate', 'halfwall', 'blade', 'cross', 'bastion']);
     const patternStarts = (plan: ReturnType<typeof generateTrack>): number[] => {
       const starts = new Map<number, number>();
       for (const event of plan.events.filter((candidate) => hazardKinds.has(candidate.kind))) {
@@ -467,7 +624,7 @@ describe('procedural track generation', () => {
         { time: 55.25, strength: 0.72, kind: 'break' },
       ],
     };
-    const hazardKinds = new Set(['gate', 'halfwall', 'blade', 'cross', 'drone']);
+    const hazardKinds = new Set(['gate', 'halfwall', 'blade', 'cross', 'bastion']);
     const summarize = (plan: ReturnType<typeof generateTrack>) => {
       const starts = new Map<number, { time: number; kind: string }>();
       for (const event of plan.events.filter((candidate) => hazardKinds.has(candidate.kind))) {

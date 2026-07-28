@@ -25,7 +25,7 @@ const HAZARD_LABELS: Record<TimelineHazardKind, string> = {
   halfwall: 'полустена',
   blade: 'лопасти',
   cross: 'крестовина',
-  drone: 'дрон',
+  bastion: 'бронебастион',
 };
 
 export function createRaceCourseMarkers(timeline: TrackTimeline): readonly Readonly<RaceCourseMarker>[] {

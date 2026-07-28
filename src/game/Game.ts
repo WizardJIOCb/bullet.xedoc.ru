@@ -322,7 +322,7 @@ export class BallisticGame {
     } else if (ability.id === 'emp') {
       let destroyed = 0;
       for (const event of this.plan.events) {
-        if (!event.destroyed && !event.resolved && event.distance > this.distance && event.distance < this.distance + 190 && event.kind === 'drone') {
+        if (!event.destroyed && !event.resolved && event.distance > this.distance && event.distance < this.distance + 190 && event.kind === 'bastion') {
           this.destroyEvent(event, true);
           destroyed += 1;
         }
@@ -537,7 +537,7 @@ export class BallisticGame {
   }
 
   private createEventWarning(event: TrackEvent): THREE.Object3D | null {
-    if (!['gate', 'halfwall', 'blade', 'cross', 'drone'].includes(event.kind)) return null;
+    if (!['gate', 'halfwall', 'blade', 'cross', 'bastion'].includes(event.kind)) return null;
     const distance = event.distance - clamp(event.warningDistance * 0.62, 150, 280);
     if (distance < 35) return null;
     const frame = sampleTrackFrame(this.plan, distance / this.plan.length);
@@ -545,7 +545,11 @@ export class BallisticGame {
     group.userData.warningFor = event.id;
     group.position.copy(frame.position);
     group.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(frame.normal, frame.binormal, frame.tangent));
-    const warningColor = event.kind === 'drone' ? 0xff9b42 : 0xffd35a;
+    const warningColor = event.kind === 'bastion'
+      ? 0xff9b42
+      : event.kind === 'cross' && event.trigger === 'drop'
+        ? 0xff4f86
+        : 0xffd35a;
     const ring = new THREE.Mesh(
       new THREE.TorusGeometry(this.plan.radius - 0.62, 0.085, 4, 36),
       new THREE.MeshBasicMaterial({ color: warningColor, transparent: true, opacity: 0.48, toneMapped: false }),
@@ -560,8 +564,10 @@ export class BallisticGame {
           : event.angle + Math.PI;
     const markerGeometry = new THREE.BoxGeometry(1.25, 0.18, 0.7);
     const markerMaterial = new THREE.MeshBasicMaterial({ color: 0xfff0a3, toneMapped: false });
-    for (const offset of [-0.16, 0, 0.16]) {
-      const angle = safeAngle + offset;
+    const markerAngles = event.kind === 'bastion'
+      ? [event.angle - event.gapWidth - 0.28, event.angle + event.gapWidth + 0.28]
+      : [-0.16, 0, 0.16].map((offset) => safeAngle + offset);
+    for (const angle of markerAngles) {
       const marker = new THREE.Mesh(markerGeometry, markerMaterial);
       marker.position.set(Math.cos(angle) * (this.plan.radius - 1.02), Math.sin(angle) * (this.plan.radius - 1.02), 0);
       marker.rotation.z = angle + Math.PI / 2;
@@ -656,17 +662,22 @@ export class BallisticGame {
       visual.position.copy(frame.position);
       visual.quaternion.setFromRotationMatrix(matrix);
       const rotor = new THREE.Group();
+      const isCathedralCross = event.kind === 'cross' && event.trigger === 'drop';
       const armLength = this.plan.radius - 0.74;
       const armThickness = Math.max(1.2, 2 * armLength * Math.tan(event.gapWidth));
       const armGeometry = new THREE.BoxGeometry(armLength, armThickness, 2.15);
       const armMaterial = new THREE.MeshStandardMaterial({
-        color: event.kind === 'cross' ? 0x16030d : 0x1c0306,
-        emissive: theme.colors.danger,
-        emissiveIntensity: 0.22,
+        color: isCathedralCross ? 0x280018 : event.kind === 'cross' ? 0x16030d : 0x1c0306,
+        emissive: isCathedralCross ? 0xff285f : theme.colors.danger,
+        emissiveIntensity: isCathedralCross ? 0.42 : 0.22,
         roughness: 0.58,
         metalness: 0.48,
       });
-      const outlineMaterial = new THREE.MeshBasicMaterial({ color: 0xffcf61, side: THREE.BackSide, toneMapped: false });
+      const outlineMaterial = new THREE.MeshBasicMaterial({
+        color: isCathedralCross ? 0xffffff : 0xffcf61,
+        side: THREE.BackSide,
+        toneMapped: false,
+      });
       const armCount = Math.max(2, event.armCount);
       for (let arm = 0; arm < armCount; arm += 1) {
         const angle = (arm / armCount) * TAU;
@@ -681,7 +692,7 @@ export class BallisticGame {
       }
       const hub = new THREE.Mesh(
         new THREE.CylinderGeometry(1.24, 1.24, 2.8, 12),
-        new THREE.MeshBasicMaterial({ color: 0xffefc1, toneMapped: false }),
+        new THREE.MeshBasicMaterial({ color: isCathedralCross ? 0xff4f86 : 0xffefc1, toneMapped: false }),
       );
       hub.rotation.x = Math.PI / 2;
       rotor.add(hub);
@@ -691,7 +702,59 @@ export class BallisticGame {
       return visual;
     }
 
-    const radialDistance = event.kind === 'drone' ? this.plan.radius - 4.1 : this.plan.radius - 1.8;
+    if (event.kind === 'bastion') {
+      const radial = radialAt(frame, event.angle);
+      const position = frame.position.clone().add(radial.multiplyScalar(this.plan.radius - 3.75));
+      const circumferential = frame.normal.clone().multiplyScalar(-Math.sin(event.angle)).add(frame.binormal.clone().multiplyScalar(Math.cos(event.angle))).normalize();
+      matrix.makeBasis(circumferential, radialAt(frame, event.angle), frame.tangent);
+      visual.position.copy(position);
+      visual.quaternion.setFromRotationMatrix(matrix);
+
+      const bodyGeometry = new THREE.BoxGeometry(8.6, 7.5, 3.5);
+      const bodyMaterial = new THREE.MeshStandardMaterial({
+        color: 0x220309,
+        emissive: theme.colors.danger,
+        emissiveIntensity: 0.34,
+        metalness: 0.68,
+        roughness: 0.4,
+      });
+      const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+      const outline = new THREE.Mesh(
+        bodyGeometry,
+        new THREE.MeshBasicMaterial({ color: 0xffc857, side: THREE.BackSide, toneMapped: false }),
+      );
+      outline.scale.set(1.035, 1.035, 1.07);
+
+      const pylonGeometry = new THREE.BoxGeometry(1.2, 8.7, 4.15);
+      const pylonMaterial = new THREE.MeshBasicMaterial({ color: 0xffd45b, toneMapped: false });
+      const leftPylon = new THREE.Mesh(pylonGeometry, pylonMaterial);
+      const rightPylon = new THREE.Mesh(pylonGeometry, pylonMaterial);
+      leftPylon.position.x = -4.15;
+      rightPylon.position.x = 4.15;
+
+      const core = new THREE.Mesh(
+        new THREE.CylinderGeometry(1.55, 1.55, 4.15, 12),
+        new THREE.MeshBasicMaterial({ color: 0xfff1b8, toneMapped: false }),
+      );
+      core.rotation.x = Math.PI / 2;
+      core.position.z = -0.42;
+
+      const stripeMaterial = new THREE.MeshBasicMaterial({ color: 0xff6a3d, toneMapped: false });
+      for (const y of [-2.1, 0, 2.1]) {
+        const stripe = new THREE.Mesh(new THREE.BoxGeometry(7.25, 0.24, 0.12), stripeMaterial);
+        stripe.position.set(0, y, -1.82);
+        visual.add(stripe);
+      }
+      const shield = new THREE.Mesh(
+        new THREE.TorusGeometry(4.95, 0.16, 6, 32),
+        new THREE.MeshBasicMaterial({ color: 0xffe89a, transparent: true, opacity: 0.8, toneMapped: false }),
+      );
+      shield.position.z = -2;
+      visual.add(outline, body, leftPylon, rightPylon, core, shield);
+      return visual;
+    }
+
+    const radialDistance = this.plan.radius - 1.8;
     const radial = radialAt(frame, event.angle);
     const position = frame.position.clone().add(radial.multiplyScalar(radialDistance));
     const circumferential = frame.normal.clone().multiplyScalar(-Math.sin(event.angle)).add(frame.binormal.clone().multiplyScalar(Math.cos(event.angle))).normalize();
@@ -722,18 +785,6 @@ export class BallisticGame {
         new THREE.MeshStandardMaterial({ color: 0xeaffff, emissive: 0x42ddff, emissiveIntensity: 4.4, metalness: 0.26, roughness: 0.12 }),
       );
       visual.add(core);
-    } else {
-      const body = new THREE.Mesh(
-        new THREE.SphereGeometry(1.25, 14, 10),
-        new THREE.MeshStandardMaterial({ color: 0x27040b, emissive: theme.colors.danger, emissiveIntensity: 0.3, metalness: 0.58, roughness: 0.46 }),
-      );
-      const wingGeometry = new THREE.BoxGeometry(4.4, 0.28, 0.84);
-      const wingMaterial = new THREE.MeshBasicMaterial({ color: 0xffc857, toneMapped: false });
-      const warningRing = new THREE.Mesh(
-        new THREE.TorusGeometry(2.25, 0.12, 6, 28),
-        new THREE.MeshBasicMaterial({ color: 0xffe79a, transparent: true, opacity: 0.88, toneMapped: false }),
-      );
-      visual.add(body, new THREE.Mesh(wingGeometry, wingMaterial), warningRing);
     }
     return visual;
   }
@@ -952,7 +1003,7 @@ export class BallisticGame {
     for (const event of this.plan.events) {
       event.resolved = false;
       event.destroyed = false;
-      event.health = event.kind === 'drone' ? Math.max(2, event.health) : 1;
+      event.health = event.kind === 'bastion' ? Math.max(3, event.health) : 1;
       const visual = this.eventVisuals.get(event.id);
       if (visual) {
         visual.visible = true;
@@ -1184,12 +1235,11 @@ export class BallisticGame {
           if (bladeDelta < event.gapWidth + 0.14) this.registerNearMiss();
           else if (onEventCue) this.registerPerfect(event.kind === 'cross' ? 'CROSS SYNC' : 'BLADE SYNC');
         }
-      } else if (event.kind === 'drone') {
-        const threshold = 0.45;
-        if (delta < threshold) this.hitObstacle(event);
+      } else if (event.kind === 'bastion') {
+        if (delta < event.gapWidth) this.hitObstacle(event);
         else {
           event.resolved = true;
-          if (delta < threshold + 0.18) this.registerNearMiss();
+          if (delta < event.gapWidth + 0.18) this.registerNearMiss();
         }
       } else if (event.kind === 'shard') {
         const radius = this.runUpgrades.has('flux-magnet') ? 0.84 : 0.4;
@@ -1276,10 +1326,10 @@ export class BallisticGame {
       bullet.ttl -= dt;
       let consumed = false;
       for (const event of this.plan.events) {
-        if (event.destroyed || event.resolved || event.kind !== 'drone') continue;
+        if (event.destroyed || event.resolved || event.kind !== 'bastion') continue;
         if (event.distance < bullet.distance - 12) continue;
         if (event.distance > bullet.distance + 12) break;
-        if (angularDistance(event.angle, bullet.angle) < 0.46) {
+        if (angularDistance(event.angle, bullet.angle) < event.gapWidth) {
           event.health -= bullet.damage;
           this.hits += 1;
           bullet.piercing -= 1;
@@ -1300,13 +1350,13 @@ export class BallisticGame {
     event.destroyed = true;
     event.resolved = true;
     this.kills += 1;
-    this.score += event.kind === 'drone' ? 620 : 280;
-    this.flux = Math.min(100, this.flux + (event.kind === 'drone' ? 13 : 7));
-    this.audio.playEffect('destroy', event.kind === 'drone' ? 1.1 : 0.72);
+    this.score += event.kind === 'bastion' ? 620 : 280;
+    this.flux = Math.min(100, this.flux + (event.kind === 'bastion' ? 13 : 7));
+    this.audio.playEffect('destroy', event.kind === 'bastion' ? 1.1 : 0.72);
     const visual = this.eventVisuals.get(event.id);
     if (visual) {
       const position = visual.getWorldPosition(new THREE.Vector3());
-      this.spawnBurst(position, event.kind === 'drone' ? 0xff547f : 0xffa33b, fromAbility ? 26 : 18);
+      this.spawnBurst(position, event.kind === 'bastion' ? 0xff547f : 0xffa33b, fromAbility ? 26 : 18);
       visual.visible = false;
     }
   }
@@ -1452,7 +1502,7 @@ export class BallisticGame {
       if (!event.destroyed && !event.resolved) visual.visible = ahead > -45 && ahead < 1100;
       if (!visual.visible) continue;
       const pulse = 1 + this.lastBands.pulse * 0.1 + Math.sin(time * 3.2 + event.id) * 0.035;
-      if (!['gate', 'halfwall', 'blade', 'cross'].includes(event.kind)) visual.scale.setScalar(damp(visual.scale.x, pulse, 8, dt));
+      if (!['gate', 'halfwall', 'blade', 'cross', 'bastion'].includes(event.kind)) visual.scale.setScalar(damp(visual.scale.x, pulse, 8, dt));
       const rotor = visual.userData.rotor as THREE.Group | undefined;
       if (rotor) rotor.rotation.z = event.rotationPhase + event.rotationRate * (transportTime - event.musicTime);
       if (event.kind === 'shard' || event.kind === 'coolant') visual.rotateZ(dt * 2.4);

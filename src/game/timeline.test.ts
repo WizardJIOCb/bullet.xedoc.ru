@@ -36,7 +36,7 @@ describe('track timeline snapshots', () => {
     const template = source.events[0];
     const plan = replaceEvents(source, [
       eventAt(template, 0, 7, 'shard', 5, 0.24),
-      eventAt(template, 1, 7, 'drone', 4, 0.91),
+      eventAt(template, 1, 7, 'bastion', 4, 0.91),
       eventAt(template, 2, 8, 'shard', 6.5, 0.8),
       eventAt(template, 3, 9, 'shard', 8, 0.38),
       eventAt(template, 4, 9, 'coolant', 9, 0.66),
@@ -48,7 +48,7 @@ describe('track timeline snapshots', () => {
     expect(timeline.patterns.map((marker) => marker.patternId)).toEqual([7, 9, 10]);
     expect(timeline.patterns[0]).toMatchObject({
       category: 'hazard',
-      kind: 'drone',
+      kind: 'bastion',
       musicTime: 4,
       startTime: 4,
       endTime: 4,
@@ -78,14 +78,14 @@ describe('track timeline snapshots', () => {
       eventAt(template, 1, 2, 'halfwall', 7, 0.8),
       eventAt(template, 2, 3, 'blade', 10, 0.82),
       eventAt(template, 3, 4, 'cross', 13, 0.9),
-      eventAt(template, 4, 5, 'drone', 16, 0.76),
+      eventAt(template, 4, 5, 'bastion', 16, 0.76),
       eventAt(template, 5, 6, 'boost', 19, 0.7),
       eventAt(template, 6, 7, 'coolant', 22, 0.7),
     ]);
 
     const timeline = createTrackTimeline(plan, profile, { includeRewards: false });
 
-    expect(timeline.patterns.map((marker) => marker.kind)).toEqual(['gate', 'halfwall', 'blade', 'cross', 'drone']);
+    expect(timeline.patterns.map((marker) => marker.kind)).toEqual(['gate', 'halfwall', 'blade', 'cross', 'bastion']);
     expect(timeline.patterns.every((marker) => marker.category === 'hazard')).toBe(true);
   });
 

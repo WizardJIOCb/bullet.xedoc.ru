@@ -2,7 +2,7 @@ import { clamp } from '../core/math';
 import type { MusicProfile, MusicTransition, RhythmCue, TrackEvent, TrackEventKind, TrackEventTrigger } from '../core/types';
 import type { TrackPlan } from './track';
 
-export type TimelineHazardKind = Extract<TrackEventKind, 'gate' | 'halfwall' | 'blade' | 'cross' | 'drone'>;
+export type TimelineHazardKind = Extract<TrackEventKind, 'gate' | 'halfwall' | 'blade' | 'cross' | 'bastion'>;
 export type TimelineRewardKind = Extract<TrackEventKind, 'boost' | 'coolant'>;
 export type TimelinePatternKind = TimelineHazardKind | TimelineRewardKind;
 
@@ -69,7 +69,7 @@ export interface TrackTimelineOptions {
   readonly includeRewards?: boolean;
 }
 
-const HAZARD_KINDS = new Set<TrackEventKind>(['gate', 'halfwall', 'blade', 'cross', 'drone']);
+const HAZARD_KINDS = new Set<TrackEventKind>(['gate', 'halfwall', 'blade', 'cross', 'bastion']);
 const REWARD_KINDS = new Set<TrackEventKind>(['boost', 'coolant']);
 
 function seedLabel(seed: number): string {

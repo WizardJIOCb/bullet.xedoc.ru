@@ -26,7 +26,7 @@ const KIND_LABELS: Record<TimelinePatternMarker['kind'], string> = {
   halfwall: 'ПОЛУСТЕНА',
   blade: 'ЛОПАСТИ',
   cross: 'КРЕСТОВИНЫ',
-  drone: 'БОЕВОЙ ДРОН',
+  bastion: 'БРОНЕБАСТИОН',
   boost: 'УСКОРИТЕЛЬ',
   coolant: 'ОХЛАЖДЕНИЕ',
 };

@@ -114,7 +114,7 @@ export interface UpgradeDefinition {
   tone: 'cyan' | 'gold' | 'red' | 'violet';
 }
 
-export type TrackEventKind = 'gate' | 'halfwall' | 'blade' | 'cross' | 'shard' | 'boost' | 'drone' | 'coolant';
+export type TrackEventKind = 'gate' | 'halfwall' | 'blade' | 'cross' | 'bastion' | 'shard' | 'boost' | 'coolant';
 export type TrackEventTrigger = RhythmCue | MusicTransition['kind'];
 
 export interface TrackEvent {
@@ -192,7 +192,7 @@ export const TRACKS: Record<TrackId, TrackTheme> = {
     id: 'reactor',
     name: 'Solar Rupture',
     kicker: 'HEAT / 02',
-    description: 'Реакторная шахта с узкими окнами, горячими секторами и тяжёлыми дронами.',
+    description: 'Реакторная шахта с узкими окнами, горячими секторами и тяжёлыми бронебастионами.',
     seed: 0x501a,
     radius: 12.4,
     colors: {
@@ -248,7 +248,7 @@ export const WEAPONS: Record<WeaponId, WeaponDefinition> = {
   rail: {
     id: 'rail',
     name: 'Graviton Rail',
-    description: 'Медленный пробивной снаряд для дронов и плотных минных линий.',
+    description: 'Медленный пробивной снаряд для бронированных ядер бастионов.',
     fireRate: 0.82,
     damage: 3,
     projectiles: 1,
@@ -267,7 +267,7 @@ export const ABILITIES: Record<AbilityId, AbilityDefinition> = {
   emp: {
     id: 'emp',
     name: 'EMP Halo',
-    description: 'Сжигает мины и оглушает дронов впереди на 180 метров.',
+    description: 'Уничтожает бронебастионы впереди в радиусе 190 метров.',
     cooldown: 11,
   },
   overdrive: {
