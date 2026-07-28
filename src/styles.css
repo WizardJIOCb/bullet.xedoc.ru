@@ -297,7 +297,9 @@ label:focus-within {
 .track-card__visual {
   position: relative;
   display: block;
-  height: 104px;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 2 / 1;
   overflow: hidden;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
   background: radial-gradient(ellipse at center, rgba(37, 226, 255, 0.18), transparent 45%), linear-gradient(160deg, #0b2132, #020409 75%);
