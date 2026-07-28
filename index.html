@@ -103,6 +103,31 @@
             </label>
             <p class="privacy-note"><span>LOCAL</span> Аудио анализируется только в браузере и не загружается на сервер.</p>
 
+            <section class="playlist-panel" aria-labelledby="playlist-title">
+              <header class="playlist-panel__header">
+                <div>
+                  <span>MY PLAYLISTS</span>
+                  <strong id="playlist-title">ЛОКАЛЬНАЯ КОЛЛЕКЦИЯ</strong>
+                </div>
+                <div class="playlist-panel__actions">
+                  <button id="playlist-create" type="button" title="Создать плейлист">+ NEW</button>
+                  <button id="playlist-rename" type="button" title="Переименовать плейлист">RENAME</button>
+                  <button id="playlist-delete" type="button" title="Удалить плейлист">DELETE</button>
+                </div>
+              </header>
+              <div class="playlist-panel__row">
+                <label for="playlist-select">LIST</label>
+                <select id="playlist-select" aria-label="Мой плейлист"></select>
+              </div>
+              <div class="playlist-panel__row">
+                <label for="playlist-track-select">TRACK</label>
+                <select id="playlist-track-select" aria-label="Трек из выбранного плейлиста"></select>
+                <button id="playlist-track-load" type="button">LOAD</button>
+                <button id="playlist-track-remove" type="button">REMOVE</button>
+              </div>
+              <p id="playlist-status" role="status" aria-live="polite">Загруженный файл сохранится в выбранном списке только на этом устройстве.</p>
+            </section>
+
             <section id="music-preview" class="music-preview" aria-labelledby="music-preview-title" hidden>
               <header class="music-preview__header">
                 <h3 id="music-preview-title">COURSE TIMELINE</h3>
@@ -206,29 +231,99 @@
             </div>
             <div class="garage-grid">
               <button class="garage-module" data-module="engine" type="button">
-                <span class="garage-module__icon">ENG</span>
+                <span class="garage-module__icon"><img src="/assets/modules/vector-drive.jpg" alt="" width="384" height="384" loading="lazy" /></span>
                 <span><strong>Vector Drive</strong><small>тяга и управление</small></span>
                 <span class="garage-module__level" data-level-for="engine">LV.0</span>
                 <span class="garage-module__cost" data-cost-for="engine">250 CR</span>
               </button>
               <button class="garage-module" data-module="cooling" type="button">
-                <span class="garage-module__icon">CRY</span>
+                <span class="garage-module__icon"><img src="/assets/modules/cryo-lattice.jpg" alt="" width="384" height="384" loading="lazy" /></span>
                 <span><strong>Cryo Lattice</strong><small>скорость охлаждения</small></span>
                 <span class="garage-module__level" data-level-for="cooling">LV.0</span>
                 <span class="garage-module__cost" data-cost-for="cooling">250 CR</span>
               </button>
               <button class="garage-module" data-module="shield" type="button">
-                <span class="garage-module__icon">SHD</span>
+                <span class="garage-module__icon"><img src="/assets/modules/aegis-skin.jpg" alt="" width="384" height="384" loading="lazy" /></span>
                 <span><strong>Aegis Skin</strong><small>ёмкость щита</small></span>
                 <span class="garage-module__level" data-level-for="shield">LV.0</span>
                 <span class="garage-module__cost" data-cost-for="shield">250 CR</span>
               </button>
               <button class="garage-module" data-module="weapon" type="button">
-                <span class="garage-module__icon">WPN</span>
+                <span class="garage-module__icon"><img src="/assets/modules/flux-chamber.jpg" alt="" width="384" height="384" loading="lazy" /></span>
                 <span><strong>Flux Chamber</strong><small>урон оружия</small></span>
                 <span class="garage-module__level" data-level-for="weapon">LV.0</span>
                 <span class="garage-module__cost" data-cost-for="weapon">250 CR</span>
               </button>
+            </div>
+          </section>
+
+          <section id="online-panel" class="online-panel panel-glass" aria-labelledby="online-title">
+            <header class="online-panel__header">
+              <div>
+                <div class="panel-label"><span>05</span> ONLINE GRID</div>
+                <h2 id="online-title">СЕТЕВОЙ ЗАЕЗД</h2>
+              </div>
+              <span id="online-connection" class="online-connection" data-state="ready">READY</span>
+            </header>
+
+            <div id="online-entry" class="online-entry">
+              <label class="online-field" for="online-name">
+                <span>PILOT NAME</span>
+                <input id="online-name" type="text" maxlength="24" autocomplete="nickname" value="PILOT" />
+              </label>
+              <button id="online-create" class="online-primary" type="button">CREATE ROOM</button>
+              <label class="online-field online-field--code" for="online-code">
+                <span>ROOM CODE</span>
+                <input id="online-code" type="text" maxlength="8" autocomplete="off" spellcheck="false" placeholder="AB12CD" />
+              </label>
+              <button id="online-join" class="online-secondary" type="button">JOIN</button>
+              <button id="online-refresh" class="online-link" type="button">REFRESH OPEN ROOMS</button>
+              <div id="online-room-list" class="online-room-list" aria-live="polite"></div>
+              <p id="online-entry-status" class="online-status" role="status" aria-live="polite">Нажми CREATE или REFRESH, чтобы подключиться к сетевому узлу.</p>
+            </div>
+
+            <div id="online-lobby" class="online-lobby" hidden>
+              <div class="online-lobby__topline">
+                <div><span>ROOM</span><strong id="online-room-code">------</strong></div>
+                <div><span>STATUS</span><strong id="online-room-status">WAITING</strong></div>
+                <button id="online-copy-code" class="online-link" type="button">COPY CODE</button>
+              </div>
+              <div class="online-lobby__grid">
+                <section class="online-roster" aria-labelledby="online-roster-title">
+                  <h3 id="online-roster-title">PILOTS <span id="online-player-count">0 / 0</span></h3>
+                  <div id="online-players" class="online-players"></div>
+                </section>
+                <section class="online-host-controls" aria-labelledby="online-race-config-title">
+                  <h3 id="online-race-config-title">HOST RACE CONFIG</h3>
+                  <label for="online-track">TRACK
+                    <select id="online-track">
+                      <option value="aurora">AURORA SPINE</option>
+                      <option value="reactor">SOLAR RUPTURE</option>
+                      <option value="void">NULL CATHEDRAL</option>
+                    </select>
+                  </label>
+                  <label for="online-ai">AI OPPONENTS <output id="online-ai-value" for="online-ai">3</output>
+                    <input id="online-ai" type="range" min="0" max="7" step="1" value="3" />
+                  </label>
+                  <label for="online-slots">PLAYER SLOTS <output id="online-slots-value" for="online-slots">4</output>
+                    <input id="online-slots" type="range" min="2" max="8" step="1" value="4" />
+                  </label>
+                </section>
+              </div>
+              <section class="online-chat" aria-labelledby="online-chat-title">
+                <h3 id="online-chat-title">LOBBY CHAT</h3>
+                <div id="online-chat-log" class="online-chat__log" role="log" aria-live="polite"></div>
+                <form id="online-chat-form" class="online-chat__form">
+                  <input id="online-chat-input" type="text" maxlength="280" autocomplete="off" placeholder="Сообщение команде…" />
+                  <button type="submit">SEND</button>
+                </form>
+              </section>
+              <div class="online-lobby__actions">
+                <button id="online-leave" class="online-secondary" type="button">LEAVE ROOM</button>
+                <button id="online-ready" class="online-secondary" type="button">READY</button>
+                <button id="online-start" class="online-primary" type="button" disabled>START ONLINE RACE</button>
+              </div>
+              <p id="online-status" class="online-status" role="status" aria-live="polite">Для старта нужен ещё один живой пилот.</p>
             </div>
           </section>
 
@@ -253,7 +348,7 @@
         <div class="settings-shell panel-glass">
           <header class="settings-header">
             <div>
-              <span class="settings-kicker">05 // SYSTEM CONFIG</span>
+              <span class="settings-kicker">06 // SYSTEM CONFIG</span>
               <h2 id="settings-title">НАСТРОЙКИ</h2>
             </div>
             <button id="settings-close" class="settings-close" type="button" aria-label="Закрыть настройки">×</button>
@@ -299,6 +394,16 @@
                   <option value="balanced">BALANCED</option>
                   <option value="quality">QUALITY</option>
                 </select>
+              </label>
+              <label class="settings-range" for="graphics-bloom-intensity">
+                <span><strong>Интенсивность свечения</strong><small>BLOOM POWER · 0% полностью убирает засвет</small></span>
+                <output id="graphics-bloom-intensity-value" for="graphics-bloom-intensity">60%</output>
+                <input id="graphics-bloom-intensity" type="range" min="0" max="100" step="1" value="60" />
+              </label>
+              <label class="settings-range" for="graphics-brightness">
+                <span><strong>Яркость камеры</strong><small>EXPOSURE · влияет на весь игровой рендер</small></span>
+                <output id="graphics-brightness-value" for="graphics-brightness">88%</output>
+                <input id="graphics-brightness" type="range" min="20" max="100" step="1" value="88" />
               </label>
               <label class="settings-toggle" for="graphics-bloom">
                 <span><strong>Свечение</strong><small>BLOOM</small></span>
@@ -348,7 +453,7 @@
               <b class="rival-dot rival-dot--one"></b><b class="rival-dot rival-dot--two"></b><b class="rival-dot rival-dot--three"></b>
             </div>
           </div>
-          <div class="rank"><strong id="rank-value">4</strong><span>/ 4<br />POSITION</span></div>
+          <div class="rank"><strong id="rank-value">4</strong><span><b id="rank-total">/ 4</b><br />POSITION</span></div>
         </div>
 
         <section id="upgrade-draft" class="upgrade-draft" aria-labelledby="upgrade-draft-label" aria-live="polite" aria-atomic="true" hidden>

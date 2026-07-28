@@ -11,6 +11,10 @@ export interface GraphicsSettings {
   quality: GraphicsQuality;
   reducedFlashes: boolean;
   bloom: boolean;
+  /** User-controlled multiplier for the dynamic bloom signal, from 0 to 1. */
+  bloomIntensity: number;
+  /** User-controlled multiplier for tone-mapping exposure, from 0 to 1. */
+  brightness: number;
   chromaticAberration: boolean;
   cameraShake: boolean;
 }
@@ -83,6 +87,8 @@ const mutableDefaults: GameSettings = {
     quality: 'quality',
     reducedFlashes: false,
     bloom: true,
+    bloomIntensity: 0.6,
+    brightness: 0.88,
     chromaticAberration: true,
     cameraShake: true,
   },
@@ -218,15 +224,34 @@ export function isBindableCode(code: unknown): code is string {
   return typeof code === 'string' && BINDABLE_CODE_PATTERN.test(code);
 }
 
+/**
+ * Canonicalizes graphics settings independently so live render updates use the
+ * same bounds as persisted settings. Missing intensity fields are treated as a
+ * v1 payload and migrated to the current defaults.
+ */
+export function sanitizeGraphicsSettings(value: unknown): GraphicsSettings {
+  const defaults = DEFAULT_SETTINGS.graphics;
+  const graphics = isRecord(value) ? value : {};
+  const quality = typeof graphics.quality === 'string' && GRAPHICS_QUALITIES.has(graphics.quality as GraphicsQuality)
+    ? graphics.quality as GraphicsQuality
+    : defaults.quality;
+
+  return {
+    quality,
+    reducedFlashes: booleanOrDefault(graphics.reducedFlashes, defaults.reducedFlashes),
+    bloom: booleanOrDefault(graphics.bloom, defaults.bloom),
+    bloomIntensity: volumeOrDefault(graphics.bloomIntensity, defaults.bloomIntensity),
+    brightness: volumeOrDefault(graphics.brightness, defaults.brightness),
+    chromaticAberration: booleanOrDefault(graphics.chromaticAberration, defaults.chromaticAberration),
+    cameraShake: booleanOrDefault(graphics.cameraShake, defaults.cameraShake),
+  };
+}
+
 export function sanitizeSettings(value: unknown): GameSettings {
   if (!isRecord(value) || value.version !== 1) return cloneSettings();
 
   const defaults = DEFAULT_SETTINGS;
   const audio = isRecord(value.audio) ? value.audio : {};
-  const graphics = isRecord(value.graphics) ? value.graphics : {};
-  const quality = typeof graphics.quality === 'string' && GRAPHICS_QUALITIES.has(graphics.quality as GraphicsQuality)
-    ? graphics.quality as GraphicsQuality
-    : defaults.graphics.quality;
 
   return {
     version: 1,
@@ -236,13 +261,7 @@ export function sanitizeSettings(value: unknown): GameSettings {
       effectsVolume: volumeOrDefault(audio.effectsVolume, defaults.audio.effectsVolume),
       muted: booleanOrDefault(audio.muted, defaults.audio.muted),
     },
-    graphics: {
-      quality,
-      reducedFlashes: booleanOrDefault(graphics.reducedFlashes, defaults.graphics.reducedFlashes),
-      bloom: booleanOrDefault(graphics.bloom, defaults.graphics.bloom),
-      chromaticAberration: booleanOrDefault(graphics.chromaticAberration, defaults.graphics.chromaticAberration),
-      cameraShake: booleanOrDefault(graphics.cameraShake, defaults.graphics.cameraShake),
-    },
+    graphics: sanitizeGraphicsSettings(value.graphics),
     controls: sanitizeControls(value.controls),
   };
 }

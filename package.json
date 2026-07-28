@@ -10,7 +10,9 @@
     "prebuild": "npm run music:sync",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 0.0.0.0",
-    "test": "vitest run"
+    "test": "vitest run",
+    "check:server": "npm --prefix server run check",
+    "verify": "npm test && npm run check:server && npm run build"
   },
   "dependencies": {
     "three": "^0.179.1"

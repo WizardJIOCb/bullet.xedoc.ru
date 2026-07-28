@@ -1,0 +1,20 @@
+{
+  "name": "ballistic-edge-online",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch index.ts",
+    "start": "tsx index.ts",
+    "check": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "tsx": "^4.20.3",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.1.0",
+    "@types/ws": "^8.18.1",
+    "typescript": "~5.8.3"
+  }
+}

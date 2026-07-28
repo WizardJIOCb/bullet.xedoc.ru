@@ -5,6 +5,7 @@ import {
   cloneSettings,
   isBindableCode,
   loadSettings,
+  sanitizeGraphicsSettings,
   sanitizeSettings,
   saveSettings,
   type StorageLike,
@@ -67,6 +68,8 @@ describe('SettingsStore', () => {
         quality: 'cinematic',
         reducedFlashes: true,
         bloom: false,
+        bloomIntensity: 1.8,
+        brightness: -0.4,
         chromaticAberration: 0,
         cameraShake: false,
       },
@@ -83,9 +86,42 @@ describe('SettingsStore', () => {
       quality: 'quality',
       reducedFlashes: true,
       bloom: false,
+      bloomIntensity: 1,
+      brightness: 0,
       chromaticAberration: true,
       cameraShake: false,
     });
+  });
+
+  it('migrates v1 graphics payloads that predate intensity controls', () => {
+    const graphics = sanitizeGraphicsSettings({
+      quality: 'balanced',
+      reducedFlashes: true,
+      bloom: true,
+      chromaticAberration: false,
+      cameraShake: false,
+    });
+
+    expect(graphics).toEqual({
+      quality: 'balanced',
+      reducedFlashes: true,
+      bloom: true,
+      bloomIntensity: DEFAULT_SETTINGS.graphics.bloomIntensity,
+      brightness: DEFAULT_SETTINGS.graphics.brightness,
+      chromaticAberration: false,
+      cameraShake: false,
+    });
+  });
+
+  it('rejects non-finite graphics intensities instead of poisoning the render pipeline', () => {
+    const graphics = sanitizeGraphicsSettings({
+      ...DEFAULT_SETTINGS.graphics,
+      bloomIntensity: Number.NaN,
+      brightness: Number.POSITIVE_INFINITY,
+    });
+
+    expect(graphics.bloomIntensity).toBe(DEFAULT_SETTINGS.graphics.bloomIntensity);
+    expect(graphics.brightness).toBe(DEFAULT_SETTINGS.graphics.brightness);
   });
 
   it('accepts KeyboardEvent.code values and rejects unsafe or localized key values', () => {
@@ -134,6 +170,8 @@ describe('SettingsStore', () => {
       quality: 'balanced',
       reducedFlashes: true,
       bloom: false,
+      bloomIntensity: 0.32,
+      brightness: 0.71,
       chromaticAberration: false,
       cameraShake: false,
     };
@@ -156,6 +194,8 @@ describe('SettingsStore', () => {
       quality: 'quality',
       reducedFlashes: true,
       bloom: true,
+      bloomIntensity: 0.6,
+      brightness: 0.88,
       chromaticAberration: false,
       cameraShake: false,
     });

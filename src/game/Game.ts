@@ -14,6 +14,8 @@ import {
   UPGRADES,
   WEAPONS,
   type RunConfig,
+  type LocalRaceSnapshot,
+  type RemoteRacerState,
   type RunResult,
   type RunStats,
   type TrackEvent,
@@ -21,7 +23,13 @@ import {
   type UpgradeDefinition,
   type UpgradeId,
 } from '../core/types';
-import type { ControlBindings, GraphicsSettings, InputAction, SettingsState } from '../settings/SettingsStore';
+import {
+  sanitizeGraphicsSettings,
+  type ControlBindings,
+  type GraphicsSettings,
+  type InputAction,
+  type SettingsState,
+} from '../settings/SettingsStore';
 import { resolveBoostVisualTarget, stepBoostVisualIntensity } from './boost';
 import { computeObstacleKnockback, isObstacleCollision } from './collision';
 import { ChaseDeathFx } from './deathFx';
@@ -72,6 +80,22 @@ interface Rival {
   angle: number;
   speedFactor: number;
   phase: number;
+}
+
+interface RemoteRacer {
+  id: string;
+  name: string;
+  colorIndex: number;
+  mesh: THREE.Group;
+  progress: number;
+  targetProgress: number;
+  angle: number;
+  targetAngle: number;
+  speed: number;
+  shield: number;
+  active: boolean;
+  destroyed: boolean;
+  finished: boolean;
 }
 
 interface Burst {
@@ -130,6 +154,28 @@ interface StreakSpec {
 
 const FIXED_STEP = 1 / 120;
 const UPGRADES_AT = [0.31, 0.64];
+const MAX_AI_RIVALS = 7;
+const AI_RIVAL_OFFSETS = [32, -24, 65, -52, 88, 12, -78] as const;
+const AI_RIVAL_SPEEDS = [0.987, 1.016, 1.004, 0.998, 1.009, 0.992, 1.021] as const;
+const AI_RIVAL_COLORS: ReadonlyArray<readonly [number, number]> = [
+  [0xff4d9a, 0x7030ff],
+  [0xffd65c, 0xff4c35],
+  [0x79ffbb, 0x27a9ff],
+  [0x56f2ff, 0x4266ff],
+  [0xff8c42, 0xffe066],
+  [0xc77dff, 0x58d7ff],
+  [0x86ff6a, 0x00b89c],
+];
+const REMOTE_RACER_COLORS: ReadonlyArray<readonly [number, number]> = [
+  [0x49f6ff, 0x7a5cff],
+  [0xff5dc8, 0x8a4dff],
+  [0xffdc5e, 0xff6b42],
+  [0x68ffb5, 0x22a7ff],
+  [0xff6d7a, 0xffb24b],
+  [0xa97cff, 0x39ddff],
+  [0xcaff5d, 0x00bfa6],
+  [0xff81ea, 0x5f8bff],
+];
 
 export class BallisticGame {
   private readonly canvas: HTMLCanvasElement;
@@ -152,6 +198,7 @@ export class BallisticGame {
   private readonly bursts: Burst[] = [];
   private readonly chaseImpactEffects: ChaseImpactEffect[] = [];
   private readonly rivals: Rival[] = [];
+  private readonly remoteRacers = new Map<string, RemoteRacer>();
   private readonly vehicle: THREE.Group;
   private readonly engineGlow: THREE.Group;
   private readonly vehicleThrustTrails: THREE.Mesh[];
@@ -213,6 +260,8 @@ export class BallisticGame {
   private damageKick = 0;
   private impactFlashTimer = 0;
   private impactSlide = 0;
+  private bloomStrengthSignal = 1.18;
+  private exposureSignal = 1.08;
   private graphicsSettings: GraphicsSettings;
   private controlBindings: ControlBindings;
   private inputCapture = false;
@@ -226,7 +275,7 @@ export class BallisticGame {
     this.canvas = canvas;
     this.audio = audio;
     this.hooks = hooks;
-    this.graphicsSettings = { ...settings.graphics };
+    this.graphicsSettings = sanitizeGraphicsSettings(settings.graphics);
     this.controlBindings = Object.fromEntries(
       Object.entries(settings.controls).map(([action, bindings]) => [action, [...bindings]]),
     ) as ControlBindings;
@@ -234,13 +283,18 @@ export class BallisticGame {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.pixelRatioLimit()));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.08;
+    this.renderer.toneMappingExposure = this.exposureSignal * this.graphicsSettings.brightness;
     this.renderer.shadowMap.enabled = false;
 
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    this.bloomPass = new UnrealBloomPass(new THREE.Vector2(1, 1), 1.18, 0.66, 0.12);
-    this.bloomPass.enabled = this.graphicsSettings.bloom;
+    this.bloomPass = new UnrealBloomPass(
+      new THREE.Vector2(1, 1),
+      this.bloomStrengthSignal * this.graphicsSettings.bloomIntensity,
+      0.66,
+      0.12,
+    );
+    this.bloomPass.enabled = this.graphicsSettings.bloom && this.graphicsSettings.bloomIntensity > 0;
     this.composer.addPass(this.bloomPass);
     this.rgbPass = new ShaderPass(RGBShiftShader);
     this.rgbPass.uniforms.amount.value = 0.00025;
@@ -296,11 +350,123 @@ export class BallisticGame {
     return this.timelinePreview;
   }
 
+  /** Returns a JSON-safe frame for the online transport without exposing internals. */
+  getLocalRaceSnapshot(): LocalRaceSnapshot {
+    const stats = this.getStats();
+    const active = this.state === 'countdown' || this.state === 'playing' || this.state === 'dying';
+    const destroyed = this.state === 'dying' || (this.state === 'finished' && this.shield <= 0);
+    return {
+      progress: clamp(stats.progress, 0, 1),
+      angle: wrapAngle(this.angle),
+      speed: Math.max(0, stats.speed),
+      shield: Math.max(0, this.shield),
+      heat: clamp(stats.heat, 0, 100),
+      flux: clamp(stats.flux, 0, 100),
+      score: Math.max(0, stats.score),
+      rank: stats.rank,
+      section: stats.section,
+      active,
+      running: this.state === 'playing',
+      destroyed,
+      finished: this.state === 'finished',
+    };
+  }
+
+  /**
+   * Reconciles the complete set of remote humans. They are interpolated and
+   * rendered in the tunnel, but are deliberately absent from collision logic.
+   */
+  setRemoteRacers(states: readonly RemoteRacerState[]): void {
+    const seen = new Set<string>();
+    for (const state of states) {
+      const id = state.id.trim().slice(0, 80);
+      if (!id || seen.has(id)) continue;
+      if (![state.progress, state.angle, state.speed, state.shield].every(Number.isFinite)) continue;
+      seen.add(id);
+
+      const name = state.name.replace(/\s+/g, ' ').trim().slice(0, 24) || 'RACER';
+      const targetProgress = clamp(state.progress, 0, 1);
+      const targetAngle = wrapAngle(state.angle);
+      let racer = this.remoteRacers.get(id);
+      if (!racer) {
+        const colorIndex = this.pickRemoteRacerColorIndex(id);
+        const mesh = this.createRemoteRacerMesh(id, name, colorIndex);
+        this.dynamicLayer.add(mesh);
+        racer = {
+          id,
+          name,
+          colorIndex,
+          mesh,
+          progress: targetProgress,
+          targetProgress,
+          angle: targetAngle,
+          targetAngle,
+          speed: Math.max(0, state.speed),
+          shield: Math.max(0, state.shield),
+          active: state.active ?? true,
+          destroyed: state.destroyed ?? false,
+          finished: state.finished ?? false,
+        };
+        this.remoteRacers.set(id, racer);
+      } else {
+        racer.name = name;
+        racer.targetProgress = targetProgress;
+        racer.targetAngle = targetAngle;
+        racer.speed = Math.max(0, state.speed);
+        racer.shield = Math.max(0, state.shield);
+        racer.active = state.active ?? true;
+        racer.destroyed = state.destroyed ?? false;
+        racer.finished = state.finished ?? false;
+      }
+      racer.mesh.userData.remoteRacer = {
+        id: racer.id,
+        name: racer.name,
+        colorIndex: racer.colorIndex,
+        speed: racer.speed,
+        shield: racer.shield,
+        progress: racer.targetProgress,
+        active: racer.active,
+        destroyed: racer.destroyed,
+        finished: racer.finished,
+      };
+    }
+
+    for (const [id, racer] of this.remoteRacers) {
+      if (seen.has(id)) continue;
+      this.removeAndDispose(racer.mesh);
+      this.remoteRacers.delete(id);
+    }
+  }
+
   setGraphicsSettings(settings: GraphicsSettings): void {
-    this.graphicsSettings = { ...settings };
-    this.bloomPass.enabled = settings.bloom;
-    this.rgbPass.enabled = settings.chromaticAberration && !settings.reducedFlashes;
+    this.graphicsSettings = sanitizeGraphicsSettings(settings);
+    this.applyPostProcessingSettings();
     this.resize();
+  }
+
+  /** Applies a live bloom slider value without reallocating render targets. */
+  setBloomIntensity(intensity: number): void {
+    this.graphicsSettings = sanitizeGraphicsSettings({
+      ...this.graphicsSettings,
+      bloomIntensity: intensity,
+    });
+    this.applyPostProcessingSettings();
+  }
+
+  /** Applies a live brightness slider value without rebuilding the renderer. */
+  setBrightness(brightness: number): void {
+    this.graphicsSettings = sanitizeGraphicsSettings({
+      ...this.graphicsSettings,
+      brightness,
+    });
+    this.applyPostProcessingSettings();
+  }
+
+  private applyPostProcessingSettings(): void {
+    this.bloomPass.enabled = this.graphicsSettings.bloom && this.graphicsSettings.bloomIntensity > 0;
+    this.bloomPass.strength = this.bloomStrengthSignal * this.graphicsSettings.bloomIntensity;
+    this.rgbPass.enabled = this.graphicsSettings.chromaticAberration && !this.graphicsSettings.reducedFlashes;
+    this.renderer.toneMappingExposure = this.exposureSignal * this.graphicsSettings.brightness;
   }
 
   setControlBindings(bindings: ControlBindings): void {
@@ -428,6 +594,7 @@ export class BallisticGame {
     this.pendingUpgradeOptions = [];
     this.queuedUpgradePicks = 0;
     this.runUpgrades.clear();
+    this.setRemoteRacers([]);
     this.emitUpgradeState();
     this.hooks.onCountdown(null);
   }
@@ -1004,11 +1171,13 @@ export class BallisticGame {
   private createRivals(): void {
     for (const rival of this.rivals) this.removeAndDispose(rival.mesh);
     this.rivals.length = 0;
-    const colors: Array<[number, number]> = [[0xff4d9a, 0x7030ff], [0xffd65c, 0xff4c35], [0x79ffbb, 0x27a9ff]];
-    const offsets = [32, -24, 65];
-    const factors = [0.987, 1.016, 1.004];
-    for (let index = 0; index < 3; index += 1) {
-      const craft = this.createCraft(colors[index][0], colors[index][1], 0.72).group;
+    const requestedCount = this.config?.aiOpponents;
+    const count = Number.isFinite(requestedCount)
+      ? clamp(Math.trunc(requestedCount as number), 0, MAX_AI_RIVALS)
+      : 3;
+    for (let index = 0; index < count; index += 1) {
+      const colors = AI_RIVAL_COLORS[index];
+      const craft = this.createCraft(colors[0], colors[1], 0.72).group;
       const fadedMaterials = new Set<THREE.Material>();
       craft.traverse((object) => {
         if (!(object instanceof THREE.Mesh)) return;
@@ -1022,8 +1191,84 @@ export class BallisticGame {
         }
       });
       this.dynamicLayer.add(craft);
-      this.rivals.push({ mesh: craft, distance: offsets[index], angle: (index / 3) * TAU, speedFactor: factors[index], phase: index * 2.17 });
+      this.rivals.push({
+        mesh: craft,
+        distance: AI_RIVAL_OFFSETS[index],
+        angle: (index / Math.max(1, count)) * TAU,
+        speedFactor: AI_RIVAL_SPEEDS[index],
+        phase: index * 2.17,
+      });
     }
+  }
+
+  private pickRemoteRacerColorIndex(id: string): number {
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < id.length; index += 1) {
+      hash ^= id.charCodeAt(index);
+      hash = Math.imul(hash, 0x01000193);
+    }
+    const start = (hash >>> 0) % REMOTE_RACER_COLORS.length;
+    const used = new Set([...this.remoteRacers.values()].map((racer) => racer.colorIndex));
+    for (let offset = 0; offset < REMOTE_RACER_COLORS.length; offset += 1) {
+      const candidate = (start + offset) % REMOTE_RACER_COLORS.length;
+      if (!used.has(candidate)) return candidate;
+    }
+    return start;
+  }
+
+  private createRemoteRacerMesh(id: string, name: string, colorIndex: number): THREE.Group {
+    const colors = REMOTE_RACER_COLORS[colorIndex % REMOTE_RACER_COLORS.length];
+    const craft = this.createCraft(colors[0], colors[1], 0.78).group;
+    const fadedMaterials = new Set<THREE.Material>();
+    craft.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) return;
+      const materials = Array.isArray(object.material) ? object.material : [object.material];
+      for (const material of materials) {
+        if (fadedMaterials.has(material)) continue;
+        fadedMaterials.add(material);
+        material.transparent = true;
+        material.opacity *= 0.82;
+        material.depthWrite = false;
+      }
+    });
+    const nameplate = this.createRacerNameplate(name, colors[0]);
+    if (nameplate) craft.add(nameplate);
+    craft.userData.remoteRacer = { id, name, colorIndex };
+    return craft;
+  }
+
+  private createRacerNameplate(name: string, color: number): THREE.Sprite | null {
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 96;
+    const context = canvas.getContext('2d');
+    if (!context) return null;
+    const cssColor = `#${new THREE.Color(color).getHexString()}`;
+    context.fillStyle = 'rgba(1, 7, 14, 0.82)';
+    context.fillRect(4, 4, canvas.width - 8, canvas.height - 8);
+    context.strokeStyle = cssColor;
+    context.lineWidth = 4;
+    context.strokeRect(4, 4, canvas.width - 8, canvas.height - 8);
+    context.fillStyle = '#f3fbff';
+    context.font = '700 34px Rajdhani, Arial, sans-serif';
+    context.textAlign = 'center';
+    context.textBaseline = 'middle';
+    context.fillText(name.toUpperCase(), canvas.width / 2, canvas.height / 2 + 2, canvas.width - 38);
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.minFilter = THREE.LinearFilter;
+    const material = new THREE.SpriteMaterial({
+      map: texture,
+      transparent: true,
+      depthWrite: false,
+      depthTest: true,
+      toneMapped: false,
+    });
+    const sprite = new THREE.Sprite(material);
+    sprite.position.set(0, 3, 0);
+    sprite.scale.set(6.2, 1.16, 1);
+    sprite.renderOrder = 8;
+    return sprite;
   }
 
   private createCraft(primary: number, secondary: number, scale: number): {
@@ -1546,7 +1791,15 @@ export class BallisticGame {
     this.runUpgrades.clear();
     this.emitUpgradeState();
     for (let index = 0; index < this.rivals.length; index += 1) {
-      this.rivals[index].distance = [32, -24, 65][index];
+      this.rivals[index].distance = AI_RIVAL_OFFSETS[index];
+    }
+    for (const racer of this.remoteRacers.values()) {
+      racer.progress = 0;
+      racer.targetProgress = 0;
+      racer.angle = racer.targetAngle;
+      racer.speed = 0;
+      racer.destroyed = false;
+      racer.finished = false;
     }
   }
 
@@ -1973,7 +2226,10 @@ export class BallisticGame {
   private createRunResult(survived: boolean): RunResult {
     const rank = this.getRank();
     const accuracy = this.shots > 0 ? this.hits / this.shots : 0;
-    const finalScore = Math.round(this.score + (survived ? 5000 : 0) + (4 - rank) * 1200);
+    const remoteCompetitors = [...(this.remoteRacers?.values() ?? [])].filter((racer) => !racer.destroyed).length;
+    const totalCompetitors = 1 + this.rivals.length + remoteCompetitors;
+    const placementBonus = Math.max(0, totalCompetitors - rank) * 1200;
+    const finalScore = Math.round(this.score + (survived ? 5000 : 0) + placementBonus);
     const credits = Math.max(90, Math.round(finalScore / 42 + this.kills * 8));
     return {
       score: finalScore,
@@ -2124,26 +2380,25 @@ export class BallisticGame {
       this.tunnelMaterial.uniforms.uBoost.value = boostStrength
         * (this.graphicsSettings.reducedFlashes ? 0.52 : 1);
     }
-    this.bloomPass.enabled = this.graphicsSettings.bloom;
-    this.bloomPass.strength = this.graphicsSettings.reducedFlashes
+    this.bloomStrengthSignal = this.graphicsSettings.reducedFlashes
       ? 0.62 + boostStrength * 0.08 + this.damageKick * 0.12
       : 0.92 + this.lastBands.pulse * 0.58 + speedRatio * 0.25 + boostStrength * 0.11
         + boostKick * 0.06 + this.damageKick * 0.38;
     this.bloomPass.radius = 0.48 + this.lastBands.highs * 0.22;
-    this.rgbPass.enabled = this.graphicsSettings.chromaticAberration && !this.graphicsSettings.reducedFlashes;
     this.rgbPass.uniforms.amount.value = this.rgbPass.enabled
       ? 0.00015 + speedRatio * 0.00055 + boostStrength * 0.00072 + boostKick * 0.00038
         + (this.overdriveTimer > 0 ? 0.0008 : 0) + this.damageKick * 0.0018
       : 0;
-    this.renderer.toneMappingExposure = 0.98
+    this.exposureSignal = 0.98
       + this.lastBands.pulse * 0.15
       + boostStrength * (this.graphicsSettings.reducedFlashes ? 0.008 : 0.016)
       + this.damageKick * (this.graphicsSettings.reducedFlashes ? 0.025 : 0.08)
       + (deathFxFrame?.exposureKick ?? 0);
+    this.applyPostProcessingSettings();
 
     this.updateEventVisuals(dt, activeDistance);
     this.updateBulletVisuals();
-    this.updateRivalVisuals();
+    this.updateRivalVisuals(dt);
     this.updateStreaks(activeDistance, speedRatio, boostStrength);
     this.updateBursts(dt);
     this.updateChaseImpactEffects(dt);
@@ -2179,7 +2434,7 @@ export class BallisticGame {
     }
   }
 
-  private updateRivalVisuals(): void {
+  private updateRivalVisuals(dt: number): void {
     for (const rival of this.rivals) {
       const ahead = rival.distance - this.distance;
       rival.mesh.visible = this.state === 'menu' ? false : ahead > -100 && ahead < 800;
@@ -2189,6 +2444,25 @@ export class BallisticGame {
       const circumferential = frame.normal.clone().multiplyScalar(-Math.sin(rival.angle)).add(frame.binormal.clone().multiplyScalar(Math.cos(rival.angle))).normalize();
       rival.mesh.position.copy(frame.position).add(radial.clone().multiplyScalar(this.plan.radius - 1.4));
       rival.mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(circumferential, radial, frame.tangent));
+    }
+    const interpolation = 1 - Math.exp(-Math.max(0, dt) * 14);
+    for (const racer of this.remoteRacers.values()) {
+      racer.progress += (racer.targetProgress - racer.progress) * interpolation;
+      racer.angle = wrapAngle(racer.angle + wrapAngle(racer.targetAngle - racer.angle) * interpolation);
+      const racerDistance = clamp(racer.progress, 0, 1) * this.plan.length;
+      const ahead = racerDistance - this.distance;
+      racer.mesh.visible = this.state !== 'menu'
+        && racer.active
+        && !racer.destroyed
+        && ahead > -100
+        && ahead < 800;
+      if (!racer.mesh.visible) continue;
+      const frame = sampleTrackFrame(this.plan, clamp(racer.progress, 0, 0.9999));
+      const radial = radialAt(frame, racer.angle);
+      const circumferential = frame.normal.clone().multiplyScalar(-Math.sin(racer.angle))
+        .add(frame.binormal.clone().multiplyScalar(Math.cos(racer.angle))).normalize();
+      racer.mesh.position.copy(frame.position).add(radial.clone().multiplyScalar(this.plan.radius - 1.32));
+      racer.mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(circumferential, radial, frame.tangent));
     }
   }
 
@@ -2443,7 +2717,12 @@ export class BallisticGame {
   }
 
   private getRank(): number {
-    return 1 + this.rivals.filter((rival) => rival.distance > this.distance + 2).length;
+    const remoteAhead = [...(this.remoteRacers?.values() ?? [])].filter((racer) => (
+      !racer.destroyed
+      && (racer.active || racer.finished)
+      && racer.targetProgress * this.plan.length > this.distance + 2
+    )).length;
+    return 1 + this.rivals.filter((rival) => rival.distance > this.distance + 2).length + remoteAhead;
   }
 
   private getStats(): RunStats {
@@ -2473,6 +2752,11 @@ export class BallisticGame {
     for (const child of children) {
       group.remove(child);
       child.traverse((object) => {
+        if (object instanceof THREE.Sprite) {
+          object.material.map?.dispose();
+          object.material.dispose();
+          return;
+        }
         if (!(object instanceof THREE.Mesh || object instanceof THREE.Points || object instanceof THREE.LineSegments)) return;
         object.geometry?.dispose();
         const materials = Array.isArray(object.material) ? object.material : [object.material];
@@ -2484,6 +2768,11 @@ export class BallisticGame {
   private removeAndDispose(object: THREE.Object3D): void {
     object.parent?.remove(object);
     object.traverse((child) => {
+      if (child instanceof THREE.Sprite) {
+        child.material.map?.dispose();
+        child.material.dispose();
+        return;
+      }
       if (!(child instanceof THREE.Mesh || child instanceof THREE.Points || child instanceof THREE.LineSegments)) return;
       child.geometry?.dispose();
       const materials = Array.isArray(child.material) ? child.material : [child.material];
@@ -2502,6 +2791,7 @@ export class BallisticGame {
     window.removeEventListener('blur', this.releaseInputs);
     this.canvas.removeEventListener('pointerdown', this.handleCanvasPointerDown);
     this.disposeGroup(this.world);
+    this.setRemoteRacers([]);
     this.disposeGroup(this.dynamicLayer);
     for (const effect of this.chaseImpactEffects) {
       this.removeAndDispose(effect.sparks);

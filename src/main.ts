@@ -1,9 +1,18 @@
 import './styles.css';
 import { AudioEngine, AudioImportError, type CatalogAudioTrack } from './audio/AudioEngine';
-import { ABILITIES, TRACKS, WEAPONS, type AbilityId, type GarageState, type RunConfig, type RunResult, type RunStats, type TrackId, type UpgradeDefinition, type UpgradeId, type WeaponId } from './core/types';
+import { ABILITIES, TRACKS, WEAPONS, type AbilityId, type GarageState, type RemoteRacerState, type RunConfig, type RunResult, type RunStats, type TrackId, type UpgradeDefinition, type UpgradeId, type WeaponId } from './core/types';
 import { BallisticGame } from './game/Game';
 import { MusicPreviewController } from './ui/MusicPreview';
 import { RaceTimelineController } from './ui/RaceTimeline';
+import { createBrowserMusicLibrary, type MusicLibrarySnapshot } from './music/MusicLibrary';
+import {
+  LobbyClient,
+  defaultLobbyUrl,
+  type AuthoritativeRaceConfig,
+  type OnlineRoomSnapshot,
+  type OnlineRoomSummary,
+  type ServerRaceState,
+} from './online';
 import {
   DEFAULT_SETTINGS,
   cloneSettings,
@@ -76,6 +85,10 @@ const musicLibrary = query<HTMLFieldSetElement>('#music-library');
 const musicCatalog = query<HTMLSelectElement>('#music-catalog');
 const musicCatalogRetry = query<HTMLButtonElement>('#music-catalog-retry');
 const musicCatalogError = query<HTMLElement>('#music-catalog-error');
+const playlistSelect = query<HTMLSelectElement>('#playlist-select');
+const playlistTrackSelect = query<HTMLSelectElement>('#playlist-track-select');
+const localMusicLibrary = createBrowserMusicLibrary();
+const onlineNameInput = query<HTMLInputElement>('#online-name');
 let settings = loadSettings();
 const audio = new AudioEngine();
 audio.setAudioSettings(settings.audio);
@@ -93,6 +106,15 @@ let musicCatalogEntries: MusicCatalogEntry[] = [];
 let selectedMusicId = 'synthetic';
 let musicUiEpoch = 0;
 let damageFlashAnimation: Animation | null = null;
+let activeLibraryTrackId: string | null = null;
+let lobbyClient: LobbyClient | null = null;
+let lobbyIdentity = '';
+let onlineRoom: OnlineRoomSnapshot | null = null;
+let onlineRooms: OnlineRoomSummary[] = [];
+let onlineMatch: AuthoritativeRaceConfig | null = null;
+let currentRunIsOnline = false;
+let onlineStartTimer = 0;
+const remoteRaceStates = new Map<string, ServerRaceState>();
 
 const game = new BallisticGame(query<HTMLCanvasElement>('#game-canvas'), audio, {
   onHud: updateHud,
@@ -297,6 +319,12 @@ function syncSettingsUi(): void {
   syncMusicVolumeUi();
   query<HTMLInputElement>('#audio-muted').checked = settings.audio.muted;
   query<HTMLSelectElement>('#graphics-quality').value = settings.graphics.quality;
+  const bloomPercent = Math.round(settings.graphics.bloomIntensity * 100);
+  query<HTMLInputElement>('#graphics-bloom-intensity').value = String(bloomPercent);
+  query<HTMLOutputElement>('#graphics-bloom-intensity-value').value = `${bloomPercent}%`;
+  const brightnessPercent = Math.round(settings.graphics.brightness * 100);
+  query<HTMLInputElement>('#graphics-brightness').value = String(brightnessPercent);
+  query<HTMLOutputElement>('#graphics-brightness-value').value = `${brightnessPercent}%`;
   query<HTMLInputElement>('#graphics-bloom').checked = settings.graphics.bloom;
   query<HTMLInputElement>('#graphics-chromatic').checked = settings.graphics.chromaticAberration;
   query<HTMLInputElement>('#graphics-shake').checked = settings.graphics.cameraShake;
@@ -421,6 +449,7 @@ function updateHud(stats: RunStats): void {
   app.classList.toggle('is-low-shield', stats.shield <= 1);
   const pips = query<HTMLElement>('#shield-pips');
   pips.innerHTML = Array.from({ length: stats.maxShield }, (_, index) => `<i class="${index < stats.shield ? 'is-active' : ''}"></i>`).join('');
+  if (currentRunIsOnline) broadcastLocalRaceState();
 }
 
 function showImpactFlash(direction: -1 | 1): void {
@@ -517,6 +546,7 @@ function rankFromResult(result: RunResult): string {
 }
 
 function showResults(result: RunResult): void {
+  if (currentRunIsOnline) broadcastLocalRaceState();
   const wasBest = result.score > garage.bestScore;
   garage.credits += result.credits;
   garage.runs += 1;
@@ -540,23 +570,16 @@ function showResults(result: RunResult): void {
   resultsScreen.classList.add('is-active');
 }
 
-async function launchRun(replay = false): Promise<void> {
-  if (startButton.disabled || musicLoading) return;
-  const config: RunConfig = replay && lastConfig
-    ? { ...lastConfig, garage: { ...garage } }
-    : {
-      track: selectedTrack,
-      weapon: selectedWeapon,
-      ability: selectedAbility,
-      seed: lastRunSeed,
-      garage: { ...garage },
-    };
+async function startConfiguredRun(config: RunConfig, online = false): Promise<void> {
   lastConfig = config;
+  currentRunIsOnline = online;
   musicPreview.stop();
   startButton.disabled = true;
   resultsScreen.classList.remove('is-active');
+  query<HTMLButtonElement>('#replay-run').hidden = online;
   menu.classList.add('is-hidden');
   hud.classList.add('is-active');
+  setText('#rank-total', `/ ${1 + (config.aiOpponents ?? 3) + (onlineMatch?.humans.length ? onlineMatch.humans.length - 1 : 0)}`);
   setText('#hud-track', TRACKS[config.track].name.toUpperCase());
   setText('#hud-weapon', WEAPONS[config.weapon].name.toUpperCase());
   setText('#hud-ability', ABILITIES[config.ability].name.toUpperCase());
@@ -577,8 +600,25 @@ async function launchRun(replay = false): Promise<void> {
     setText('#music-catalog-status', 'SYNTHETIC MODE ONLINE');
     showToast('AUDIO START ERROR', 'Включён синтетический режим — запустите заезд ещё раз', 'red');
   } finally {
-    startButton.disabled = musicLoading;
+    startButton.disabled = musicLoading || Boolean(onlineRoom);
   }
+}
+
+async function launchRun(replay = false): Promise<void> {
+  if (startButton.disabled || musicLoading) return;
+  const config: RunConfig = replay && lastConfig
+    ? { ...lastConfig, garage: { ...garage } }
+    : {
+      track: selectedTrack,
+      weapon: selectedWeapon,
+      ability: selectedAbility,
+      seed: lastRunSeed,
+      garage: { ...garage },
+    };
+  onlineMatch = null;
+  remoteRaceStates.clear();
+  game.setRemoteRacers([]);
+  await startConfiguredRun(config, false);
 }
 
 const trackButtons = queryAll<HTMLButtonElement>('[data-track]');
@@ -633,6 +673,58 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(bytes >= 10 * 1024 * 1024 ? 0 : 1)} MB`;
 }
 
+function renderPlaylistUi(snapshot: MusicLibrarySnapshot = localMusicLibrary.getSnapshot()): void {
+  const previousPlaylist = playlistSelect.value;
+  playlistSelect.replaceChildren(...snapshot.playlists.map((playlist) => new Option(
+    `${playlist.name} · ${playlist.trackIds.length}`,
+    playlist.id,
+  )));
+  playlistSelect.value = snapshot.activePlaylistId ?? snapshot.playlists[0]?.id ?? '';
+  if (!playlistSelect.value && previousPlaylist) playlistSelect.value = previousPlaylist;
+
+  const activePlaylist = snapshot.playlists.find((playlist) => playlist.id === playlistSelect.value);
+  const tracks = (activePlaylist?.trackIds ?? [])
+    .map((trackId) => snapshot.tracks.find((track) => track.id === trackId))
+    .filter((track): track is NonNullable<typeof track> => Boolean(track));
+  playlistTrackSelect.replaceChildren(
+    tracks.length === 0
+      ? new Option('НЕТ СОХРАНЁННЫХ ТРЕКОВ', '')
+      : document.createDocumentFragment(),
+  );
+  if (tracks.length > 0) {
+    playlistTrackSelect.replaceChildren(...tracks.map((track) => new Option(
+      `${track.title}${track.bpm ? ` // ${Math.round(track.bpm)} BPM` : ''} · ${formatFileSize(track.bytes)}`,
+      track.id,
+    )));
+    playlistTrackSelect.value = snapshot.activeTrackId && tracks.some((track) => track.id === snapshot.activeTrackId)
+      ? snapshot.activeTrackId
+      : tracks[0].id;
+  }
+  const hasPlaylist = Boolean(activePlaylist);
+  const hasTrack = Boolean(playlistTrackSelect.value);
+  query<HTMLButtonElement>('#playlist-rename').disabled = !hasPlaylist;
+  query<HTMLButtonElement>('#playlist-delete').disabled = !hasPlaylist;
+  query<HTMLButtonElement>('#playlist-track-load').disabled = !hasTrack;
+  query<HTMLButtonElement>('#playlist-track-remove').disabled = !hasTrack;
+  playlistTrackSelect.disabled = !hasTrack || musicLoading;
+}
+
+function setPlaylistStatus(message: string): void {
+  setText('#playlist-status', message);
+}
+
+async function loadStoredTrack(trackId: string): Promise<void> {
+  if (!trackId || musicLoading) return;
+  try {
+    const file = await localMusicLibrary.getTrackFile(trackId);
+    await loadMusicFile(file, trackId);
+  } catch (error) {
+    console.error(error);
+    setPlaylistStatus('Не удалось открыть сохранённый трек. Добавьте файл заново.');
+    showToast('LOCAL LIBRARY ERROR', 'Аудиоданные трека недоступны', 'red');
+  }
+}
+
 function parseMusicManifest(value: unknown): MusicCatalogEntry[] {
   if (!value || typeof value !== 'object') throw new Error('Music manifest is not an object');
   const manifest = value as Partial<MusicManifest>;
@@ -665,11 +757,17 @@ function renderMusicCatalog(): void {
 
 function setMusicLoading(loading: boolean): void {
   musicLoading = loading;
-  startButton.disabled = loading;
+  startButton.disabled = loading || Boolean(onlineRoom);
   musicPreview.setLoading(loading);
   musicLibrary.setAttribute('aria-busy', String(loading));
   musicCatalog.disabled = loading || !musicCatalogReady;
   query<HTMLInputElement>('#music-file').disabled = loading;
+  playlistSelect.disabled = loading;
+  playlistTrackSelect.disabled = loading || !playlistTrackSelect.value;
+  for (const selector of ['#playlist-create', '#playlist-rename', '#playlist-delete', '#playlist-track-load', '#playlist-track-remove']) {
+    query<HTMLButtonElement>(selector).disabled = loading;
+  }
+  if (!loading) renderPlaylistUi();
   query<HTMLElement>('#music-drop').classList.toggle('is-loading', loading);
 }
 
@@ -791,7 +889,7 @@ async function loadCatalogTrack(entry: MusicCatalogEntry): Promise<void> {
 }
 
 const musicFile = query<HTMLInputElement>('#music-file');
-async function loadMusicFile(file: File): Promise<void> {
+async function loadMusicFile(file: File, libraryTrackId: string | null = null): Promise<void> {
   if (musicLoading) return;
   musicUiEpoch += 1;
   const drop = query<HTMLElement>('#music-drop');
@@ -817,6 +915,37 @@ async function loadMusicFile(file: File): Promise<void> {
       return;
     }
     selectedMusicId = 'local';
+    const profile = audio.getProfile();
+    try {
+      if (libraryTrackId) {
+        activeLibraryTrackId = libraryTrackId;
+        localMusicLibrary.setActiveTrack(libraryTrackId);
+        localMusicLibrary.updateTrack(libraryTrackId, {
+          title: profile.title,
+          duration: profile.duration,
+          bpm: profile.bpm,
+        });
+        setPlaylistStatus(`ACTIVE // ${profile.title} // сохранён в локальной коллекции`);
+      } else {
+        const savedTrack = await localMusicLibrary.addTrack(file, {
+          playlistId: localMusicLibrary.getSnapshot().activePlaylistId,
+          title: profile.title,
+          duration: profile.duration,
+          bpm: profile.bpm,
+        });
+        activeLibraryTrackId = savedTrack.id;
+        setPlaylistStatus(`SAVED // ${profile.title} // ${formatFileSize(file.size)}`);
+      }
+      const persistence = localMusicLibrary.getPersistenceStatus();
+      if (persistence.degraded) {
+        setPlaylistStatus(`TEMPORARY // ${profile.title} // CURRENT TAB ONLY`);
+        showToast('TEMPORARY LIBRARY', 'Browser storage is unavailable; this track stays in the current tab only.', 'gold');
+      }
+    } catch (error) {
+      console.warn('Local music library write failed', error);
+      setPlaylistStatus('Трек играет, но браузер не разрешил сохранить его на этом устройстве.');
+      showToast('LIBRARY STORAGE FULL', 'Музыка загружена только для текущей вкладки', 'gold');
+    }
     renderMusicCatalog();
     updateMusicUi();
     refreshCoursePreview();
@@ -880,6 +1009,543 @@ musicCatalog.addEventListener('change', () => {
 });
 
 musicCatalogRetry.addEventListener('click', () => void loadMusicCatalog());
+
+playlistSelect.addEventListener('change', () => {
+  localMusicLibrary.setActivePlaylist(playlistSelect.value || null);
+  activeLibraryTrackId = null;
+  renderPlaylistUi();
+  const snapshot = localMusicLibrary.getSnapshot();
+  const playlist = snapshot.playlists.find((candidate) => candidate.id === snapshot.activePlaylistId);
+  setPlaylistStatus(playlist
+    ? `ACTIVE LIST // ${playlist.name} // ${playlist.trackIds.length} TRACK${playlist.trackIds.length === 1 ? '' : 'S'}`
+    : 'Выберите или создайте список.');
+});
+
+playlistTrackSelect.addEventListener('change', () => {
+  const trackId = playlistTrackSelect.value;
+  if (!trackId) return;
+  localMusicLibrary.setActiveTrack(trackId, playlistSelect.value);
+  void loadStoredTrack(trackId);
+});
+
+query<HTMLButtonElement>('#playlist-track-load').addEventListener('click', () => {
+  const trackId = playlistTrackSelect.value;
+  if (!trackId) return;
+  localMusicLibrary.setActiveTrack(trackId, playlistSelect.value);
+  void loadStoredTrack(trackId);
+});
+
+query<HTMLButtonElement>('#playlist-create').addEventListener('click', () => {
+  const requested = window.prompt('Название нового плейлиста', `Плейлист ${localMusicLibrary.getSnapshot().playlists.length + 1}`);
+  if (requested === null) return;
+  try {
+    const playlist = localMusicLibrary.createPlaylist(requested);
+    renderPlaylistUi();
+    setPlaylistStatus(`CREATED // ${playlist.name} // загружайте треки через LOAD FILE`);
+  } catch {
+    setPlaylistStatus('Название плейлиста не может быть пустым.');
+  }
+});
+
+query<HTMLButtonElement>('#playlist-rename').addEventListener('click', () => {
+  const snapshot = localMusicLibrary.getSnapshot();
+  const playlist = snapshot.playlists.find((candidate) => candidate.id === snapshot.activePlaylistId);
+  if (!playlist) return;
+  const requested = window.prompt('Новое название плейлиста', playlist.name);
+  if (requested === null) return;
+  try {
+    const renamed = localMusicLibrary.renamePlaylist(playlist.id, requested);
+    setPlaylistStatus(`RENAMED // ${renamed.name}`);
+  } catch {
+    setPlaylistStatus('Название плейлиста не может быть пустым.');
+  }
+});
+
+query<HTMLButtonElement>('#playlist-delete').addEventListener('click', () => {
+  const snapshot = localMusicLibrary.getSnapshot();
+  const playlist = snapshot.playlists.find((candidate) => candidate.id === snapshot.activePlaylistId);
+  if (!playlist || !window.confirm(`Удалить плейлист «${playlist.name}»? Уникальные треки этого списка тоже удалятся с устройства.`)) return;
+  const removedTrackIds = [...playlist.trackIds];
+  localMusicLibrary.deletePlaylist(playlist.id);
+  activeLibraryTrackId = null;
+  renderPlaylistUi();
+  setPlaylistStatus(`DELETED // ${playlist.name}`);
+  const remaining = localMusicLibrary.getSnapshot();
+  const retainedIds = new Set(remaining.playlists.flatMap((candidate) => candidate.trackIds));
+  void Promise.all(removedTrackIds
+    .filter((trackId) => !retainedIds.has(trackId))
+    .map((trackId) => localMusicLibrary.deleteTrack(trackId)))
+    .catch((error) => console.warn('Orphaned playlist tracks could not be removed', error));
+});
+
+query<HTMLButtonElement>('#playlist-track-remove').addEventListener('click', () => {
+  const playlistId = playlistSelect.value;
+  const trackId = playlistTrackSelect.value;
+  if (!playlistId || !trackId) return;
+  const snapshot = localMusicLibrary.getSnapshot();
+  const track = snapshot.tracks.find((candidate) => candidate.id === trackId);
+  localMusicLibrary.removeTrackFromPlaylist(trackId, playlistId);
+  if (activeLibraryTrackId === trackId) activeLibraryTrackId = null;
+  renderPlaylistUi();
+  const stillUsed = localMusicLibrary.getSnapshot().playlists.some((playlist) => playlist.trackIds.includes(trackId));
+  if (!stillUsed) void localMusicLibrary.deleteTrack(trackId).catch((error) => console.warn('Track blob could not be removed', error));
+  setPlaylistStatus(`REMOVED // ${track?.title ?? 'TRACK'}${stillUsed ? ' // сохранён в другом списке' : ' // удалён с устройства'}`);
+});
+
+localMusicLibrary.subscribe((snapshot) => renderPlaylistUi(snapshot), true);
+void Promise.all([
+  localMusicLibrary.pruneMissingTracks(),
+  localMusicLibrary.pruneOrphanedBlobs(),
+]).then(([missing]) => {
+  if (missing.length > 0) setPlaylistStatus(`LIBRARY REPAIRED // удалено потерянных треков: ${missing.length}`);
+  renderPlaylistUi();
+}).catch((error) => console.warn('Music library maintenance failed', error));
+
+const ONLINE_NAME_KEY = 'ballistic-edge-pilot-name-v1';
+
+function normalizePilotName(value: string): string {
+  return value.replace(/\s+/g, ' ').trim().slice(0, 24) || 'PILOT';
+}
+
+function readPilotName(): string {
+  try {
+    return normalizePilotName(localStorage.getItem(ONLINE_NAME_KEY) || 'PILOT');
+  } catch {
+    return 'PILOT';
+  }
+}
+
+function savePilotName(name: string): void {
+  try {
+    localStorage.setItem(ONLINE_NAME_KEY, name);
+  } catch {
+    // Online remains usable for the current page even if storage is blocked.
+  }
+}
+
+function setOnlineConnection(state: 'ready' | 'connecting' | 'online' | 'offline', label: string): void {
+  const element = query<HTMLElement>('#online-connection');
+  element.dataset.state = state;
+  element.textContent = label;
+}
+
+function setOnlineStatus(message: string): void {
+  setText('#online-status', message);
+  setText('#online-entry-status', message);
+}
+
+function currentOnlineSettings() {
+  return {
+    track: query<HTMLSelectElement>('#online-track').value as TrackId,
+    aiOpponents: Number(query<HTMLInputElement>('#online-ai').value),
+    playerSlots: Number(query<HTMLInputElement>('#online-slots').value),
+  };
+}
+
+function currentLobbyIdentity(): string {
+  return JSON.stringify({
+    name: normalizePilotName(onlineNameInput.value),
+    weapon: selectedWeapon,
+    ability: selectedAbility,
+    garage,
+  });
+}
+
+function lobbyAction(action: (client: LobbyClient) => void): boolean {
+  const client = lobbyClient;
+  if (!client || client.connectionState !== 'online') {
+    setOnlineStatus('NETWORK // соединение восстанавливается, попробуйте ещё раз');
+    return false;
+  }
+  try {
+    action(client);
+    return true;
+  } catch (error) {
+    setOnlineStatus(`NETWORK ERROR // ${error instanceof Error ? error.message : 'command failed'}`);
+    return false;
+  }
+}
+
+function renderOnlineRooms(): void {
+  const container = query<HTMLElement>('#online-room-list');
+  container.replaceChildren();
+  const joinable = onlineRooms.filter((room) => room.phase === 'lobby' && room.humans < room.playerSlots).slice(0, 6);
+  if (joinable.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'online-empty';
+    empty.textContent = !lobbyClient
+      ? 'Нажми REFRESH, чтобы увидеть открытые комнаты.'
+      : lobbyClient.connectionState === 'online'
+      ? 'Открытых комнат пока нет — создай первую.'
+      : 'Подключаемся к сетевому узлу…';
+    container.append(empty);
+    return;
+  }
+  for (const room of joinable) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'online-room-card';
+    const title = document.createElement('strong');
+    title.textContent = `${room.code} // ${room.hostName}`;
+    const meta = document.createElement('small');
+    meta.textContent = `${TRACKS[room.track].name.toUpperCase()} · AI ${room.aiOpponents}`;
+    const count = document.createElement('b');
+    count.textContent = `${room.humans}/${room.playerSlots}`;
+    button.append(title, meta, count);
+    button.addEventListener('click', () => void joinOnlineRoom(room.code));
+    container.append(button);
+  }
+}
+
+function renderOnlineChat(room: OnlineRoomSnapshot): void {
+  const log = query<HTMLElement>('#online-chat-log');
+  const wasNearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 24;
+  log.replaceChildren();
+  for (const message of room.chat) {
+    const line = document.createElement('p');
+    line.className = 'online-chat__message';
+    const author = document.createElement('strong');
+    author.textContent = `${message.playerName}:`;
+    line.append(author, document.createTextNode(message.text));
+    log.append(line);
+  }
+  if (wasNearBottom || room.chat.length <= 2) log.scrollTop = log.scrollHeight;
+}
+
+function setLoadoutLocked(locked: boolean): void {
+  for (const button of [...trackButtons, ...weaponButtons, ...abilityButtons]) button.disabled = locked;
+  for (const button of queryAll<HTMLButtonElement>('.garage-module')) button.disabled = locked;
+  if (!locked) updateGarageUi();
+  app.classList.toggle('is-online-lobby', locked);
+}
+
+function renderOnlineRoom(room: OnlineRoomSnapshot): void {
+  onlineRoom = room;
+  query<HTMLElement>('#online-entry').hidden = true;
+  query<HTMLElement>('#online-lobby').hidden = false;
+  setLoadoutLocked(true);
+  startButton.disabled = true;
+  setText('#online-room-code', room.code);
+  setText('#online-room-status', room.phase === 'lobby' ? 'WAITING' : 'RACING');
+  setText('#online-player-count', `${room.players.length} / ${room.settings.playerSlots}`);
+
+  if (selectedTrack !== room.settings.track && room.phase === 'lobby') {
+    selectedTrack = room.settings.track;
+    selectRadio('[data-track]', selectedTrack, 'track');
+    refreshCoursePreview();
+  }
+
+  const players = query<HTMLElement>('#online-players');
+  players.replaceChildren();
+  for (const player of room.players) {
+    const row = document.createElement('div');
+    row.className = 'online-player';
+    const signal = document.createElement('i');
+    const name = document.createElement('strong');
+    name.textContent = player.name;
+    const state = document.createElement('span');
+    state.textContent = player.isHost ? 'HOST' : player.ready ? 'READY' : 'SYNC';
+    row.append(signal, name, state);
+    players.append(row);
+  }
+
+  const clientId = lobbyClient?.playerId;
+  const me = room.players.find((player) => player.id === clientId);
+  const isHost = room.hostId === clientId;
+  const controls = query<HTMLElement>('.online-host-controls');
+  controls.classList.toggle('is-locked', !isHost || room.phase !== 'lobby');
+  const trackSelect = query<HTMLSelectElement>('#online-track');
+  const aiInput = query<HTMLInputElement>('#online-ai');
+  const slotsInput = query<HTMLInputElement>('#online-slots');
+  trackSelect.value = room.settings.track;
+  aiInput.value = String(room.settings.aiOpponents);
+  slotsInput.min = String(Math.max(2, room.players.length));
+  slotsInput.value = String(room.settings.playerSlots);
+  setText('#online-ai-value', String(room.settings.aiOpponents));
+  setText('#online-slots-value', String(room.settings.playerSlots));
+  trackSelect.disabled = !isHost || room.phase !== 'lobby';
+  aiInput.disabled = !isHost || room.phase !== 'lobby';
+  slotsInput.disabled = !isHost || room.phase !== 'lobby';
+
+  const ready = query<HTMLButtonElement>('#online-ready');
+  ready.hidden = isHost;
+  ready.textContent = me?.ready ? 'NOT READY' : 'READY';
+  ready.disabled = room.phase !== 'lobby';
+  const start = query<HTMLButtonElement>('#online-start');
+  start.hidden = !isHost;
+  start.disabled = room.phase !== 'lobby' || room.players.length < 2;
+  setOnlineStatus(room.phase === 'racing'
+    ? 'RACE IN PROGRESS // после финиша комната вернётся в лобби'
+    : room.players.length < 2
+      ? 'Для старта нужен ещё один живой пилот.'
+      : isHost
+        ? 'Все системы готовы. Хост может запустить заезд в любой момент.'
+        : 'Ожидаем команду хоста. READY показывает твою готовность команде.');
+  renderOnlineChat(room);
+}
+
+function leaveOnlineRoomUi(): void {
+  onlineRoom = null;
+  onlineMatch = null;
+  currentRunIsOnline = false;
+  remoteRaceStates.clear();
+  game.setRemoteRacers([]);
+  window.clearTimeout(onlineStartTimer);
+  query<HTMLElement>('#online-entry').hidden = false;
+  query<HTMLElement>('#online-lobby').hidden = true;
+  setLoadoutLocked(false);
+  startButton.disabled = musicLoading;
+  query<HTMLButtonElement>('#replay-run').hidden = false;
+  lobbyAction((client) => client.listRooms());
+}
+
+function syncRemoteRacers(): void {
+  if (!onlineMatch || !lobbyClient?.playerId || !currentRunIsOnline) return;
+  const currentMembers = new Set(onlineRoom?.players.map((player) => player.id) ?? []);
+  const racers: RemoteRacerState[] = onlineMatch.humans
+    .filter((human) => human.id !== lobbyClient?.playerId && currentMembers.has(human.id))
+    .map((human) => {
+      const state = remoteRaceStates.get(human.id);
+      return {
+        id: human.id,
+        name: human.name,
+        progress: state?.progress ?? 0,
+        angle: state?.angle ?? 0,
+        speed: state?.speed ?? 0,
+        shield: state?.shield ?? 3,
+        active: state ? !state.destroyed && !state.finished : true,
+        destroyed: state?.destroyed ?? false,
+        finished: state?.finished ?? false,
+      };
+    });
+  game.setRemoteRacers(racers);
+}
+
+function broadcastLocalRaceState(): void {
+  if (!onlineMatch || !lobbyClient || lobbyClient.connectionState !== 'online') return;
+  const state = game.getLocalRaceSnapshot();
+  if (!state.active && !state.finished) return;
+  try {
+    lobbyClient.sendRaceState({
+      matchId: onlineMatch.id,
+      angle: state.angle,
+      progress: state.progress,
+      speed: state.speed,
+      shield: state.shield,
+      heat: state.heat,
+      flux: state.flux,
+      score: state.score,
+      rank: state.rank,
+      section: state.section,
+      destroyed: state.destroyed,
+      finished: state.finished,
+    });
+  } catch (error) {
+    console.warn('Race state was not sent', error);
+  }
+}
+
+async function handleOnlineRaceStart(config: AuthoritativeRaceConfig): Promise<void> {
+  if (!lobbyClient?.playerId) return;
+  const mine = config.humans.find((human) => human.id === lobbyClient?.playerId);
+  if (!mine) return;
+  onlineMatch = config;
+  remoteRaceStates.clear();
+  audio.useSynthetic();
+  selectedMusicId = 'synthetic';
+  renderMusicCatalog();
+  updateMusicUi();
+  selectedTrack = config.track;
+  selectRadio('[data-track]', selectedTrack, 'track');
+  refreshCoursePreview();
+  const delay = lobbyClient.delayUntil(config.startsAt);
+  setOnlineStatus(`SYNC START // ${Math.max(0, delay / 1000).toFixed(1)} SEC // EDGE SIGNAL LOCKED FOR ALL PILOTS`);
+  window.clearTimeout(onlineStartTimer);
+  onlineStartTimer = window.setTimeout(() => {
+    const runConfig: RunConfig = { ...mine.runConfig, aiOpponents: config.aiOpponents };
+    void startConfiguredRun(runConfig, true).then(syncRemoteRacers);
+  }, delay);
+}
+
+function bindLobbyClient(client: LobbyClient): void {
+  const isCurrent = (): boolean => lobbyClient === client;
+  client.on('connection', ({ state, reason }) => {
+    if (!isCurrent()) return;
+    if (state === 'online') {
+      setOnlineConnection('online', 'ONLINE');
+      client.listRooms();
+    } else if (state === 'closed') {
+      setOnlineConnection('offline', 'OFFLINE');
+      if (!onlineRoom) renderOnlineRooms();
+    } else {
+      setOnlineConnection('connecting', state === 'reconnecting' ? 'RECONNECTING' : 'CONNECTING');
+      if (reason) setOnlineStatus(`NETWORK // ${reason}`);
+    }
+  });
+  client.on('rooms', ({ rooms }) => {
+    if (!isCurrent()) return;
+    onlineRooms = rooms;
+    renderOnlineRooms();
+  });
+  client.on('room', ({ room }) => {
+    if (!isCurrent()) return;
+    renderOnlineRoom(room);
+    if (onlineMatch) {
+      const memberIds = new Set(room.players.map((player) => player.id));
+      for (const playerId of remoteRaceStates.keys()) if (!memberIds.has(playerId)) remoteRaceStates.delete(playerId);
+      syncRemoteRacers();
+    }
+  });
+  client.on('roomLeft', () => {
+    if (!isCurrent()) return;
+    leaveOnlineRoomUi();
+  });
+  client.on('chat', ({ roomId, message }) => {
+    if (!isCurrent() || !onlineRoom || onlineRoom.id !== roomId) return;
+    if (!onlineRoom.chat.some((candidate) => candidate.id === message.id)) onlineRoom.chat.push(message);
+    renderOnlineChat(onlineRoom);
+  });
+  client.on('raceStarted', ({ config }) => {
+    if (!isCurrent()) return;
+    void handleOnlineRaceStart(config);
+  });
+  client.on('raceState', ({ state }) => {
+    if (!isCurrent() || !onlineMatch || state.matchId !== onlineMatch.id || state.playerId === client.playerId) return;
+    remoteRaceStates.set(state.playerId, state);
+    syncRemoteRacers();
+  });
+  client.on('rejoinFailed', () => {
+    if (!isCurrent()) return;
+    leaveOnlineRoomUi();
+  });
+  client.on('serverError', ({ code, message }) => {
+    if (!isCurrent()) return;
+    const labels: Partial<Record<typeof code, string>> = {
+      NOT_ENOUGH_PLAYERS: 'Для старта нужны минимум два игрока.',
+      ROOM_NOT_FOUND: 'Комната не найдена — проверь код.',
+      ROOM_FULL: 'В комнате уже заняты все слоты.',
+      ROOM_RUNNING: 'Заезд уже начался.',
+      HOST_ONLY: 'Эта настройка доступна только хосту.',
+      INVALID_SETTINGS: 'Проверь количество слотов и настройки комнаты.',
+      RATE_LIMITED: 'Слишком быстро — подожди секунду.',
+    };
+    const text = labels[code] ?? message;
+    setOnlineStatus(`ERROR // ${text}`);
+    showToast(`ONLINE ${code}`, text, 'red');
+  });
+  client.on('protocolError', ({ message }) => {
+    if (!isCurrent()) return;
+    setOnlineStatus(`PROTOCOL ERROR // ${message}`);
+  });
+}
+
+async function ensureLobbyClient(): Promise<LobbyClient> {
+  const name = normalizePilotName(onlineNameInput.value);
+  onlineNameInput.value = name;
+  savePilotName(name);
+  const identity = currentLobbyIdentity();
+  if (lobbyClient && lobbyIdentity === identity) {
+    await lobbyClient.connect();
+    return lobbyClient;
+  }
+  lobbyClient?.disconnect();
+  const client = new LobbyClient({
+    url: defaultLobbyUrl(),
+    name,
+    loadout: { weapon: selectedWeapon, ability: selectedAbility, garage: { ...garage } },
+  });
+  lobbyClient = client;
+  lobbyIdentity = identity;
+  bindLobbyClient(client);
+  await client.connect();
+  return client;
+}
+
+async function joinOnlineRoom(code: string): Promise<void> {
+  const normalized = code.replace(/[^a-z0-9-]/gi, '').toUpperCase().slice(0, 8);
+  if (normalized.length < 4) {
+    setOnlineStatus('Введите код комнаты — минимум четыре символа.');
+    return;
+  }
+  void audio.unlock().catch(() => undefined);
+  try {
+    const client = await ensureLobbyClient();
+    client.joinRoom(normalized);
+    setOnlineStatus(`JOINING // ${normalized}`);
+  } catch (error) {
+    setOnlineConnection('offline', 'OFFLINE');
+    setOnlineStatus(`NETWORK ERROR // ${error instanceof Error ? error.message : 'connection failed'}`);
+  }
+}
+
+onlineNameInput.value = readPilotName();
+onlineNameInput.addEventListener('change', () => {
+  onlineNameInput.value = normalizePilotName(onlineNameInput.value);
+  savePilotName(onlineNameInput.value);
+});
+query<HTMLInputElement>('#online-code').addEventListener('input', (event) => {
+  const input = event.currentTarget as HTMLInputElement;
+  input.value = input.value.replace(/[^a-z0-9-]/gi, '').toUpperCase();
+});
+query<HTMLButtonElement>('#online-create').addEventListener('click', () => {
+  void audio.unlock().catch(() => undefined);
+  void ensureLobbyClient().then((client) => {
+    client.createRoom(currentOnlineSettings());
+    setOnlineStatus('CREATING ROOM // резервируем сетевой туннель…');
+  }).catch((error) => setOnlineStatus(`NETWORK ERROR // ${error instanceof Error ? error.message : 'connection failed'}`));
+});
+query<HTMLButtonElement>('#online-join').addEventListener('click', () => {
+  void joinOnlineRoom(query<HTMLInputElement>('#online-code').value);
+});
+query<HTMLButtonElement>('#online-refresh').addEventListener('click', () => {
+  void ensureLobbyClient().then((client) => client.listRooms()).catch(() => undefined);
+});
+query<HTMLButtonElement>('#online-copy-code').addEventListener('click', () => {
+  const code = onlineRoom?.code;
+  if (!code) return;
+  void navigator.clipboard?.writeText(code).then(
+    () => setOnlineStatus(`COPIED // ${code}`),
+    () => setOnlineStatus(`ROOM CODE // ${code}`),
+  );
+});
+
+for (const selector of ['#online-ai', '#online-slots']) {
+  const input = query<HTMLInputElement>(selector);
+  input.addEventListener('input', () => {
+    setText(`${selector}-value`, input.value);
+  });
+  input.addEventListener('change', () => {
+    if (onlineRoom?.hostId === lobbyClient?.playerId) lobbyAction((client) => client.updateRoomSettings(currentOnlineSettings()));
+  });
+}
+query<HTMLSelectElement>('#online-track').addEventListener('change', () => {
+  if (onlineRoom?.hostId === lobbyClient?.playerId) lobbyAction((client) => client.updateRoomSettings(currentOnlineSettings()));
+});
+query<HTMLButtonElement>('#online-ready').addEventListener('click', () => {
+  const me = onlineRoom?.players.find((player) => player.id === lobbyClient?.playerId);
+  if (me) lobbyAction((client) => client.setReady(!me.ready));
+});
+query<HTMLButtonElement>('#online-start').addEventListener('click', () => {
+  void audio.unlock().catch(() => undefined);
+  if (lobbyAction((client) => client.startRace())) setOnlineStatus('HOST START // синхронизируем часы всех пилотов…');
+});
+query<HTMLButtonElement>('#online-leave').addEventListener('click', () => {
+  lobbyClient?.cancelRoomRejoin();
+  if (!lobbyAction((client) => client.leaveRoom())) leaveOnlineRoomUi();
+});
+query<HTMLFormElement>('#online-chat-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  const input = query<HTMLInputElement>('#online-chat-input');
+  const message = input.value.replace(/\s+/g, ' ').trim();
+  if (!message) return;
+  if (lobbyAction((client) => client.sendChat(message))) input.value = '';
+});
+
+window.setInterval(() => {
+  if (lobbyClient?.connectionState === 'online') lobbyClient.ping();
+}, 10_000);
+renderOnlineRooms();
+setOnlineConnection('ready', 'READY');
 
 query<HTMLButtonElement>('#settings-open').addEventListener('click', () => {
   if (settingsDialog.open) return;
@@ -959,6 +1625,29 @@ query<HTMLSelectElement>('#graphics-quality').addEventListener('change', (event)
   game.setGraphicsSettings(settings.graphics);
   refreshCoursePreview();
 });
+
+const graphicsRanges: Array<{
+  selector: string;
+  output: string;
+  field: 'bloomIntensity' | 'brightness';
+  label: string;
+}> = [
+  { selector: '#graphics-bloom-intensity', output: '#graphics-bloom-intensity-value', field: 'bloomIntensity', label: 'BLOOM' },
+  { selector: '#graphics-brightness', output: '#graphics-brightness-value', field: 'brightness', label: 'BRIGHTNESS' },
+];
+for (const binding of graphicsRanges) {
+  const input = query<HTMLInputElement>(binding.selector);
+  input.addEventListener('input', (event) => {
+    const percent = Number((event.currentTarget as HTMLInputElement).value);
+    settings.graphics[binding.field] = Math.max(0, Math.min(1, percent / 100));
+    query<HTMLOutputElement>(binding.output).value = `${percent}%`;
+    if (binding.field === 'bloomIntensity') game.setBloomIntensity(settings.graphics.bloomIntensity);
+    else game.setBrightness(settings.graphics.brightness);
+  });
+  input.addEventListener('change', () => {
+    persistSettings(`${binding.label} // ${Math.round(settings.graphics[binding.field] * 100)}%`);
+  });
+}
 
 const graphicsToggles: Array<{ selector: string; field: 'bloom' | 'chromaticAberration' | 'cameraShake' | 'reducedFlashes'; message: string }> = [
   { selector: '#graphics-bloom', field: 'bloom', message: 'BLOOM' },
@@ -1058,9 +1747,14 @@ startButton.addEventListener('click', () => void launchRun(false));
 query<HTMLButtonElement>('#replay-run').addEventListener('click', () => void launchRun(true));
 query<HTMLButtonElement>('#return-menu').addEventListener('click', () => {
   game.backToMenu();
+  currentRunIsOnline = false;
+  onlineMatch = null;
+  remoteRaceStates.clear();
   resultsScreen.classList.remove('is-active');
   hud.classList.remove('is-active');
   menu.classList.remove('is-hidden');
+  query<HTMLButtonElement>('#replay-run').hidden = false;
+  if (onlineRoom) renderOnlineRoom(onlineRoom);
   lastRunSeed = randomSeed();
   refreshCoursePreview();
 });
@@ -1097,6 +1791,8 @@ refreshCoursePreview();
 void loadMusicCatalog();
 
 window.addEventListener('beforeunload', () => {
+  window.clearTimeout(onlineStartTimer);
+  lobbyClient?.disconnect();
   musicPreview.dispose();
   game.dispose();
   void audio.dispose();

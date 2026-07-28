@@ -648,6 +648,13 @@ export class AudioEngine {
     return this.profile;
   }
 
+  /** Unlocks Web Audio from a trusted lobby click without starting transport. */
+  async unlock(): Promise<void> {
+    const context = this.ensureContext();
+    if (context.state !== 'running') await context.resume();
+    if (context.state === 'running') await context.suspend();
+  }
+
   async start(paused = false): Promise<void> {
     const context = this.ensureContext();
     this.resetMusicAccent();

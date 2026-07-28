@@ -94,6 +94,41 @@ export interface RunConfig {
   ability: AbilityId;
   seed: number;
   garage: GarageState;
+  /** Number of local AI rivals. Omitted keeps the classic three-rival solo race. */
+  aiOpponents?: number;
+}
+
+/**
+ * Compact, serialization-safe state of the local bolide. `speed` uses the same
+ * km/h display scale as the HUD and `progress` is normalized to the course.
+ */
+export interface LocalRaceSnapshot {
+  progress: number;
+  angle: number;
+  speed: number;
+  shield: number;
+  heat: number;
+  flux: number;
+  score: number;
+  rank: number;
+  section: number;
+  active: boolean;
+  running: boolean;
+  destroyed: boolean;
+  finished: boolean;
+}
+
+/** Network-fed visual state for another human racer. Remote racers are visual only. */
+export interface RemoteRacerState {
+  id: string;
+  name: string;
+  progress: number;
+  angle: number;
+  speed: number;
+  shield: number;
+  active?: boolean;
+  destroyed?: boolean;
+  finished?: boolean;
 }
 
 export interface GarageState {

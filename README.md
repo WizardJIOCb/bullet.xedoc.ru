@@ -76,8 +76,10 @@ npm run music:sync
 - `src/ui/MusicPreview.ts` — mini-player, waveform, seek и интерактивные маркеры препятствий.
 - `src/settings/SettingsStore.ts` — валидация, миграция и локальное хранение настроек звука, графики и управления.
 
-Текущая версия — однопользовательский web vertical slice с тремя AI-призраками. Настоящий сетевой multiplayer требует authoritative WebSocket-сервера, синхронизации input/snapshots и отдельного правила для локальных MP3; игровая симуляция уже использует детерминированные seed и track-space state, чтобы эту часть можно было добавить без переписывания ядра.
+Текущая версия поддерживает одиночные и сетевые заезды. WebSocket-сервер синхронизирует комнаты, чат, конфигурацию хоста, общий момент старта и позиции живых пилотов; локальные MP3 остаются только в браузере, поэтому сетевой режим использует общий встроенный трек.
 
 ## Production deployment
 
-Игра является статическим Vite-приложением. Содержимое `dist/` можно публиковать напрямую; пример Nginx-конфигурации для `bullet.xedoc.ru` находится в `deploy/nginx.conf`. Конфигурация ожидает атомарный symlink `/var/www/bullet.xedoc.ru/current` на каталог конкретного релиза.
+Frontend публикуется из `dist/` через атомарный symlink `/var/www/bullet.xedoc.ru/current`. Онлайн-сервер разворачивается отдельным версионированным release с сохранёнными путями `server/`, `src/online/protocol.ts` и `src/core/types.ts`; symlink `/var/www/bullet.xedoc.ru/backend-current` переключается только после `npm ci --omit=dev` и локальной health-проверки. Systemd unit и production Nginx-конфигурация находятся в `server/ballistic-edge-online.service` и `deploy/nginx.conf`.
+
+Рекомендуемый порядок: `npm run verify`, подготовить оба release-каталога, проверить backend на временном loopback-порту, переключить backend и проверить JSON `/online-health`, затем переключить frontend. При ошибке оба symlink возвращаются на предыдущие targets.
