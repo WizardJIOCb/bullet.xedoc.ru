@@ -99,7 +99,10 @@ const game = new BallisticGame(query<HTMLCanvasElement>('#game-canvas'), audio, 
     showToast(`SECTOR 0${index}`, name, index === 3 ? 'gold' : 'cyan');
   },
 }, settings);
-const musicPreview = new MusicPreviewController(audio, query<HTMLElement>('#music-preview'));
+const musicPreview = new MusicPreviewController(audio, query<HTMLElement>('#music-preview'), {
+  onMusicVolumeInput: applyMusicVolume,
+  onMusicVolumeCommit: commitMusicVolume,
+});
 
 function refreshCoursePreview(): void {
   game.previewTrack(selectedTrack, lastRunSeed);
@@ -191,7 +194,31 @@ function isCodeAllowedForAction(code: string, action: InputAction): boolean {
 
 function persistSettings(message = 'SAVED // LOCAL PROFILE'): void {
   settings = saveSettings(settings);
+  syncMusicVolumeUi();
   setSettingsStatus(message);
+}
+
+function normalizeVolume(volume: number): number {
+  return Number.isFinite(volume) ? Math.max(0, Math.min(1, volume)) : 0;
+}
+
+function syncMusicVolumeUi(): void {
+  const volume = normalizeVolume(settings.audio.musicVolume);
+  const percent = Math.round(volume * 100);
+  query<HTMLInputElement>('#volume-music').value = String(percent);
+  query<HTMLOutputElement>('#volume-music-value').value = `${percent}%`;
+  musicPreview.setMusicVolume(volume, settings.audio.muted || settings.audio.masterVolume <= 0);
+}
+
+function applyMusicVolume(volume: number): void {
+  settings.audio.musicVolume = normalizeVolume(volume);
+  audio.setAudioSettings(settings.audio);
+  syncMusicVolumeUi();
+}
+
+function commitMusicVolume(volume: number): void {
+  applyMusicVolume(volume);
+  persistSettings(`MUSIC // ${Math.round(settings.audio.musicVolume * 100)}%`);
 }
 
 function updateEffectsButton(): void {
@@ -259,6 +286,7 @@ function syncSettingsUi(): void {
     query<HTMLInputElement>(inputSelector).value = String(percent);
     query<HTMLOutputElement>(outputSelector).value = `${percent}%`;
   }
+  syncMusicVolumeUi();
   query<HTMLInputElement>('#audio-muted').checked = settings.audio.muted;
   query<HTMLSelectElement>('#graphics-quality').value = settings.graphics.quality;
   query<HTMLInputElement>('#graphics-bloom').checked = settings.graphics.bloom;
@@ -807,9 +835,13 @@ for (const binding of volumeInputs) {
   const input = query<HTMLInputElement>(binding.selector);
   input.addEventListener('input', (event) => {
     const percent = Number((event.currentTarget as HTMLInputElement).value);
-    settings.audio[binding.field] = percent / 100;
-    query<HTMLOutputElement>(binding.output).value = `${percent}%`;
-    audio.setAudioSettings(settings.audio);
+    if (binding.field === 'musicVolume') applyMusicVolume(percent / 100);
+    else {
+      settings.audio[binding.field] = percent / 100;
+      query<HTMLOutputElement>(binding.output).value = `${percent}%`;
+      audio.setAudioSettings(settings.audio);
+      syncMusicVolumeUi();
+    }
   });
   input.addEventListener('change', () => {
     persistSettings(`AUDIO // ${Math.round(settings.audio[binding.field] * 100)}%`);

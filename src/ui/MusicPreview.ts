@@ -8,6 +8,11 @@ import type {
 
 type TimelineMarker = TimelinePatternMarker | TimelineTransitionMarker;
 
+interface MusicPreviewCallbacks {
+  onMusicVolumeInput: (volume: number) => void;
+  onMusicVolumeCommit: (volume: number) => void;
+}
+
 const KIND_LABELS: Record<TimelinePatternMarker['kind'], string> = {
   gate: 'ВОРОТА',
   halfwall: 'ПОЛУСТЕНА',
@@ -48,6 +53,8 @@ export class MusicPreviewController {
   private readonly currentOutput: HTMLElement;
   private readonly durationOutput: HTMLElement;
   private readonly bpmOutput: HTMLOutputElement;
+  private readonly volumeInput: HTMLInputElement;
+  private readonly volumeOutput: HTMLOutputElement;
   private readonly courseOutput: HTMLElement;
   private readonly canvas: HTMLCanvasElement;
   private readonly markerLayer: HTMLElement;
@@ -67,11 +74,14 @@ export class MusicPreviewController {
   constructor(
     private readonly audio: AudioEngine,
     private readonly root: HTMLElement,
+    private readonly callbacks: MusicPreviewCallbacks,
   ) {
     this.playButton = required(root, '#music-preview-play');
     this.currentOutput = required(root, '#music-preview-current');
     this.durationOutput = required(root, '#music-preview-duration');
     this.bpmOutput = required(root, '#music-preview-bpm');
+    this.volumeInput = required(root, '#music-preview-volume');
+    this.volumeOutput = required(root, '#music-preview-volume-value');
     this.courseOutput = required(root, '#music-preview-course');
     this.canvas = required(root, '#music-preview-waveform');
     this.markerLayer = required(root, '#music-preview-markers');
@@ -88,6 +98,8 @@ export class MusicPreviewController {
     this.seek.addEventListener('pointerup', this.finishScrub);
     this.seek.addEventListener('pointercancel', this.finishScrub);
     this.seek.addEventListener('input', this.handleSeek);
+    this.volumeInput.addEventListener('input', this.handleVolumeInput);
+    this.volumeInput.addEventListener('change', this.handleVolumeCommit);
     this.markerLayer.addEventListener('keydown', this.handleMarkerKeys);
     window.addEventListener('resize', this.handleResize);
   }
@@ -131,6 +143,16 @@ export class MusicPreviewController {
     this.setTransportUi(this.audio.getPreviewPlaybackState().currentTime, false);
   }
 
+  setMusicVolume(volume: number, silent = false): void {
+    const safeVolume = Number.isFinite(volume) ? Math.max(0, Math.min(1, volume)) : 0;
+    const percent = Math.round(safeVolume * 100);
+    this.volumeInput.value = String(percent);
+    this.volumeInput.style.setProperty('--volume-level', `${percent}%`);
+    this.volumeInput.setAttribute('aria-valuetext', `${percent} процентов`);
+    this.volumeOutput.value = `${percent}%`;
+    this.root.classList.toggle('has-silent-music', silent || percent === 0);
+  }
+
   dispose(): void {
     this.stop();
     this.playButton.removeEventListener('click', this.togglePlayback);
@@ -138,6 +160,8 @@ export class MusicPreviewController {
     this.seek.removeEventListener('pointerup', this.finishScrub);
     this.seek.removeEventListener('pointercancel', this.finishScrub);
     this.seek.removeEventListener('input', this.handleSeek);
+    this.volumeInput.removeEventListener('input', this.handleVolumeInput);
+    this.volumeInput.removeEventListener('change', this.handleVolumeCommit);
     this.markerLayer.removeEventListener('keydown', this.handleMarkerKeys);
     window.removeEventListener('resize', this.handleResize);
     this.resizeObserver.disconnect();
@@ -190,6 +214,14 @@ export class MusicPreviewController {
     const value = Number(this.seek.value);
     this.audio.seekPreview(value);
     this.setTransportUi(value, this.audio.getPreviewPlaybackState().playing);
+  };
+
+  private handleVolumeInput = (): void => {
+    this.callbacks.onMusicVolumeInput(Number(this.volumeInput.value) / 100);
+  };
+
+  private handleVolumeCommit = (): void => {
+    this.callbacks.onMusicVolumeCommit(Number(this.volumeInput.value) / 100);
   };
 
   private handleMarkerKeys = (event: KeyboardEvent): void => {

@@ -126,6 +126,22 @@
                   <i aria-hidden="true">/</i>
                   <span id="music-preview-duration">00:00</span>
                 </div>
+                <label class="music-preview__volume" for="music-preview-volume">
+                  <svg class="music-preview__volume-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 9v6h4l5 4V5L8 9H4Zm12.4-.9a5.5 5.5 0 0 1 0 7.8l-1.2-1.2a3.8 3.8 0 0 0 0-5.4l1.2-1.2Zm2.4-2.4a8.9 8.9 0 0 1 0 12.6l-1.2-1.2a7.2 7.2 0 0 0 0-10.2l1.2-1.2Z" />
+                  </svg>
+                  <input
+                    id="music-preview-volume"
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value="82"
+                    aria-label="Громкость музыки"
+                    aria-valuetext="82 процента"
+                  />
+                  <output id="music-preview-volume-value" for="music-preview-volume" aria-hidden="true">82%</output>
+                </label>
                 <output id="music-preview-bpm" class="music-preview__bpm">— BPM</output>
               </div>
 
