@@ -2628,6 +2628,7 @@ export class BallisticGame {
     if (this.runUpgrades.has('cryo-loop')) this.heat = Math.max(0, this.heat - 7);
     if (this.runUpgrades.has('echo-shield') && this.sync % 8 === 0) this.shield = Math.min(this.maxShield, this.shield + 1);
     this.audio.accentMusic(this.sync % 4 === 0 ? 1 : 0.45);
+    this.boostVisualKick = Math.max(this.boostVisualKick, this.sync % 4 === 0 ? 0.5 : 0.28);
     if (this.sync % 4 === 0) this.hooks.onToast('PERFECT', `${label} / SYNC ×${this.sync}`, 'gold');
   }
 
@@ -2637,8 +2638,10 @@ export class BallisticGame {
     if (this.runUpgrades.has('kinetic-skin')) {
       this.flux = Math.min(100, this.flux + 18);
       this.speed *= 1.035;
+      this.boostVisualKick = Math.max(this.boostVisualKick, 0.42);
     } else {
       this.flux = Math.min(100, this.flux + 8);
+      this.boostVisualKick = Math.max(this.boostVisualKick, 0.22);
     }
     this.hooks.onToast('NEAR MISS', '+FLOW', 'gold');
   }
@@ -2762,7 +2765,7 @@ export class BallisticGame {
       : this.distance;
     const progress = clamp(activeDistance / this.plan.length, 0, 0.9998);
     const frame = sampleTrackFrame(this.plan, progress);
-    const lookFrame = sampleTrackFrame(this.plan, clamp((activeDistance + 52) / this.plan.length, 0, 0.9999));
+    const lookFrame = sampleTrackFrame(this.plan, clamp((activeDistance + 56) / this.plan.length, 0, 0.9999));
     const radial = radialAt(frame, this.angle);
     const circumferential = frame.normal.clone().multiplyScalar(-Math.sin(this.angle)).add(frame.binormal.clone().multiplyScalar(Math.cos(this.angle))).normalize();
     const phaseTarget = this.phaseTimer > 0 ? this.plan.radius * 0.22 : this.plan.radius - 1.15;
@@ -2803,7 +2806,7 @@ export class BallisticGame {
       && this.state !== 'dying'
       && (this.state !== 'finished' || holdingFinalImpact);
     this.engineGlow.scale.setScalar(
-      0.75 + this.lastBands.bass * 0.8 + boostStrength * 0.72 + (this.overdriveTimer > 0 ? 0.16 : 0),
+      0.78 + this.lastBands.bass * 0.9 + boostStrength * 0.8 + (this.overdriveTimer > 0 ? 0.28 : 0),
     );
     this.vehicleImpactGlow.visible = impactEnvelope > 0.001;
     this.vehicleImpactGlow.scale.setScalar(1 + (1 - impactEnvelope) * 0.09);
@@ -2823,8 +2826,8 @@ export class BallisticGame {
     cameraTarget.add(inward.clone().multiplyScalar(Math.cos(performance.now() * 0.031) * shake));
     cameraTarget.add(circumferential.clone().multiplyScalar(-impactRecoil * 0.28));
     if (this.camera.position.lengthSq() === 0) this.camera.position.copy(cameraTarget);
-    this.camera.position.lerp(cameraTarget, 1 - Math.exp(-dt * 10));
-    this.camera.up.lerp(inward, 1 - Math.exp(-dt * 7)).normalize();
+    this.camera.position.lerp(cameraTarget, 1 - Math.exp(-dt * 10.5));
+    this.camera.up.lerp(inward, 1 - Math.exp(-dt * 7.5)).normalize();
     const lookRadial = radialAt(lookFrame, this.angle).multiplyScalar(Math.max(0.5, this.cameraRadial - 1));
     const lookTarget = lookFrame.position.clone().add(lookRadial);
     this.camera.lookAt(lookTarget);
@@ -2841,7 +2844,7 @@ export class BallisticGame {
     this.damageKick *= Math.exp(-dt * 8);
 
     if (this.tunnelMaterial) {
-      this.tunnelMaterial.uniforms.uTime.value = this.audio.getTime() + performance.now() / 8000;
+      this.tunnelMaterial.uniforms.uTime.value = this.audio.getTime() + performance.now() / 7600;
       this.tunnelMaterial.uniforms.uEnergy.value = this.lastBands.overall;
       this.tunnelMaterial.uniforms.uPulse.value = this.lastBands.pulse;
       this.tunnelMaterial.uniforms.uSpeed.value = speedRatio;
