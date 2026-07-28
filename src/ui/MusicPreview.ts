@@ -130,6 +130,7 @@ export class MusicPreviewController {
     this.courseOutput.textContent = `${trackName.toUpperCase()} // ${timeline.patterns.length} PATTERNS // ${
       (timeline.planSeed >>> 0).toString(16).padStart(8, '0').toUpperCase()
     }`;
+    this.status.textContent = `Карта трассы готова: ${timeline.patterns.length} паттернов, длительность ${formatTime(timeline.duration)}.`;
     this.detail.textContent = `COURSE ${formatTime(timeline.duration)} / TRACK ${formatTime(profile.duration)} · выберите препятствие`;
     this.renderMarkers();
     this.setTransportUi(playback.currentTime, playback.playing);

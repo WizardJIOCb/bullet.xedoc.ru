@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { MusicProfile, MusicTransition, RhythmBeat } from '../core/types';
-import { AudioEngine } from './AudioEngine';
+import { AudioEngine, AudioImportError } from './AudioEngine';
 import { createDefaultMusicProfile } from '../game/track';
 
 interface RhythmMapBuilder {
@@ -116,6 +116,30 @@ interface PreviewHarness {
   usingFile: boolean;
   sourceKind: 'synthetic' | 'catalog' | 'local';
 }
+
+interface ImportHarness {
+  context: AudioContext;
+  decodedTrack: AudioBuffer | null;
+  profile: MusicProfile;
+  sourceKind: 'synthetic' | 'catalog' | 'local';
+  usingFile: boolean;
+  analyzeBuffer: (buffer: AudioBuffer, key: string, title: string) => MusicProfile;
+}
+
+function createImportFile(size = 9_305_968): File {
+  return {
+    name: 'long-track.mp3',
+    size,
+    type: 'audio/mpeg',
+    lastModified: 1234,
+    arrayBuffer: vi.fn(async () => new ArrayBuffer(16)),
+  } as unknown as File;
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 function createPreviewHarness(bufferDuration = 30, runDuration = 58): {
   engine: AudioEngine;
@@ -361,5 +385,173 @@ describe('decoded audio preview transport', () => {
     expect(context.state).toBe('suspended');
     expect(context.sources[0].starts).toEqual([[100, 0]]);
     expect(engine.getTransportTime()).toBe(0);
+  });
+});
+
+describe('decoded audio import', () => {
+  it('accepts a normal song longer than three minutes and trims playback to 108 seconds', async () => {
+    const engine = new AudioEngine();
+    const harness = engine as unknown as ImportHarness;
+    const decoded = {
+      duration: 232.6236,
+      length: Math.round(232.6236 * 44_100),
+      sampleRate: 44_100,
+      numberOfChannels: 2,
+      getChannelData: vi.fn(() => new Float32Array(1)),
+    } as unknown as AudioBuffer;
+    const playback = {
+      duration: 108,
+      copyToChannel: vi.fn(),
+    } as unknown as AudioBuffer;
+    harness.context = {
+      currentTime: 10,
+      state: 'suspended',
+      decodeAudioData: vi.fn(async () => decoded),
+      createBuffer: vi.fn(() => playback),
+    } as unknown as AudioContext;
+    const profile: MusicProfile = {
+      ...createDefaultMusicProfile(),
+      id: 'long-track',
+      title: 'LONG TRACK',
+      duration: decoded.duration,
+      runDuration: 108,
+    };
+    harness.analyzeBuffer = vi.fn(() => profile);
+
+    await expect(engine.prepareFile(createImportFile())).resolves.toBe(profile);
+    expect(engine.getSourceKind()).toBe('local');
+    expect(engine.getProfile()).toBe(profile);
+    expect(engine.getPreviewPlaybackState()).toMatchObject({ available: true, duration: 108 });
+    expect(harness.decodedTrack).toBe(playback);
+    expect(harness.context.createBuffer).toHaveBeenCalledWith(2, 4_762_800, 44_100);
+  });
+
+  it('keeps the active track intact when a replacement cannot be decoded', async () => {
+    const engine = new AudioEngine();
+    const harness = engine as unknown as ImportHarness;
+    const previousProfile = {
+      ...createDefaultMusicProfile(),
+      id: 'previous-track',
+      title: 'PREVIOUS TRACK',
+    };
+    const previousBuffer = { duration: 82 } as AudioBuffer;
+    harness.context = {
+      currentTime: 10,
+      state: 'suspended',
+      decodeAudioData: vi.fn(async () => {
+        throw new DOMException('Unsupported codec', 'EncodingError');
+      }),
+    } as unknown as AudioContext;
+    harness.profile = previousProfile;
+    harness.decodedTrack = previousBuffer;
+    harness.sourceKind = 'catalog';
+    harness.usingFile = true;
+
+    await expect(engine.prepareFile(createImportFile())).rejects.toMatchObject({
+      name: 'AudioImportError',
+      code: 'decode',
+    });
+    expect(engine.getProfile()).toBe(previousProfile);
+    expect(engine.getSourceKind()).toBe('catalog');
+    expect(harness.decodedTrack).toBe(previousBuffer);
+    expect(harness.usingFile).toBe(true);
+  });
+
+  it('rejects empty and oversized files before asking the browser to decode them', async () => {
+    const engine = new AudioEngine();
+    const harness = engine as unknown as ImportHarness;
+    const decodeAudioData = vi.fn();
+    harness.context = {
+      currentTime: 0,
+      state: 'suspended',
+      decodeAudioData,
+    } as unknown as AudioContext;
+
+    await expect(engine.prepareFile(createImportFile(0))).rejects.toEqual(
+      expect.objectContaining<Partial<AudioImportError>>({ code: 'empty' }),
+    );
+    await expect(engine.prepareFile(createImportFile(49 * 1024 * 1024))).rejects.toEqual(
+      expect.objectContaining<Partial<AudioImportError>>({ code: 'too-large' }),
+    );
+    expect(decodeAudioData).not.toHaveBeenCalled();
+  });
+
+  it('uses a finite metadata duration to reject oversized decoded audio before reading bytes', async () => {
+    class LongMetadataAudio {
+      duration = 13 * 60;
+      preload = '';
+      private readonly listeners = new Map<string, Set<EventListenerOrEventListenerObject>>();
+
+      addEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
+        const listeners = this.listeners.get(type) || new Set<EventListenerOrEventListenerObject>();
+        listeners.add(listener);
+        this.listeners.set(type, listeners);
+      }
+
+      removeEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
+        this.listeners.get(type)?.delete(listener);
+      }
+
+      set src(_value: string) {
+        for (const listener of [...(this.listeners.get('loadedmetadata') || [])]) {
+          if (typeof listener === 'function') listener(new Event('loadedmetadata'));
+          else listener.handleEvent(new Event('loadedmetadata'));
+        }
+      }
+
+      removeAttribute(): void {}
+      load(): void {}
+    }
+
+    vi.stubGlobal('Audio', LongMetadataAudio);
+    vi.stubGlobal('URL', {
+      createObjectURL: vi.fn(() => 'blob:long-track'),
+      revokeObjectURL: vi.fn(),
+    });
+    const engine = new AudioEngine();
+    const harness = engine as unknown as ImportHarness;
+    const decodeAudioData = vi.fn();
+    const file = createImportFile();
+    harness.context = {
+      currentTime: 0,
+      state: 'suspended',
+      decodeAudioData,
+    } as unknown as AudioContext;
+
+    await expect(engine.prepareFile(file)).rejects.toMatchObject({ code: 'too-long' });
+    expect(file.arrayBuffer).not.toHaveBeenCalled();
+    expect(decodeAudioData).not.toHaveBeenCalled();
+  });
+
+  it('still decodes when advisory metadata setup is unavailable', async () => {
+    vi.stubGlobal('Audio', class {
+      constructor() {
+        throw new Error('Metadata API unavailable');
+      }
+    });
+    const engine = new AudioEngine();
+    const harness = engine as unknown as ImportHarness;
+    const decoded = {
+      duration: 30,
+      length: 300,
+      sampleRate: 10,
+      numberOfChannels: 1,
+      getChannelData: vi.fn(() => new Float32Array(300)),
+    } as unknown as AudioBuffer;
+    const profile = {
+      ...createDefaultMusicProfile(),
+      id: 'fallback-track',
+      duration: 30,
+      runDuration: 58,
+    };
+    harness.context = {
+      currentTime: 0,
+      state: 'suspended',
+      decodeAudioData: vi.fn(async () => decoded),
+    } as unknown as AudioContext;
+    harness.analyzeBuffer = vi.fn(() => profile);
+
+    await expect(engine.prepareFile(createImportFile())).resolves.toBe(profile);
+    expect(harness.decodedTrack).toBe(decoded);
   });
 });

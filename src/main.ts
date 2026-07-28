@@ -1,5 +1,5 @@
 import './styles.css';
-import { AudioEngine, type CatalogAudioTrack } from './audio/AudioEngine';
+import { AudioEngine, AudioImportError, type CatalogAudioTrack } from './audio/AudioEngine';
 import { ABILITIES, TRACKS, WEAPONS, type AbilityId, type GarageState, type RunConfig, type RunResult, type RunStats, type TrackId, type UpgradeDefinition, type UpgradeId, type WeaponId } from './core/types';
 import { BallisticGame } from './game/Game';
 import { MusicPreviewController } from './ui/MusicPreview';
@@ -85,8 +85,10 @@ let lastConfig: RunConfig | null = null;
 let toastTimer = 0;
 let musicLoading = false;
 let musicCatalogReady = false;
+let musicCatalogLoadFailed = false;
 let musicCatalogEntries: MusicCatalogEntry[] = [];
 let selectedMusicId = 'synthetic';
+let musicUiEpoch = 0;
 
 const game = new BallisticGame(query<HTMLCanvasElement>('#game-canvas'), audio, {
   onHud: updateHud,
@@ -639,6 +641,7 @@ function setMusicLoading(loading: boolean): void {
   musicPreview.setLoading(loading);
   musicLibrary.setAttribute('aria-busy', String(loading));
   musicCatalog.disabled = loading || !musicCatalogReady;
+  query<HTMLInputElement>('#music-file').disabled = loading;
   query<HTMLElement>('#music-drop').classList.toggle('is-loading', loading);
 }
 
@@ -646,10 +649,52 @@ function setMusicCatalogError(message: string | null, allowRetry = false): void 
   musicLibrary.classList.toggle('has-error', Boolean(message));
   musicCatalogError.hidden = !message;
   musicCatalogError.textContent = message || '';
-  musicCatalogRetry.hidden = !message || !allowRetry;
+  musicCatalogRetry.hidden = !(allowRetry || musicCatalogLoadFailed);
+}
+
+function describeAudioImportError(error: unknown): string {
+  if (!(error instanceof AudioImportError)) {
+    return 'Не удалось прочитать аудиофайл. Попробуйте MP3, WAV, OGG, M4A или FLAC.';
+  }
+  switch (error.code) {
+    case 'empty':
+      return 'Файл пустой или браузер потерял к нему доступ. Выберите файл ещё раз.';
+    case 'too-large':
+      return 'Файл больше 48 МБ. Выберите более компактную версию трека.';
+    case 'too-long':
+      return 'Трек длиннее 12 минут. Выберите более короткую композицию.';
+    case 'read':
+      return 'Браузер потерял доступ к файлу. Выберите его ещё раз.';
+    case 'network':
+      return 'Серверный трек не удалось скачать. Проверьте соединение и попробуйте снова.';
+    case 'decode':
+      return 'Браузер не смог прочитать кодек этого файла. Попробуйте MP3, WAV, OGG, M4A или FLAC.';
+    case 'invalid':
+      return 'В аудиофайле нет корректной звуковой дорожки.';
+  }
+}
+
+function isAudioFileCandidate(file: File): boolean {
+  return file.type.startsWith('audio/') || /\.(?:mp3|wav|ogg|oga|opus|m4a|aac|flac|webm)$/i.test(file.name);
+}
+
+function restoreMusicUiAfterError(message: string): void {
+  renderMusicCatalog();
+  updateMusicUi();
+  refreshCoursePreview();
+  query<HTMLElement>('#music-drop').classList.toggle('has-file', audio.getSourceKind() === 'local');
+  setMusicCatalogError(message);
+  setText(
+    '#music-catalog-status',
+    audio.getSourceKind() === 'synthetic'
+      ? 'SYNTHETIC MODE ONLINE'
+      : `ACTIVE // ${audio.getProfile().title} // предыдущий трек сохранён`,
+  );
 }
 
 async function loadMusicCatalog(): Promise<void> {
+  const uiEpoch = musicUiEpoch;
+  musicCatalogLoadFailed = false;
   musicLibrary.setAttribute('aria-busy', 'true');
   musicCatalog.disabled = true;
   musicCatalogRetry.hidden = true;
@@ -660,23 +705,30 @@ async function loadMusicCatalog(): Promise<void> {
     if (!response.ok) throw new Error(`Manifest request failed: ${response.status}`);
     musicCatalogEntries = parseMusicManifest(await response.json());
     musicCatalogReady = true;
+    musicCatalogLoadFailed = false;
     renderMusicCatalog();
-    setText('#music-catalog-status', `${musicCatalogEntries.length} SERVER TRACK${musicCatalogEntries.length === 1 ? '' : 'S'} ONLINE // трасса выбирается отдельно`);
+    if (uiEpoch === musicUiEpoch) {
+      setText('#music-catalog-status', `${musicCatalogEntries.length} SERVER TRACK${musicCatalogEntries.length === 1 ? '' : 'S'} ONLINE // трасса выбирается отдельно`);
+    }
   } catch (error) {
     console.error(error);
     musicCatalogEntries = [];
     musicCatalogReady = true;
+    musicCatalogLoadFailed = true;
     renderMusicCatalog();
-    setText('#music-catalog-status', 'SYNTHETIC MODE ONLINE');
-    setMusicCatalogError('Каталог музыки недоступен. Можно играть с синтезатором или загрузить свой файл.', true);
+    if (uiEpoch === musicUiEpoch) {
+      setText('#music-catalog-status', 'SYNTHETIC MODE ONLINE');
+      setMusicCatalogError('Каталог музыки недоступен. Можно играть с синтезатором или загрузить свой файл.', true);
+    }
   } finally {
-    musicLibrary.setAttribute('aria-busy', 'false');
-    musicCatalog.disabled = musicLoading;
+    if (uiEpoch === musicUiEpoch && !musicLoading) musicLibrary.setAttribute('aria-busy', 'false');
+    musicCatalog.disabled = musicLoading || !musicCatalogReady;
   }
 }
 
 async function loadCatalogTrack(entry: MusicCatalogEntry): Promise<void> {
   if (musicLoading) return;
+  musicUiEpoch += 1;
   setMusicLoading(true);
   setMusicCatalogError(null);
   setText('#music-title', 'LOADING SERVER TRACK…');
@@ -684,23 +736,27 @@ async function loadCatalogTrack(entry: MusicCatalogEntry): Promise<void> {
   setText('#music-action', 'WAIT');
   setText('#music-catalog-status', `ANALYZING // ${entry.title}`);
   try {
-    await audio.prepareCatalogTrack(entry);
+    let preparationFailed = false;
+    let preparationError: unknown;
+    try {
+      await audio.prepareCatalogTrack(entry);
+    } catch (error) {
+      preparationFailed = true;
+      preparationError = error;
+    }
+    if (preparationFailed) {
+      console.error(preparationError);
+      const message = describeAudioImportError(preparationError);
+      restoreMusicUiAfterError(message);
+      showToast('AUDIO ERROR', message, 'red');
+      return;
+    }
     selectedMusicId = entry.id;
     renderMusicCatalog();
     updateMusicUi();
     refreshCoursePreview();
     query<HTMLElement>('#music-drop').classList.remove('has-file');
     setText('#music-catalog-status', `ACTIVE // ${entry.title} // трасса выбирается отдельно в блоке 01`);
-  } catch (error) {
-    console.error(error);
-    audio.useSynthetic();
-    selectedMusicId = 'synthetic';
-    renderMusicCatalog();
-    updateMusicUi();
-    refreshCoursePreview();
-    setMusicCatalogError('Трек не удалось загрузить или декодировать. Включён синтетический режим.');
-    setText('#music-catalog-status', 'SYNTHETIC MODE ONLINE');
-    showToast('AUDIO ERROR', 'Серверный трек не декодирован — включён синтетический режим', 'red');
   } finally {
     setMusicLoading(false);
   }
@@ -709,6 +765,7 @@ async function loadCatalogTrack(entry: MusicCatalogEntry): Promise<void> {
 const musicFile = query<HTMLInputElement>('#music-file');
 async function loadMusicFile(file: File): Promise<void> {
   if (musicLoading) return;
+  musicUiEpoch += 1;
   const drop = query<HTMLElement>('#music-drop');
   setMusicLoading(true);
   setMusicCatalogError(null);
@@ -716,23 +773,27 @@ async function loadMusicFile(file: File): Promise<void> {
   setText('#music-meta', 'Строим energy map, ищем BPM и транзиенты');
   setText('#music-action', 'WAIT');
   try {
-    await audio.prepareFile(file);
+    let preparationFailed = false;
+    let preparationError: unknown;
+    try {
+      await audio.prepareFile(file);
+    } catch (error) {
+      preparationFailed = true;
+      preparationError = error;
+    }
+    if (preparationFailed) {
+      console.error(preparationError);
+      const message = describeAudioImportError(preparationError);
+      restoreMusicUiAfterError(message);
+      showToast('AUDIO ERROR', message, 'red');
+      return;
+    }
     selectedMusicId = 'local';
     renderMusicCatalog();
     updateMusicUi();
     refreshCoursePreview();
     drop.classList.add('has-file');
     setText('#music-catalog-status', `ACTIVE // ${audio.getProfile().title} // LOCAL FILE`);
-  } catch (error) {
-    console.error(error);
-    audio.useSynthetic();
-    selectedMusicId = 'synthetic';
-    renderMusicCatalog();
-    updateMusicUi();
-    refreshCoursePreview();
-    setMusicCatalogError('Локальный файл не удалось декодировать. Включён синтетический режим.');
-    setText('#music-catalog-status', 'SYNTHETIC MODE ONLINE');
-    showToast('AUDIO ERROR', 'Формат не декодирован — включён синтетический трек', 'red');
   } finally {
     setMusicLoading(false);
   }
@@ -759,12 +820,22 @@ for (const eventName of ['dragleave', 'drop']) {
 }
 musicDrop.addEventListener('drop', (event) => {
   const file = event.dataTransfer?.files?.[0];
-  if (file?.type.startsWith('audio/')) void loadMusicFile(file);
+  if (!file) return;
+  if (musicLoading) {
+    showToast('AUDIO BUSY', 'Дождитесь завершения текущего анализа', 'cyan');
+    return;
+  }
+  if (isAudioFileCandidate(file)) {
+    void loadMusicFile(file);
+    return;
+  }
+  setMusicCatalogError('Это не аудиофайл. Выберите MP3, WAV, OGG, M4A, AAC, FLAC или WebM.');
 });
 
 musicCatalog.addEventListener('change', () => {
   const value = musicCatalog.value;
   if (value === 'synthetic') {
+    musicUiEpoch += 1;
     audio.useSynthetic();
     selectedMusicId = value;
     renderMusicCatalog();

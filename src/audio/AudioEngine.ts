@@ -16,6 +16,19 @@ export interface AudioBands {
 export type AudioSourceKind = 'synthetic' | 'catalog' | 'local';
 export type GameSound = 'fire' | 'impact' | 'pickup' | 'perfect' | 'ability' | 'upgrade' | 'destroy';
 
+export type AudioImportErrorCode = 'empty' | 'too-large' | 'too-long' | 'read' | 'network' | 'decode' | 'invalid';
+
+export class AudioImportError extends Error {
+  constructor(
+    readonly code: AudioImportErrorCode,
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = 'AudioImportError';
+  }
+}
+
 export interface CatalogAudioTrack {
   id: string;
   title: string;
@@ -33,8 +46,9 @@ export interface PreviewPlaybackState {
 type TransportMode = 'idle' | 'preview' | 'game';
 
 const MAX_AUDIO_FILE_BYTES = 48 * 1024 * 1024;
-const MAX_AUDIO_DURATION = 3 * 60;
+const MAX_AUDIO_DURATION = 12 * 60;
 const MAX_PLAYBACK_DURATION = 108;
+const AUDIO_METADATA_TIMEOUT = 3000;
 
 export class AudioEngine {
   private context: AudioContext | null = null;
@@ -347,34 +361,95 @@ export class AudioEngine {
     source.stop(startAt + remaining);
   }
 
-  private async validateAudioBlob(blob: Blob, label: string): Promise<void> {
-    if (blob.size > MAX_AUDIO_FILE_BYTES) {
-      throw new Error(`${label} is larger than 48 MB`);
-    }
-    const duration = await new Promise<number>((resolve, reject) => {
+  private async readMetadataDuration(blob: Blob): Promise<number | null> {
+    if (
+      typeof Audio === 'undefined'
+      || typeof URL === 'undefined'
+      || typeof URL.createObjectURL !== 'function'
+    ) return null;
+
+    return new Promise<number | null>((resolve) => {
       const media = new Audio();
       const url = URL.createObjectURL(blob);
       let settled = false;
       let timeout = 0;
-      const finish = (error?: Error): void => {
+      const finish = (duration: number | null): void => {
         if (settled) return;
         settled = true;
-        const resolvedDuration = media.duration;
-        window.clearTimeout(timeout);
-        media.removeAttribute('src');
-        media.load();
-        URL.revokeObjectURL(url);
-        if (error) reject(error);
-        else resolve(resolvedDuration);
+        globalThis.clearTimeout(timeout);
+        media.removeEventListener('loadedmetadata', readDuration);
+        media.removeEventListener('durationchange', readDuration);
+        media.removeEventListener('error', ignoreMetadataFailure);
+        try {
+          media.removeAttribute('src');
+          media.load();
+        } catch {
+          // Metadata probing is advisory; decoder validation remains authoritative.
+        }
+        try {
+          URL.revokeObjectURL(url);
+        } catch {
+          // A revoked/invalid probe URL must not block importing the audio bytes.
+        }
+        resolve(duration);
       };
-      timeout = window.setTimeout(() => finish(new Error('Audio metadata timed out')), 10000);
+      const readDuration = (): void => {
+        if (Number.isFinite(media.duration) && media.duration > 0) finish(media.duration);
+      };
+      const ignoreMetadataFailure = (): void => finish(null);
+      timeout = globalThis.setTimeout(() => finish(null), AUDIO_METADATA_TIMEOUT);
       media.preload = 'metadata';
-      media.addEventListener('loadedmetadata', () => finish(), { once: true });
-      media.addEventListener('error', () => finish(new Error('Audio metadata could not be read')), { once: true });
-      media.src = url;
+      media.addEventListener('loadedmetadata', readDuration);
+      media.addEventListener('durationchange', readDuration);
+      media.addEventListener('error', ignoreMetadataFailure, { once: true });
+      try {
+        media.src = url;
+      } catch {
+        finish(null);
+      }
     });
-    if (!Number.isFinite(duration) || duration <= 0) throw new Error(`${label} has an invalid duration`);
-    if (duration > MAX_AUDIO_DURATION) throw new Error(`${label} is longer than 3 minutes`);
+  }
+
+  private async validateAudioBlob(blob: Blob, label: string): Promise<void> {
+    if (blob.size <= 0) {
+      throw new AudioImportError('empty', `${label} is empty`);
+    }
+    if (blob.size > MAX_AUDIO_FILE_BYTES) {
+      throw new AudioImportError('too-large', `${label} is larger than 48 MB`);
+    }
+    let metadataDuration: number | null = null;
+    try {
+      metadataDuration = await this.readMetadataDuration(blob);
+    } catch {
+      // Some browsers fail metadata probing for files decodeAudioData can read.
+      // Only a known finite duration is allowed to reject before decoding.
+    }
+    if (metadataDuration !== null && metadataDuration > MAX_AUDIO_DURATION) {
+      throw new AudioImportError('too-long', `${label} is longer than 12 minutes`);
+    }
+  }
+
+  private async decodeAudioBlob(context: AudioContext, blob: Blob, label: string): Promise<AudioBuffer> {
+    await this.validateAudioBlob(blob, label);
+    let bytes: ArrayBuffer;
+    try {
+      bytes = await blob.arrayBuffer();
+    } catch (error) {
+      throw new AudioImportError('read', `${label} could not be read`, { cause: error });
+    }
+    let buffer: AudioBuffer;
+    try {
+      buffer = await context.decodeAudioData(bytes);
+    } catch (error) {
+      throw new AudioImportError('decode', `${label} could not be decoded`, { cause: error });
+    }
+    if (!Number.isFinite(buffer.duration) || buffer.duration <= 0 || buffer.length <= 0) {
+      throw new AudioImportError('invalid', `${label} has an invalid duration`);
+    }
+    if (buffer.duration > MAX_AUDIO_DURATION) {
+      throw new AudioImportError('too-long', `${label} is longer than 12 minutes`);
+    }
+    return buffer;
   }
 
   private trimPlaybackBuffer(context: AudioContext, buffer: AudioBuffer): AudioBuffer {
@@ -389,14 +464,10 @@ export class AudioEngine {
 
   async prepareFile(file: File): Promise<MusicProfile> {
     const context = this.ensureContext();
-    this.stop();
-    this.decodedTrack = null;
-    await this.validateAudioBlob(file, file.name);
-    const bytes = await file.arrayBuffer();
-    const buffer = await context.decodeAudioData(bytes);
-    if (buffer.duration > MAX_AUDIO_DURATION) throw new Error(`${file.name} is longer than 3 minutes`);
+    const buffer = await this.decodeAudioBlob(context, file, file.name);
     const profile = this.analyzeBuffer(buffer, `${file.name}:${file.size}:${file.lastModified}`, file.name);
     const playbackBuffer = this.trimPlaybackBuffer(context, buffer);
+    this.stop();
     this.profile = profile;
     this.sourceKind = 'local';
     this.usingFile = true;
@@ -406,21 +477,29 @@ export class AudioEngine {
 
   async prepareCatalogTrack(track: CatalogAudioTrack): Promise<MusicProfile> {
     const context = this.ensureContext();
-    this.stop();
-    this.decodedTrack = null;
     if (typeof track.bytes === 'number' && track.bytes > MAX_AUDIO_FILE_BYTES) {
-      throw new Error(`${track.title} is larger than 48 MB`);
+      throw new AudioImportError('too-large', `${track.title} is larger than 48 MB`);
     }
-    const response = await fetch(track.file, { cache: 'force-cache' });
-    if (!response.ok) throw new Error(`Music request failed: ${response.status} ${response.statusText}`);
-    const blob = await response.blob();
-    await this.validateAudioBlob(blob, track.title);
+    let response: Response;
+    try {
+      response = await fetch(track.file, { cache: 'force-cache' });
+    } catch (error) {
+      throw new AudioImportError('network', `${track.title} could not be downloaded`, { cause: error });
+    }
+    if (!response.ok) {
+      throw new AudioImportError('network', `Music request failed: ${response.status} ${response.statusText}`);
+    }
+    let blob: Blob;
+    try {
+      blob = await response.blob();
+    } catch (error) {
+      throw new AudioImportError('network', `${track.title} download was interrupted`, { cause: error });
+    }
     const byteLength = blob.size;
-    const bytes = await blob.arrayBuffer();
-    const buffer = await context.decodeAudioData(bytes);
-    if (buffer.duration > MAX_AUDIO_DURATION) throw new Error(`${track.title} is longer than 3 minutes`);
+    const buffer = await this.decodeAudioBlob(context, blob, track.title);
     const profile = this.analyzeBuffer(buffer, `catalog:${track.id}:${byteLength}`, track.title);
     const playbackBuffer = this.trimPlaybackBuffer(context, buffer);
+    this.stop();
     this.profile = profile;
     this.sourceKind = 'catalog';
     this.usingFile = true;
