@@ -1200,8 +1200,11 @@ label:focus-within {
 
 .music-preview__marker {
   --marker-color: var(--red);
+  --marker-lane-top: 29px;
+  --marker-opacity: 0.72;
+  --marker-scale: 1;
   position: absolute;
-  top: 3px;
+  top: var(--marker-lane-top);
   left: clamp(13px, var(--marker-position, 50%), calc(100% - 13px));
   width: 26px;
   height: 28px;
@@ -1211,8 +1214,17 @@ label:focus-within {
   background: transparent;
   color: var(--marker-color);
   cursor: pointer;
+  opacity: var(--marker-opacity);
   pointer-events: auto;
+  transition: opacity 120ms ease;
 }
+
+.music-preview__marker[data-lane="kick"] { --marker-lane-top: 1px; }
+.music-preview__marker[data-lane="hit"] { --marker-lane-top: 15px; }
+.music-preview__marker[data-lane="beat"] { --marker-lane-top: 29px; }
+.music-preview__marker[data-lane="shift-hit"] { --marker-lane-top: 43px; }
+.music-preview__marker[data-lane="reward"] { --marker-lane-top: 57px; }
+.music-preview__marker[data-lane="transition"] { --marker-lane-top: 76px; }
 
 .music-preview__marker::before {
   content: "";
@@ -1221,7 +1233,7 @@ label:focus-within {
   left: 50%;
   width: 7px;
   height: 13px;
-  transform: translateX(-50%);
+  transform: translateX(-50%) scale(var(--marker-scale));
   border: 1px solid currentColor;
   background: color-mix(in srgb, currentColor 30%, rgba(3, 10, 18, 0.88));
   box-shadow: 0 0 9px color-mix(in srgb, currentColor 58%, transparent);
@@ -1236,7 +1248,7 @@ label:focus-within {
 .music-preview__marker[data-kind="cross"]::before {
   width: 11px;
   height: 11px;
-  transform: translateX(-50%) rotate(45deg);
+  transform: translateX(-50%) rotate(45deg) scale(var(--marker-scale));
   border-color: var(--violet);
   background: transparent;
 }
@@ -1244,7 +1256,7 @@ label:focus-within {
 .music-preview__marker[data-kind="drone"]::before {
   width: 9px;
   height: 9px;
-  transform: translateX(-50%) rotate(45deg);
+  transform: translateX(-50%) rotate(45deg) scale(var(--marker-scale));
   border-color: var(--gold);
   background: rgba(255, 212, 94, 0.28);
 }
@@ -1272,7 +1284,6 @@ label:focus-within {
 
 .music-preview__marker[data-kind="transition"] {
   --marker-color: var(--cyan);
-  top: 76px;
 }
 
 .music-preview__marker[data-kind="transition"]::before {
@@ -1282,6 +1293,7 @@ label:focus-within {
   border-bottom: 8px solid currentColor;
   background: transparent;
   box-shadow: none;
+  transform: translateX(-50%) scale(var(--marker-scale));
 }
 
 .music-preview__marker:focus-visible {
@@ -1292,6 +1304,12 @@ label:focus-within {
 .music-preview__marker:hover::before,
 .music-preview__marker.is-selected::before {
   filter: brightness(1.6) drop-shadow(0 0 5px currentColor);
+}
+
+.music-preview__marker:hover,
+.music-preview__marker.is-selected,
+.music-preview__marker:focus-visible {
+  opacity: 1;
 }
 
 .music-preview__marker.is-selected {
@@ -2628,7 +2646,12 @@ kbd {
     height: 96px;
   }
 
-  .music-preview__marker[data-kind="transition"] { top: 67px; }
+  .music-preview__marker[data-lane="kick"] { --marker-lane-top: 0; }
+  .music-preview__marker[data-lane="hit"] { --marker-lane-top: 13px; }
+  .music-preview__marker[data-lane="beat"] { --marker-lane-top: 26px; }
+  .music-preview__marker[data-lane="shift-hit"] { --marker-lane-top: 39px; }
+  .music-preview__marker[data-lane="reward"] { --marker-lane-top: 52px; }
+  .music-preview__marker[data-lane="transition"] { --marker-lane-top: 67px; }
 
   .music-preview__detail {
     white-space: normal;

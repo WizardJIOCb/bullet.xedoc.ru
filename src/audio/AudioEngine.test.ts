@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { MusicProfile, MusicTransition, RhythmBeat } from '../core/types';
+import { TRACKS, type MusicProfile, type MusicTransition, type RhythmBeat } from '../core/types';
 import { AudioEngine, AudioImportError } from './AudioEngine';
-import { createDefaultMusicProfile } from '../game/track';
+import { createDefaultMusicProfile, generateTrack } from '../game/track';
 
 interface RhythmMapBuilder {
   buildRhythmMap(
@@ -126,6 +126,14 @@ interface ImportHarness {
   analyzeBuffer: (buffer: AudioBuffer, key: string, title: string) => MusicProfile;
 }
 
+interface AnalysisHarness {
+  analyzeBuffer(buffer: AudioBuffer, key: string, title: string): MusicProfile;
+}
+
+interface TempoEstimatorHarness {
+  estimateTempo(energy: number[], bass: number[], frameDuration: number): { bpm: number; beatOffset: number };
+}
+
 function createImportFile(size = 9_305_968): File {
   return {
     name: 'long-track.mp3',
@@ -134,6 +142,85 @@ function createImportFile(size = 9_305_968): File {
     lastModified: 1234,
     arrayBuffer: vi.fn(async () => new ArrayBuffer(16)),
   } as unknown as File;
+}
+
+function createStereoSideBuffer(sidePeriod: number, swapChannels = false): AudioBuffer {
+  const sampleRate = 8_000;
+  const duration = 18;
+  const length = sampleRate * duration;
+  const left = new Float32Array(length);
+  const right = new Float32Array(length);
+  for (let index = 0; index < length; index += 1) {
+    const center = index % 4_000 < 80
+      ? 0.1875
+      : index % 160 < 80
+        ? 0.0625
+        : -0.0625;
+    const side = index % sidePeriod < sidePeriod / 2 ? 0.25 : -0.25;
+    left[index] = center + side;
+    right[index] = center - side;
+  }
+  const channels = swapChannels ? [right, left] : [left, right];
+  return {
+    duration,
+    length,
+    sampleRate,
+    numberOfChannels: channels.length,
+    getChannelData: (channel: number) => channels[channel],
+  } as unknown as AudioBuffer;
+}
+
+function courseEventSignature(profile: MusicProfile): Array<[string, number, number, number]> {
+  return generateTrack(TRACKS.aurora, profile, 12_345).events.map((event) => [
+    event.kind,
+    Number(event.musicTime.toFixed(4)),
+    Number(event.angle.toFixed(5)),
+    event.patternId,
+  ]);
+}
+
+function createTempoFixture(
+  bpm: number,
+  beatOffset: number,
+  syncopated = false,
+): { energy: number[]; bass: number[]; frameDuration: number } {
+  const frameDuration = 0.02;
+  const duration = 48;
+  const frameCount = Math.round(duration / frameDuration);
+  const energy = new Array<number>(frameCount);
+  const bass = new Array<number>(frameCount);
+  let randomState = 123_456;
+  const random = (): number => {
+    randomState = (Math.imul(randomState, 1_664_525) + 1_013_904_223) >>> 0;
+    return randomState / 4_294_967_296;
+  };
+  for (let index = 0; index < frameCount; index += 1) {
+    const noise = syncopated ? (random() - 0.5) * 0.035 : 0;
+    energy[index] = 0.08 + Math.sin(index * 0.017) * 0.006 + noise;
+    bass[index] = 0.05 + Math.sin(index * 0.011) * 0.004 + noise * 0.4;
+  }
+  const addPulse = (time: number, energyAmount: number, bassAmount: number): void => {
+    const index = Math.round(time / frameDuration);
+    if (index < 1 || index >= frameCount - 2) return;
+    energy[index] += energyAmount;
+    bass[index] += bassAmount;
+    energy[index + 1] += energyAmount * 0.25;
+    bass[index + 1] += bassAmount * 0.2;
+  };
+  const interval = 60 / bpm;
+  for (let time = beatOffset; time < duration; time += interval) {
+    addPulse(time, 0.8, 0.82);
+    if (syncopated) {
+      addPulse(time + interval * 0.5, 0.36, 0.17);
+      addPulse(time + interval * 0.75, 0.18, 0.06);
+    }
+  }
+  if (syncopated) {
+    for (let time = 0.37; time < duration; time += 0.79 + random() * 0.18) {
+      addPulse(time, 0.12, 0.08);
+    }
+  }
+  return { energy, bass, frameDuration };
 }
 
 afterEach(() => {
@@ -161,7 +248,67 @@ function createPreviewHarness(bufferDuration = 30, runDuration = 58): {
   return { engine, context };
 }
 
+describe('decoded audio profile identity', () => {
+  it('keeps different stereo-side content in the profile seed and generated course', () => {
+    const engine = new AudioEngine() as unknown as AnalysisHarness;
+    const lowSide = engine.analyzeBuffer(createStereoSideBuffer(18), 'stereo-track', 'stereo-track');
+    const highSide = engine.analyzeBuffer(createStereoSideBuffer(5), 'stereo-track', 'stereo-track');
+
+    expect(lowSide.seed).not.toBe(highSide.seed);
+    expect({ bass: lowSide.bass, mids: lowSide.mids, highs: lowSide.highs }).not.toEqual({
+      bass: highSide.bass,
+      mids: highSide.mids,
+      highs: highSide.highs,
+    });
+    expect(courseEventSignature(lowSide)).not.toEqual(courseEventSignature(highSide));
+  });
+
+  it('keeps the profile and course invariant when stereo channels are swapped', () => {
+    const engine = new AudioEngine() as unknown as AnalysisHarness;
+    const original = engine.analyzeBuffer(createStereoSideBuffer(18), 'stereo-track', 'stereo-track');
+    const swapped = engine.analyzeBuffer(createStereoSideBuffer(18, true), 'stereo-track', 'stereo-track');
+
+    expect(swapped).toEqual(original);
+    expect(courseEventSignature(swapped)).toEqual(courseEventSignature(original));
+  });
+});
+
 describe('decoded audio rhythm map', () => {
+  it.each([
+    { bpm: 100, beatOffset: 0.17 },
+    { bpm: 128, beatOffset: 0.11 },
+    { bpm: 150, beatOffset: 0.08 },
+  ])('estimates a coherent $bpm BPM click grid', ({ bpm, beatOffset }) => {
+    const engine = new AudioEngine() as unknown as TempoEstimatorHarness;
+    const fixture = createTempoFixture(bpm, beatOffset);
+    const tempo = engine.estimateTempo(fixture.energy, fixture.bass, fixture.frameDuration);
+    const interval = 60 / bpm;
+    const offsetDelta = Math.abs(tempo.beatOffset - beatOffset);
+
+    expect(tempo.bpm).toBe(bpm);
+    expect(Math.min(offsetDelta, interval - offsetDelta)).toBeLessThanOrEqual(fixture.frameDuration);
+  });
+
+  it('keeps a noisy syncopated 90 BPM pulse out of the 180 BPM double-time octave', () => {
+    const engine = new AudioEngine() as unknown as TempoEstimatorHarness;
+    const fixture = createTempoFixture(90, 0.14, true);
+    const tempo = engine.estimateTempo(fixture.energy, fixture.bass, fixture.frameDuration);
+
+    expect(tempo.bpm).toBe(90);
+    expect(tempo.beatOffset).toBeCloseTo(0.14, 1);
+  });
+
+  it('uses a deterministic conservative fallback for rhythmically flat audio', () => {
+    const engine = new AudioEngine() as unknown as TempoEstimatorHarness;
+    const tempo = engine.estimateTempo(
+      new Array<number>(2_000).fill(0.2),
+      new Array<number>(2_000).fill(0.1),
+      0.02,
+    );
+
+    expect(tempo).toEqual({ bpm: 140, beatOffset: 0 });
+  });
+
   it('moves the BPM grid toward nearby real onset peaks', () => {
     const frameDuration = 0.05;
     const frameCount = 81;
@@ -208,6 +355,50 @@ describe('decoded audio rhythm map', () => {
     expect(kick).toMatchObject({ cue: 'kick' });
     expect(transient).toMatchObject({ cue: 'transient' });
     expect(map.onsets.some((value) => value > 0.5)).toBe(true);
+  });
+
+  it('keeps structural transitions sparse with duration-scaled budgets', () => {
+    const engine = new AudioEngine();
+    const buildRhythmMap = (engine as unknown as RhythmMapBuilder).buildRhythmMap.bind(engine);
+    const buildDynamicMap = (duration: number) => {
+      const frameDuration = 0.1;
+      const frameCount = Math.round(duration / frameDuration);
+      const energy: number[] = [];
+      const bass: number[] = [];
+      const mids: number[] = [];
+      const highs: number[] = [];
+      for (let index = 0; index < frameCount; index += 1) {
+        const segment = Math.floor((index * frameDuration) / 6);
+        const intense = segment % 2 === 1;
+        energy.push(intense ? 0.92 : 0.18);
+        bass.push(intense ? 0.78 : 0.12);
+        mids.push(intense ? 0.55 : 0.16);
+        highs.push(segment % 3 === 2 ? 0.72 : 0.14);
+      }
+      return buildRhythmMap(
+        energy,
+        bass,
+        mids,
+        highs,
+        duration,
+        duration,
+        frameDuration,
+        120,
+        0,
+      );
+    };
+
+    const shortMap = buildDynamicMap(60);
+    const longMap = buildDynamicMap(108);
+    expect(shortMap.transitions.length).toBeGreaterThan(0);
+    expect(shortMap.transitions.length).toBeLessThanOrEqual(5);
+    expect(longMap.transitions.length).toBeGreaterThan(shortMap.transitions.length);
+    expect(longMap.transitions.length).toBeLessThanOrEqual(9);
+    for (const transitions of [shortMap.transitions, longMap.transitions]) {
+      for (let index = 1; index < transitions.length; index += 1) {
+        expect(transitions[index].time - transitions[index - 1].time).toBeGreaterThanOrEqual(5.5);
+      }
+    }
   });
 
   it('scores against the explicit onset map before falling back to the average BPM grid', () => {

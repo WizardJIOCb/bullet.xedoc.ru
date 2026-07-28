@@ -865,11 +865,11 @@ export class AudioEngine {
     const bassRaw: number[] = [];
     const midsRaw: number[] = [];
     const highsRaw: number[] = [];
-    let lowState = 0;
-    let midState = 0;
     const lowAlpha = 1 - Math.exp((-2 * Math.PI * 180) / sampleRate);
     const midAlpha = 1 - Math.exp((-2 * Math.PI * 2600) / sampleRate);
     const channels = Array.from({ length: buffer.numberOfChannels }, (_, index) => buffer.getChannelData(index));
+    const lowStates = new Float64Array(channels.length);
+    const midStates = new Float64Array(channels.length);
 
     for (let frame = 0; frame < frameCount; frame += 1) {
       const start = frame * hop;
@@ -880,18 +880,27 @@ export class AudioEngine {
       let highEnergy = 0;
       let count = 0;
       for (let index = start; index < end; index += stride) {
-        let sample = 0;
-        for (const channel of channels) sample += channel[index] || 0;
-        sample /= channels.length;
-        lowState += lowAlpha * (sample - lowState);
-        midState += midAlpha * (sample - midState);
-        const low = lowState;
-        const mid = midState - lowState;
-        const high = sample - midState;
-        totalEnergy += sample * sample;
-        lowEnergy += low * low;
-        midEnergy += mid * mid;
-        highEnergy += high * high;
+        let sampleEnergy = 0;
+        let sampleLowEnergy = 0;
+        let sampleMidEnergy = 0;
+        let sampleHighEnergy = 0;
+        for (let channelIndex = 0; channelIndex < channels.length; channelIndex += 1) {
+          const sample = channels[channelIndex][index] || 0;
+          lowStates[channelIndex] += lowAlpha * (sample - lowStates[channelIndex]);
+          midStates[channelIndex] += midAlpha * (sample - midStates[channelIndex]);
+          const low = lowStates[channelIndex];
+          const mid = midStates[channelIndex] - lowStates[channelIndex];
+          const high = sample - midStates[channelIndex];
+          sampleEnergy += sample * sample;
+          sampleLowEnergy += low * low;
+          sampleMidEnergy += mid * mid;
+          sampleHighEnergy += high * high;
+        }
+        const channelScale = 1 / Math.max(1, channels.length);
+        totalEnergy += sampleEnergy * channelScale;
+        lowEnergy += sampleLowEnergy * channelScale;
+        midEnergy += sampleMidEnergy * channelScale;
+        highEnergy += sampleHighEnergy * channelScale;
         count += 1;
       }
       energyRaw.push(Math.sqrt(totalEnergy / Math.max(1, count)));
@@ -924,12 +933,42 @@ export class AudioEngine {
       tempo.bpm,
       tempo.beatOffset,
     );
+    const onsets = poolMusicCurve(rhythm.onsets, bins, 'peak');
+    const kicks = poolMusicCurve(rhythm.kicks, bins, 'peak');
+    const transients = poolMusicCurve(rhythm.transients, bins, 'peak');
+    const fingerprintCurve = (label: string, values: number[]): string => `${label}:${values
+      .filter((_, index) => index % 4 === 0)
+      .map((value) => Math.round(value * 127))
+      .join(',')}`;
+    const cueCode = (beat: RhythmBeat): string => beat.cue === 'kick'
+      ? 'k'
+      : beat.cue === 'transient'
+        ? 'h'
+        : beat.cue === 'transition'
+          ? 'x'
+          : 'b';
     const contentFingerprint = [
-      tempo.bpm,
-      Math.round(buffer.duration * 10),
-      ...energy.filter((_, index) => index % 8 === 0).map((value) => Math.round(value * 31)),
-      ...bass.filter((_, index) => index % 8 === 0).map((value) => Math.round(value * 31)),
-      ...highs.filter((_, index) => index % 8 === 0).map((value) => Math.round(value * 31)),
+      `bpm:${tempo.bpm}`,
+      `offset:${Math.round(tempo.beatOffset * 1000)}`,
+      `course:${Math.round(runDuration * 1000)}`,
+      fingerprintCurve('energy', energy),
+      fingerprintCurve('bass', bass),
+      fingerprintCurve('mids', mids),
+      fingerprintCurve('highs', highs),
+      fingerprintCurve('onsets', onsets),
+      fingerprintCurve('kicks', kicks),
+      fingerprintCurve('hits', transients),
+      `beats:${rhythm.beats.map((beat) => [
+        Math.round(beat.time * 100),
+        cueCode(beat),
+        Math.round(beat.strength * 31),
+        Math.round((beat.kick ?? 0) * 15),
+        Math.round((beat.transient ?? 0) * 15),
+        beat.gridBeat === false ? 'o' : 'g',
+      ].join('')).join(',')}`,
+      `transitions:${rhythm.transitions.map((transition) => `${
+        Math.round(transition.time * 100)
+      }${transition.kind[0]}${Math.round(transition.strength * 31)}`).join(',')}`,
     ].join(':');
     return {
       id: key,
@@ -942,9 +981,9 @@ export class AudioEngine {
       bass,
       mids,
       highs,
-      onsets: poolMusicCurve(rhythm.onsets, bins, 'peak'),
-      kicks: poolMusicCurve(rhythm.kicks, bins, 'peak'),
-      transients: poolMusicCurve(rhythm.transients, bins, 'peak'),
+      onsets,
+      kicks,
+      transients,
       beats: rhythm.beats,
       transitions: rhythm.transitions,
       seed: hashString(contentFingerprint),
@@ -1082,7 +1121,7 @@ export class AudioEngine {
     }
     beats.sort((left, right) => left.time - right.time || right.strength - left.strength);
 
-    const sourceCandidates: MusicTransition[] = [];
+    const sourceCandidates: Array<MusicTransition & { score: number }> = [];
     const average = (values: number[], start: number, end: number): number => {
       let sum = 0;
       let count = 0;
@@ -1132,70 +1171,178 @@ export class AudioEngine {
         time: Number(frameTime(peakIndex).toFixed(4)),
         strength: clamp(strength, 0, 1),
         kind,
+        score: strength,
       });
     }
-    sourceCandidates.sort((a, b) => b.strength - a.strength);
+    const eligibleCandidates = sourceCandidates.filter((candidate) => (
+      candidate.time >= 4 && candidate.time <= sourceDuration - 3
+    ));
+    const candidateScores = eligibleCandidates.map((candidate) => candidate.score).sort((a, b) => a - b);
+    const scoreMean = candidateScores.reduce((sum, score) => sum + score, 0) / Math.max(1, candidateScores.length);
+    const scoreVariance = candidateScores.reduce(
+      (sum, score) => sum + (score - scoreMean) ** 2,
+      0,
+    ) / Math.max(1, candidateScores.length);
+    const scoreDeviation = Math.sqrt(scoreVariance);
+    const scorePercentile = candidateScores[Math.floor(Math.max(0, candidateScores.length - 1) * 0.62)] ?? 1;
+    const strongestScore = candidateScores[candidateScores.length - 1] ?? 1;
+    const adaptiveScoreCutoff = Math.min(
+      strongestScore,
+      Math.max(0.46, scorePercentile, scoreMean + scoreDeviation * 0.18),
+    );
+    eligibleCandidates.sort((a, b) => b.score - a.score || a.time - b.time);
+    const transitionBudget = Math.round(clamp(runDuration / 12, 4, 9));
+    const minimumTransitionGap = 5.5;
     const selected: MusicTransition[] = [];
-    for (const candidate of sourceCandidates) {
-      if (candidate.time < 4 || candidate.time > sourceDuration - 3) continue;
-      if (selected.some((item) => Math.abs(item.time - candidate.time) < 2.4)) continue;
-      selected.push(candidate);
-      if (selected.length >= 16) break;
+    for (const candidate of eligibleCandidates) {
+      if (candidate.score + Number.EPSILON < adaptiveScoreCutoff) continue;
+      if (selected.some((item) => Math.abs(item.time - candidate.time) < minimumTransitionGap)) continue;
+      selected.push({ time: candidate.time, strength: candidate.strength, kind: candidate.kind });
+      if (selected.length >= transitionBudget) break;
     }
     const transitions: MusicTransition[] = [];
+    let transitionBudgetReached = false;
     for (let loopStart = 0; loopStart < runDuration; loopStart += Math.max(sourceDuration, 0.1)) {
       for (const transition of selected) {
         const time = transition.time + loopStart;
         if (time < runDuration) transitions.push({ ...transition, time });
+        if (transitions.length >= transitionBudget) {
+          transitionBudgetReached = true;
+          break;
+        }
       }
+      if (transitionBudgetReached) break;
     }
     transitions.sort((a, b) => a.time - b.time);
     return { beats, transitions, onsets, kicks, transients };
   }
 
   private estimateTempo(energy: number[], bass: number[], frameDuration: number): { bpm: number; beatOffset: number } {
+    const safeFrameDuration = Math.max(0.001, frameDuration);
     const onset = energy.map((value, index) => {
       if (index === 0) return 0;
       return Math.max(0, value - energy[index - 1]) * 0.4 + Math.max(0, bass[index] - bass[index - 1]) * 0.6;
     });
     const mean = onset.reduce((sum, value) => sum + value, 0) / Math.max(1, onset.length);
     const variance = onset.reduce((sum, value) => sum + (value - mean) ** 2, 0) / Math.max(1, onset.length);
-    const threshold = mean + Math.sqrt(variance) * 1.05;
-    const peaks: Array<{ time: number; strength: number }> = [];
+    const deviation = Math.sqrt(variance);
+    const noiseFloor = mean + deviation * 0.35;
+    const sparsePeaks = new Array<number>(onset.length).fill(0);
+    let strongestPeak = 0;
+    let strongestPeakIndex = -1;
     for (let index = 1; index < onset.length - 1; index += 1) {
-      if (onset[index] > threshold && onset[index] >= onset[index - 1] && onset[index] > onset[index + 1]) {
-        peaks.push({ time: index * frameDuration, strength: onset[index] });
+      if (onset[index] < onset[index - 1] || onset[index] <= onset[index + 1]) continue;
+      const strength = Math.max(0, onset[index] - noiseFloor);
+      sparsePeaks[index] = strength;
+      if (strength > strongestPeak) {
+        strongestPeak = strength;
+        strongestPeakIndex = index;
       }
     }
-    const bpms: number[] = [];
-    for (let index = 1; index < peaks.length; index += 1) {
-      const delta = peaks[index].time - peaks[index - 1].time;
-      if (delta < 0.22 || delta > 1.2) continue;
-      let candidate = 60 / delta;
-      while (candidate < 92) candidate *= 2;
-      while (candidate > 178) candidate /= 2;
-      bpms.push(candidate);
+    const fallbackTempo = (): { bpm: number; beatOffset: number } => {
+      const bpm = 140;
+      const interval = 60 / bpm;
+      const strongestTime = strongestPeakIndex >= 0 ? strongestPeakIndex * safeFrameDuration : 0;
+      return { bpm, beatOffset: ((strongestTime % interval) + interval) % interval };
+    };
+    if (strongestPeak <= 0.000001) return fallbackTempo();
+
+    const envelope = sparsePeaks.map((value) => clamp(value / strongestPeak, 0, 1));
+    const peakCount = envelope.reduce((count, value) => count + (value >= 0.08 ? 1 : 0), 0);
+    const totalPeakPower = envelope.reduce((sum, value) => sum + value * value, 0);
+    if (peakCount < 5 || totalPeakPower < 0.12) return fallbackTempo();
+
+    const sampleEnvelope = (position: number): number => {
+      if (position < 0 || position >= envelope.length - 1) return 0;
+      const left = Math.floor(position);
+      const mix = position - left;
+      return envelope[left] + (envelope[left + 1] - envelope[left]) * mix;
+    };
+    const autocorrelation = (lag: number): number => {
+      let correlation = 0;
+      let presentPower = 0;
+      let delayedPower = 0;
+      for (let index = Math.ceil(lag); index < envelope.length; index += 1) {
+        const present = envelope[index];
+        const delayed = sampleEnvelope(index - lag);
+        correlation += present * delayed;
+        presentPower += present * present;
+        delayedPower += delayed * delayed;
+      }
+      return correlation / Math.max(0.000000001, Math.sqrt(presentPower * delayedPower));
+    };
+    const pulseAt = (position: number): number => {
+      const radius = Math.max(1, Math.round(0.045 / safeFrameDuration));
+      let pulse = 0;
+      for (let offset = -radius; offset <= radius; offset += 1) {
+        const index = Math.round(position) + offset;
+        if (index < 0 || index >= envelope.length) continue;
+        const distance = Math.abs(index - position);
+        const proximity = clamp(1 - distance / (radius + 1), 0, 1);
+        pulse = Math.max(pulse, envelope[index] * proximity);
+      }
+      return pulse;
+    };
+
+    interface TempoCandidate {
+      bpm: number;
+      score: number;
+      phaseCoherence: number;
+      beatOffset: number;
     }
-    if (bpms.length < 4) {
-      const fallbackBpm = 140;
-      const fallbackInterval = 60 / fallbackBpm;
-      return { bpm: fallbackBpm, beatOffset: peaks.length ? peaks[0].time % fallbackInterval : 0 };
+    const candidates: TempoCandidate[] = [];
+    for (let bpm = 84; bpm <= 184; bpm += 1) {
+      const lag = 60 / bpm / safeFrameDuration;
+      const periodicity = autocorrelation(lag) * 0.62
+        + autocorrelation(lag * 2) * 0.26
+        + autocorrelation(lag * 3) * 0.12;
+      let bestPhaseCoherence = 0;
+      let bestPhase = 0;
+      const phaseBins = 64;
+      for (let phaseBin = 0; phaseBin < phaseBins; phaseBin += 1) {
+        const phase = (phaseBin / phaseBins) * lag;
+        let pulseSum = 0;
+        let pulseCount = 0;
+        for (let position = phase; position < envelope.length; position += lag) {
+          pulseSum += pulseAt(position);
+          pulseCount += 1;
+        }
+        const coherence = pulseSum / Math.max(0.000000001, Math.sqrt(pulseCount * totalPeakPower));
+        if (coherence > bestPhaseCoherence) {
+          bestPhaseCoherence = coherence;
+          bestPhase = phase;
+        }
+      }
+      candidates.push({
+        bpm,
+        score: periodicity * 0.58 + bestPhaseCoherence * 0.42,
+        phaseCoherence: bestPhaseCoherence,
+        beatOffset: bestPhase * safeFrameDuration,
+      });
     }
-    bpms.sort((a, b) => a - b);
-    const bpm = Math.round(clamp(bpms[Math.floor(bpms.length / 2)], 92, 178));
-    const interval = 60 / bpm;
-    const histogram = new Array<number>(48).fill(0);
-    for (const peak of peaks) {
-      const phase = ((peak.time % interval) + interval) % interval;
-      const bin = Math.min(histogram.length - 1, Math.floor((phase / interval) * histogram.length));
-      histogram[bin] += peak.strength;
+    candidates.sort((left, right) => right.score - left.score || left.bpm - right.bpm);
+    let best = candidates[0];
+
+    // Only the lowest octave overlaps our candidate range. Prefer its slower
+    // interpretation when it explains almost as much energy as an alternating
+    // double-time pulse; a uniform high-tempo click still wins comfortably.
+    if (best.bpm >= 168) {
+      const lowerCandidates = candidates
+        .filter((candidate) => Math.abs(candidate.bpm - best.bpm / 2) <= 0.75)
+        .sort((left, right) => right.score - left.score || left.bpm - right.bpm);
+      const lower = lowerCandidates[0];
+      if (
+        lower
+        && lower.score >= best.score * 0.91
+        && lower.phaseCoherence >= best.phaseCoherence * 0.82
+      ) best = lower;
     }
-    let strongestBin = 0;
-    for (let index = 1; index < histogram.length; index += 1) {
-      if (histogram[index] > histogram[strongestBin]) strongestBin = index;
-    }
-    const beatOffset = ((strongestBin + 0.5) / histogram.length) * interval;
-    return { bpm, beatOffset };
+    if (!best || best.score < 0.28 || best.phaseCoherence < 0.2) return fallbackTempo();
+    const interval = 60 / best.bpm;
+    return {
+      bpm: best.bpm,
+      beatOffset: ((best.beatOffset % interval) + interval) % interval,
+    };
   }
 
   async dispose(): Promise<void> {

@@ -521,11 +521,14 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
 
   const startIndex = Math.max(0, beats.findIndex((beat) => beat.time >= safeStartTime));
   let barOrdinal = 0;
-  let fallbackCycleIndex = 0;
+  let fallbackCycleIndex = Math.floor(
+    patternRandom(beats[startIndex]?.beatIndex ?? 0, 0x4f13)() * 6,
+  );
   let lastPatternStartTime = Number.NEGATIVE_INFINITY;
   let lastPatternEndTime = Number.NEGATIVE_INFINITY;
+  let lastPatternGap = 0;
   const hazardCadence = Math.max(1, Math.round(1.35 / theme.hazardRate));
-  const minimumPatternGap = clamp(1.05 / theme.hazardRate, 0.78, 1.25);
+  const basePatternGap = clamp(1.05 / theme.hazardRate, 0.78, 1.25);
   const patternRecovery = Math.max(0.22, beatInterval * 0.55);
   const patternCycle = ['gate', 'halfwall', 'blade', 'pickup', 'cross', 'drone'] as const;
   const accentPatternCycle = ['gate', 'blade', 'halfwall', 'cross', 'drone'] as const;
@@ -538,15 +541,51 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
     beat.transient ?? 0,
     beat.strength * ((beat.cue ?? 'beat') === 'beat' ? 0.78 : 1),
   );
-  const courseStrengths = beats
-    .slice(startIndex)
-    .filter((beat) => beat.time <= lastEventTime)
-    .map(accentScore)
-    .sort((a, b) => a - b);
-  const accentThreshold = Math.max(
-    0.54,
-    courseStrengths[Math.floor(Math.max(0, courseStrengths.length - 1) * 0.7)] ?? 0.68,
+  const localMusic = beats.map((beat) => {
+    const energy = profileValueAtTime(profile, profile.energy, beat.time, runDuration);
+    const bass = clamp((beat.bass + profileValueAtTime(profile, profile.bass, beat.time, runDuration)) * 0.5, 0, 1);
+    const highs = clamp((beat.highs + profileValueAtTime(profile, profile.highs, beat.time, runDuration)) * 0.5, 0, 1);
+    const pulse = accentScore(beat);
+    return {
+      energy,
+      bass,
+      highs,
+      pulse,
+      activity: clamp(energy * 0.28 + bass * 0.18 + highs * 0.12 + pulse * 0.52, 0, 1),
+    };
+  });
+  const courseIndexes = beats
+    .map((beat, beatIndex) => ({ beat, beatIndex }))
+    .filter(({ beat, beatIndex }) => beatIndex >= startIndex && beat.time <= lastEventTime)
+    .map(({ beatIndex }) => beatIndex);
+  const courseStrengths = courseIndexes.map((beatIndex) => accentScore(beats[beatIndex])).sort((a, b) => a - b);
+  const percentile = (values: readonly number[], position: number, fallback: number): number => {
+    if (values.length === 0) return fallback;
+    return values[Math.min(values.length - 1, Math.floor((values.length - 1) * position))] ?? fallback;
+  };
+  const courseAccentThreshold = clamp(percentile(courseStrengths, 0.82, 0.68), 0.58, 0.84);
+  const hasBandAccent = (beat: IndexedBeat): boolean => (
+    (beat.cue ?? 'beat') !== 'beat'
+    || (beat.onset ?? 0) >= 0.62
+    || beat.bass >= 0.76
+    || beat.highs >= 0.76
   );
+  const accentThresholdAt = (beatIndex: number): number => {
+    const beat = beats[beatIndex];
+    const activity = localMusic[beatIndex]?.activity ?? 0;
+    const bandAllowance = hasBandAccent(beat) ? 0.07 : 0;
+    return clamp(
+      courseAccentThreshold + (0.62 - activity) * 0.28 - bandAllowance,
+      hasBandAccent(beat) ? 0.5 : 0.58,
+      0.9,
+    );
+  };
+  const patternGapAt = (beatIndex: number): number => {
+    const local = localMusic[beatIndex] ?? { activity: 0, pulse: 0 };
+    const drive = clamp(local.activity * 0.7 + local.pulse * 0.3, 0, 1);
+    const routeCompression = clamp(1 - (theme.hazardRate - 1) * 0.8, 0.86, 1.08);
+    return basePatternGap * THREE.MathUtils.lerp(1.55, 1, drive) * routeCompression;
+  };
   const transitionByBeat = new Map<number, IndexedTransition>();
   for (const transition of transitions) {
     let nearestIndex = -1;
@@ -572,7 +611,7 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
     const nextStrength = beats[beatIndex + 1] ? accentScore(beats[beatIndex + 1]) : -1;
     const detectedCue = (beat.cue ?? 'beat') === 'kick' || (beat.cue ?? 'beat') === 'transient';
     if (
-      score >= (detectedCue ? Math.min(0.58, accentThreshold) : accentThreshold)
+      score >= accentThresholdAt(beatIndex)
       && score >= previousStrength - (detectedCue ? 0.04 : -0.025)
       && score >= nextStrength - (detectedCue ? 0.015 : -0.01)
     ) accentCandidates.push(beatIndex);
@@ -583,12 +622,14 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
     accentScore(beats[right]) - accentScore(beats[left]) || beats[left].time - beats[right].time
   ))) {
     const time = beats[beatIndex].time;
-    if (transitionAnchorTimes.some((transitionTime) => Math.abs(transitionTime - time) < minimumPatternGap * 0.72)) continue;
-    if ([...localAccentIndexes].some((selectedIndex) => Math.abs(beats[selectedIndex].time - time) < minimumPatternGap)) continue;
+    const candidateGap = patternGapAt(beatIndex);
+    if (transitionAnchorTimes.some((transitionTime) => Math.abs(transitionTime - time) < candidateGap * 0.72)) continue;
+    if ([...localAccentIndexes].some((selectedIndex) => (
+      Math.abs(beats[selectedIndex].time - time) < Math.max(candidateGap, patternGapAt(selectedIndex))
+    ))) continue;
     localAccentIndexes.add(beatIndex);
   }
   const protectedAnchorIndexes = [...new Set([...transitionByBeat.keys(), ...localAccentIndexes])].sort((a, b) => a - b);
-
   for (let anchorIndex = startIndex; anchorIndex < beats.length; anchorIndex += 1) {
     const anchor = beats[anchorIndex];
     if (anchor.time > lastEventTime) break;
@@ -598,37 +639,49 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
     const isLocalAccent = localAccentIndexes.has(anchorIndex);
     const nearbyTransition = transitionByBeat.get(anchorIndex);
     if (!isDownbeat && !isLocalAccent && !nearbyTransition) continue;
+    const anchorGap = patternGapAt(anchorIndex);
     const nextProtectedIndex = protectedAnchorIndexes.find((index) => index > anchorIndex);
     const protectedAnchorSoon = !nearbyTransition
       && nextProtectedIndex !== undefined
       && (!isLocalAccent || transitionByBeat.has(nextProtectedIndex))
-      && beats[nextProtectedIndex].time - anchor.time < minimumPatternGap;
+      && beats[nextProtectedIndex].time - anchor.time < Math.max(anchorGap, patternGapAt(nextProtectedIndex));
     if (protectedAnchorSoon) continue;
-    if (!nearbyTransition && anchor.time - lastPatternStartTime < minimumPatternGap) continue;
+    if (!nearbyTransition && anchor.time - lastPatternStartTime < Math.max(anchorGap, lastPatternGap)) continue;
     if (!nearbyTransition && anchor.time - lastPatternEndTime < patternRecovery) continue;
-    const hasDetectedPulse = (anchor.cue ?? 'beat') !== 'beat'
-      || Math.max(anchor.onset ?? 0, anchor.kick ?? 0, anchor.transient ?? 0) >= 0.5;
+    const local = localMusic[anchorIndex];
+    const hasDetectedPulse = accentScore(anchor) >= accentThresholdAt(anchorIndex);
+    const localHazardCadence = Math.max(hazardCadence, Math.round(1 + (1 - local.activity) * 1.7));
     const keepDownbeat = Boolean(nearbyTransition)
       || isLocalAccent
-      || (hasDetectedPulse && currentBarOrdinal % hazardCadence === 0);
+      || (hasDetectedPulse && currentBarOrdinal % localHazardCadence === 0);
     if (isDownbeat && !keepDownbeat) continue;
 
     const random = patternRandom(anchor.beatIndex, 0xa53c);
     const baseAngle = random() * TAU;
     const direction = random() > 0.5 ? 1 : -1;
-    const energy = profileValueAtTime(profile, profile.energy, anchor.time, runDuration);
-    const bass = clamp((anchor.bass + profileValueAtTime(profile, profile.bass, anchor.time, runDuration)) * 0.5, 0, 1);
-    const highs = clamp((anchor.highs + profileValueAtTime(profile, profile.highs, anchor.time, runDuration)) * 0.5, 0, 1);
+    const { energy, bass, highs, activity } = local;
     const cue = anchor.cue ?? 'beat';
     const kick = anchor.kick ?? (cue === 'kick' ? anchor.strength : 0);
     const transient = anchor.transient ?? (cue === 'transient' ? anchor.strength : 0);
 
     let pattern: typeof patternCycle[number];
     if (nearbyTransition) {
-      if (nearbyTransition.kind === 'drop') pattern = 'cross';
-      else if (nearbyTransition.kind === 'build') pattern = 'halfwall';
-      else if (nearbyTransition.kind === 'fill') pattern = 'blade';
-      else pattern = 'pickup';
+      if (nearbyTransition.kind === 'drop') {
+        if (nearbyTransition.strength >= 0.86 || (energy > 0.72 && bass > 0.58)) pattern = 'cross';
+        else if (highs > bass + 0.1) pattern = 'blade';
+        else if (bass > 0.66) pattern = 'gate';
+        else pattern = 'halfwall';
+      } else if (nearbyTransition.kind === 'build') {
+        if (highs > 0.64 && transient > 0.48) pattern = 'blade';
+        else if (bass > 0.68 && energy > 0.64) pattern = 'cross';
+        else pattern = 'halfwall';
+      } else if (nearbyTransition.kind === 'fill') {
+        if (bass > highs + 0.12) pattern = 'gate';
+        else if (highs > 0.58 || transient > kick) pattern = 'blade';
+        else pattern = 'drone';
+      } else {
+        pattern = energy > 0.72 && cue === 'kick' ? 'gate' : 'pickup';
+      }
     } else if (cue === 'kick') {
       if (kick > 0.82 && energy > 0.58) pattern = random() > 0.58 ? 'cross' : 'gate';
       else pattern = random() > 0.48 ? 'gate' : 'halfwall';
@@ -689,10 +742,18 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
       });
     } else if (pattern === 'halfwall') {
       const turn = direction * (0.38 + highs * 0.16);
-      emit('halfwall', anchor, baseAngle, { gapWidth: 1.28 + energy * 0.12 });
-      emit('halfwall', at(2), baseAngle + turn, { gapWidth: 1.26 + energy * 0.12 });
+      const preferredCount = nearbyTransition
+        ? clamp(1 + Math.round(nearbyTransition.strength * 0.8 + bass * 0.65 + energy * 0.45), 1, 3)
+        : activity > 0.78 ? 3 : 2;
+      for (let step = 0; step < preferredCount; step += 1) {
+        emit('halfwall', at(step * 2), baseAngle + turn * step, { gapWidth: 1.28 + energy * 0.12 });
+      }
     } else if (pattern === 'blade') {
-      const preferredCount = nearbyTransition?.kind === 'fill' ? 4 : 3;
+      const preferredCount = clamp(
+        2 + Math.round(highs * 0.7 + transient * 0.55 + (nearbyTransition?.strength ?? 0) * 0.55),
+        2,
+        4,
+      );
       const twist = direction * (0.27 + highs * 0.17);
       for (let step = 0; step < preferredCount; step += 1) {
         const eventBeat = at(step);
@@ -705,7 +766,11 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
       }
     } else if (pattern === 'cross') {
       const spiral = direction * (0.16 + highs * 0.1);
-      const preferredCount = nearbyTransition?.kind === 'drop' ? 3 : 2;
+      const preferredCount = clamp(
+        2 + Math.round(bass * 0.55 + energy * 0.4 + kick * 0.35 + (nearbyTransition?.strength ?? 0) * 0.55),
+        2,
+        4,
+      );
       for (let step = 0; step < preferredCount; step += 1) {
         const eventBeat = at(step);
         if (!eventBeat) break;
@@ -732,26 +797,36 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
         (latest, event) => Math.max(latest, event.musicTime),
         anchor.time,
       );
+      lastPatternGap = anchorGap;
     }
   }
 
-  // Sparse music gets a light reward layer, never synthetic hazards. Keeping
-  // this budget duration-based avoids filling every quiet beat with a marker.
-  const occupiedTimes = new Set(events.map((event) => Math.round(event.musicTime * 1000)));
-  const minimumCourseEvents = Math.max(18, Math.round(runDuration * 0.34));
-  for (let index = startIndex; events.length < minimumCourseEvents && index < beats.length; index += 1) {
+  // Sparse music gets only a few widely spaced rewards. Base this budget on
+  // detected activity rather than duration so quiet tracks stay visibly quiet.
+  const activeBeatRatio = courseIndexes.filter((beatIndex) => (
+    accentScore(beats[beatIndex]) >= accentThresholdAt(beatIndex)
+  )).length / Math.max(1, courseIndexes.length);
+  const desiredRewardPatterns = clamp(Math.round(runDuration * (0.025 + activeBeatRatio * 0.025)), 2, 7);
+  const rewardPatternIds = new Set(events
+    .filter((event) => event.kind === 'boost' || event.kind === 'coolant')
+    .map((event) => event.patternId));
+  const occupiedPatternTimes = [...new Map(events.map((event) => [event.patternId, event.musicTime])).values()];
+  const rewardSpacing = Math.max(4.2, basePatternGap * 3.2);
+  for (let index = startIndex; rewardPatternIds.size < desiredRewardPatterns && index < beats.length; index += 1) {
     const beat = beats[index];
     if (
       beat.time > lastEventTime
       || beat.barBeat !== 0
-      || occupiedTimes.has(Math.round(beat.time * 1000))
+      || localMusic[index].activity > 0.62
+      || occupiedPatternTimes.some((time) => Math.abs(time - beat.time) < rewardSpacing)
     ) continue;
     const random = patternRandom(beat.beatIndex, 0xf111);
     const patternId = nextPatternId;
     nextPatternId += 1;
-    const kind: TrackEvent['kind'] = events.length % 3 === 0 ? 'boost' : events.length % 3 === 1 ? 'shard' : 'coolant';
+    const kind: TrackEvent['kind'] = rewardPatternIds.size % 2 === 0 ? 'boost' : 'coolant';
     pushEvent(kind, beat, random() * TAU, patternId);
-    occupiedTimes.add(Math.round(beat.time * 1000));
+    rewardPatternIds.add(patternId);
+    occupiedPatternTimes.push(beat.time);
   }
 
   events.sort((a, b) => a.distance - b.distance || a.patternId - b.patternId || a.kind.localeCompare(b.kind));

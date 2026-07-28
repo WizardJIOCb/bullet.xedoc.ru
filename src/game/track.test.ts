@@ -404,6 +404,102 @@ describe('procedural track generation', () => {
     expect(new Set(reactor.events.filter((event) => hazardKinds.has(event.kind)).map((event) => event.kind)).size).toBeGreaterThanOrEqual(4);
   });
 
+  it('turns the same-seed music profile into materially different encounter density and time bins', () => {
+    const runDuration = 64;
+    const profileSeed = 0x6acced;
+    const beats: RhythmBeat[] = Array.from({ length: 128 }, (_, index) => {
+      const time = 0.25 + index * 0.5;
+      const activeSection = time >= 24;
+      const kick = activeSection && index % 4 === 0;
+      const transient = activeSection && index % 4 === 2;
+      return {
+        time,
+        strength: kick ? 0.98 : transient ? 0.9 : activeSection ? 0.36 : 0.2,
+        bass: kick ? 0.96 : transient ? 0.5 : activeSection ? 0.34 : 0.12,
+        highs: transient ? 0.96 : kick ? 0.48 : activeSection ? 0.34 : 0.1,
+        barBeat: (index % 4) as RhythmBeat['barBeat'],
+        cue: (kick ? 'kick' : transient ? 'transient' : 'beat') as RhythmBeat['cue'],
+        onset: kick ? 0.98 : transient ? 0.92 : activeSection ? 0.24 : 0.08,
+        kick: kick ? 0.98 : 0,
+        transient: transient ? 0.96 : 0,
+      };
+    }).filter((beat) => beat.time <= runDuration);
+    const band = (quiet: number, active: number): number[] => Array.from(
+      { length: 192 },
+      (_, index) => (index / 191) * runDuration >= 24 ? active : quiet,
+    );
+    const quietProfile: MusicProfile = {
+      ...createDefaultMusicProfile(),
+      id: 'same-seed-quiet',
+      duration: runDuration,
+      runDuration,
+      bpm: 120,
+      beatOffset: 0.25,
+      energy: Array(192).fill(0.12),
+      bass: Array(192).fill(0.12),
+      mids: Array(192).fill(0.12),
+      highs: Array(192).fill(0.1),
+      beats: beats.map((beat) => ({
+        ...beat,
+        strength: 0.2,
+        bass: 0.12,
+        highs: 0.1,
+        cue: 'beat',
+        onset: 0.08,
+        kick: 0,
+        transient: 0,
+      })),
+      transitions: [],
+      seed: profileSeed,
+    };
+    const dynamicProfile: MusicProfile = {
+      ...quietProfile,
+      id: 'same-seed-dynamic',
+      energy: band(0.12, 0.92),
+      bass: band(0.12, 0.86),
+      mids: band(0.12, 0.78),
+      highs: band(0.1, 0.84),
+      beats,
+      transitions: [
+        { time: 31.25, strength: 0.76, kind: 'build' },
+        { time: 39.25, strength: 0.96, kind: 'drop' },
+        { time: 47.25, strength: 0.82, kind: 'fill' },
+        { time: 55.25, strength: 0.72, kind: 'break' },
+      ],
+    };
+    const hazardKinds = new Set(['gate', 'halfwall', 'blade', 'cross', 'drone']);
+    const summarize = (plan: ReturnType<typeof generateTrack>) => {
+      const starts = new Map<number, { time: number; kind: string }>();
+      for (const event of plan.events.filter((candidate) => hazardKinds.has(candidate.kind))) {
+        const current = starts.get(event.patternId);
+        if (!current || event.musicTime < current.time) starts.set(event.patternId, { time: event.musicTime, kind: event.kind });
+      }
+      const histogram = [...starts.values()].reduce<Record<string, number>>((counts, pattern) => {
+        counts[pattern.kind] = (counts[pattern.kind] ?? 0) + 1;
+        return counts;
+      }, {});
+      const timeBins = Array.from({ length: 8 }, (_, bin) => (
+        [...starts.values()].filter((pattern) => Math.floor(pattern.time / 8) === bin).length
+      ));
+      return { patterns: [...starts.values()], histogram, timeBins };
+    };
+    const quietPlan = generateTrack(TRACKS.reactor, quietProfile, 404);
+    const dynamicPlan = generateTrack(TRACKS.reactor, dynamicProfile, 404);
+    const quiet = summarize(quietPlan);
+    const dynamic = summarize(dynamicPlan);
+    const quietSectionEvents = dynamicPlan.events.filter((event) => event.musicTime >= 4 && event.musicTime < 24);
+
+    expect(dynamicPlan.seed).toBe(quietPlan.seed);
+    expect(quiet.patterns).toHaveLength(0);
+    expect(dynamic.patterns.length).toBeGreaterThanOrEqual(quiet.patterns.length + 12);
+    expect(Object.keys(dynamic.histogram).length).toBeGreaterThanOrEqual(3);
+    expect(dynamic.timeBins).not.toEqual(quiet.timeBins);
+    expect(dynamic.timeBins.filter((count) => count > 0).length).toBeGreaterThanOrEqual(4);
+    expect(dynamic.patterns.filter((pattern) => pattern.time >= 24).length).toBe(dynamic.patterns.length);
+    expect(quietSectionEvents.every((event) => !hazardKinds.has(event.kind))).toBe(true);
+    expect(quietPlan.events.every((event) => !hazardKinds.has(event.kind))).toBe(true);
+  });
+
   it('uses beatOffset when a decoded profile has no explicit onset timeline', () => {
     const profile: MusicProfile = {
       ...createDefaultMusicProfile(),

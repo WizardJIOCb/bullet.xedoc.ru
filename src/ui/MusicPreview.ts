@@ -7,6 +7,14 @@ import type {
 } from '../game/timeline';
 
 type TimelineMarker = TimelinePatternMarker | TimelineTransitionMarker;
+type TimelineMarkerLane = 'kick' | 'hit' | 'beat' | 'shift-hit' | 'reward' | 'transition';
+
+interface TimelineSummary {
+  kickCount: number;
+  hitCount: number;
+  transitionCount: number;
+  hazardCount: number;
+}
 
 interface MusicPreviewCallbacks {
   onMusicVolumeInput: (volume: number) => void;
@@ -46,6 +54,38 @@ function formatTime(seconds: number, precise = false): string {
 
 function markerTime(marker: TimelineMarker): number {
   return marker.musicTime;
+}
+
+function markerLane(marker: TimelineMarker): TimelineMarkerLane {
+  if (marker.type === 'transition') return 'transition';
+  if (marker.category === 'reward') return 'reward';
+  if (
+    marker.cue === 'transition'
+    || marker.trigger === 'build'
+    || marker.trigger === 'drop'
+    || marker.trigger === 'break'
+    || marker.trigger === 'fill'
+  ) return 'shift-hit';
+  if (marker.cue === 'kick' || marker.trigger === 'kick') return 'kick';
+  if (marker.cue === 'transient' || marker.trigger === 'transient') return 'hit';
+  return 'beat';
+}
+
+function timelineSummary(timeline: TrackTimeline): TimelineSummary {
+  let kickCount = 0;
+  let hitCount = 0;
+  let hazardCount = 0;
+  for (const marker of timeline.patterns) {
+    if (marker.category === 'hazard') hazardCount += marker.count;
+    if (marker.cue === 'kick' || marker.trigger === 'kick') kickCount += marker.count;
+    if (marker.cue === 'transient' || marker.trigger === 'transient') hitCount += marker.count;
+  }
+  return {
+    kickCount,
+    hitCount,
+    transitionCount: timeline.transitions.length,
+    hazardCount,
+  };
 }
 
 export class MusicPreviewController {
@@ -120,6 +160,8 @@ export class MusicPreviewController {
   render(timeline: TrackTimeline, profile: MusicProfile, trackName: string): void {
     this.timeline = timeline;
     const playback = this.audio.getPreviewPlaybackState();
+    const summary = timelineSummary(timeline);
+    const seed = (timeline.planSeed >>> 0).toString(16).padStart(8, '0').toUpperCase();
     this.root.hidden = !playback.available;
     this.root.setAttribute('aria-busy', 'false');
     this.playButton.disabled = !playback.available || this.loading;
@@ -127,10 +169,9 @@ export class MusicPreviewController {
     this.seek.max = String(timeline.duration);
     this.durationOutput.textContent = formatTime(timeline.duration);
     this.bpmOutput.value = `${timeline.bpm} BPM`;
-    this.courseOutput.textContent = `${trackName.toUpperCase()} // ${timeline.patterns.length} PATTERNS // ${
-      (timeline.planSeed >>> 0).toString(16).padStart(8, '0').toUpperCase()
-    }`;
-    this.status.textContent = `Карта трассы готова: ${timeline.patterns.length} паттернов, длительность ${formatTime(timeline.duration)}.`;
+    this.courseOutput.textContent = `${timeline.patterns.length}P // K${summary.kickCount} · H${summary.hitCount} · T${summary.transitionCount}`;
+    this.courseOutput.title = `${trackName.toUpperCase()} // ${seed} // ${profile.title}: ${summary.hazardCount} препятствий, ${summary.kickCount} под кик, ${summary.hitCount} под удар, ${summary.transitionCount} музыкальных переходов`;
+    this.status.textContent = `Карта трассы для ${profile.title} готова: ${timeline.patterns.length} паттернов и ${summary.hazardCount} препятствий; под кик — ${summary.kickCount}, под удар — ${summary.hitCount}, музыкальных переходов — ${summary.transitionCount}; длительность ${formatTime(timeline.duration)}.`;
     this.detail.textContent = `COURSE ${formatTime(timeline.duration)} / TRACK ${formatTime(profile.duration)} · выберите препятствие`;
     this.renderMarkers();
     this.setTransportUi(playback.currentTime, playback.playing);
@@ -245,21 +286,19 @@ export class MusicPreviewController {
     const duration = Math.max(0.001, this.timeline.duration);
     const markers: TimelineMarker[] = [...this.timeline.patterns, ...this.timeline.transitions]
       .sort((left, right) => markerTime(left) - markerTime(right) || left.id.localeCompare(right.id));
-    let previousPatternPosition = -100;
-    let patternLane = 0;
     this.markerButtons = markers.map((marker, index) => {
       const button = document.createElement('button');
       const position = (markerTime(marker) / duration) * 100;
+      const strength = Math.max(0, Math.min(1, marker.strength));
       button.type = 'button';
       button.className = 'music-preview__marker';
       button.dataset.markerId = marker.id;
+      button.dataset.lane = markerLane(marker);
       button.style.setProperty('--marker-position', `${position}%`);
+      button.style.setProperty('--marker-opacity', (0.42 + strength * 0.58).toFixed(3));
+      button.style.setProperty('--marker-scale', (0.76 + strength * 0.48).toFixed(3));
       button.tabIndex = index === 0 ? 0 : -1;
       if (marker.type === 'pattern') {
-        if (position - previousPatternPosition < 5) patternLane = (patternLane + 1) % 4;
-        else patternLane = 0;
-        previousPatternPosition = position;
-        button.style.top = `${3 + patternLane * 16}px`;
         button.dataset.kind = marker.kind;
         button.dataset.cue = marker.cue;
         button.dataset.trigger = marker.trigger;
@@ -366,12 +405,12 @@ export class MusicPreviewController {
       context.moveTo(0, middle);
       for (let index = 0; index < samples.length; index += 1) {
         const x = (index / (samples.length - 1)) * bounds.width;
-        const amplitude = (0.12 + samples[index].energy * 0.78) * bounds.height * 0.35;
+        const amplitude = samples[index].energy * bounds.height * 0.43;
         context.lineTo(x, middle - amplitude);
       }
       for (let index = samples.length - 1; index >= 0; index -= 1) {
         const x = (index / (samples.length - 1)) * bounds.width;
-        const amplitude = (0.12 + samples[index].energy * 0.78) * bounds.height * 0.35;
+        const amplitude = samples[index].energy * bounds.height * 0.43;
         context.lineTo(x, middle + amplitude);
       }
       context.closePath();
