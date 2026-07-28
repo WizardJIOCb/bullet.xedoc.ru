@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { clamp, mulberry32, TAU } from '../core/math';
+import { angularDistance, clamp, mulberry32, TAU, wrapAngle } from '../core/math';
 import type {
   MusicProfile,
   MusicTransition,
@@ -8,6 +8,7 @@ import type {
   TrackEventTrigger,
   TrackTheme,
 } from '../core/types';
+import { steeringInputTowardAngle, stepWallRideSteering, type WallRideSteeringState } from './steering';
 
 export interface TransportFrames {
   positions: THREE.Vector3[];
@@ -76,6 +77,132 @@ type EncounterPattern =
   | 'cathedral';
 
 const NOMINAL_SPEED = 170;
+const STEERING_SIMULATION_STEP = 1 / 120;
+const HAZARD_KINDS = new Set<TrackEvent['kind']>(['gate', 'halfwall', 'blade', 'cross', 'bastion']);
+
+export interface TrackSafeCorridor {
+  /** Midpoint of a collision-free angular interval at the music hit. */
+  center: number;
+  /** Angular clearance from the midpoint to the nearest collision boundary. */
+  halfWidth: number;
+}
+
+/**
+ * Describes every collision-free interval for a generated obstacle at its
+ * music-synchronised impact instant. Keeping this alongside collision geometry
+ * prevents the route planner, warnings and tests from drifting apart.
+ */
+export function getTrackEventSafeCorridors(event: Readonly<TrackEvent>): TrackSafeCorridor[] {
+  if (event.kind === 'gate') {
+    return [{ center: wrapAngle(event.angle), halfWidth: event.gapWidth }];
+  }
+  if (event.kind === 'halfwall' || event.kind === 'bastion') {
+    return [{ center: wrapAngle(event.angle + Math.PI), halfWidth: Math.PI - event.gapWidth }];
+  }
+  if (event.kind === 'blade' || event.kind === 'cross') {
+    const armCount = Math.max(2, event.armCount);
+    const interval = TAU / armCount;
+    const halfWidth = Math.max(0, interval * 0.5 - event.gapWidth);
+    return Array.from({ length: armCount }, (_, index) => ({
+      center: wrapAngle(event.rotationPhase + (index + 0.5) * interval),
+      halfWidth,
+    }));
+  }
+  return [];
+}
+
+function nearestSafeCorridor(
+  corridors: readonly TrackSafeCorridor[],
+  angle: number,
+): TrackSafeCorridor | undefined {
+  let nearest: TrackSafeCorridor | undefined;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  for (const corridor of corridors) {
+    const distance = angularDistance(angle, corridor.center);
+    if (distance < nearestDistance) {
+      nearest = corridor;
+      nearestDistance = distance;
+    }
+  }
+  return nearest;
+}
+
+function advanceCorridorPilot(
+  initialState: Readonly<WallRideSteeringState>,
+  targetAngle: number,
+  duration: number,
+  handling: number,
+): WallRideSteeringState {
+  let state: WallRideSteeringState = { ...initialState };
+  let remaining = Math.max(0, duration);
+  while (remaining > 0.0000001) {
+    const dt = Math.min(STEERING_SIMULATION_STEP, remaining);
+    state = stepWallRideSteering(
+      state,
+      steeringInputTowardAngle(state, targetAngle),
+      handling,
+      0,
+      dt,
+    );
+    remaining -= dt;
+  }
+  return state;
+}
+
+/**
+ * Turns independently generated encounter blocks into one continuous route.
+ *
+ * A conservative reference bolide drives the course with the exact same 120Hz
+ * A/D physics as gameplay. Each new pattern may request a different direction,
+ * but every obstacle opening is rotated onto the angle the reference bolide can
+ * actually reach by that hit. Internal sequences therefore retain their musical
+ * timing while transitions can never demand an instantaneous tunnel-wide turn.
+ */
+function stabilizeHazardCorridors(events: TrackEvent[], handling: number): void {
+  const hazards = events
+    .filter((event) => HAZARD_KINDS.has(event.kind))
+    .sort((left, right) => left.musicTime - right.musicTime || left.patternId - right.patternId);
+  const patternTargets = new Map<number, number>();
+  const patternRotations = new Map<number, number>();
+  let pilot: WallRideSteeringState = { angle: 0, angularVelocity: 0 };
+  let previousTime = 0;
+
+  for (const event of hazards) {
+    let patternTarget = patternTargets.get(event.patternId);
+    if (patternTarget === undefined) {
+      patternTarget = nearestSafeCorridor(getTrackEventSafeCorridors(event), pilot.angle)?.center ?? pilot.angle;
+      patternTargets.set(event.patternId, patternTarget);
+    }
+
+    pilot = advanceCorridorPilot(
+      pilot,
+      patternTarget,
+      event.musicTime - previousTime,
+      handling,
+    );
+    previousTime = event.musicTime;
+
+    const sourceCorridor = nearestSafeCorridor(getTrackEventSafeCorridors(event), pilot.angle);
+    if (!sourceCorridor) continue;
+    const rotation = wrapAngle(pilot.angle - sourceCorridor.center);
+    event.angle = wrapPositive(event.angle + rotation);
+    event.rotationPhase = wrapPositive(event.rotationPhase + rotation);
+    event.safeAngle = wrapPositive(pilot.angle);
+    event.safeAngularVelocity = pilot.angularVelocity;
+    patternRotations.set(event.patternId, rotation);
+  }
+
+  // Keep rewards emitted as part of a hazard pattern on the same transformed
+  // motif (currently the shard following a bastion) instead of leaving them at
+  // the pattern's obsolete random angle.
+  for (const event of events) {
+    if (HAZARD_KINDS.has(event.kind)) continue;
+    const rotation = patternRotations.get(event.patternId);
+    if (rotation === undefined) continue;
+    event.angle = wrapPositive(event.angle + rotation);
+    event.rotationPhase = wrapPositive(event.rotationPhase + rotation);
+  }
+}
 
 function sampleProfile(values: number[], progress: number): number {
   if (values.length === 0) return 0.5;
@@ -910,6 +1037,7 @@ export function generateTrack(theme: TrackTheme, profile: MusicProfile, runSeed:
     occupiedPatternTimes.push(beat.time);
   }
 
+  stabilizeHazardCorridors(events, theme.handling);
   events.sort((a, b) => a.distance - b.distance || a.patternId - b.patternId || a.kind.localeCompare(b.kind));
   for (let index = 0; index < events.length; index += 1) events[index].id = index;
 

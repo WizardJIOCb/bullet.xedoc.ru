@@ -135,6 +135,10 @@ export interface TrackEvent {
   armCount: number;
   patternId: number;
   warningDistance: number;
+  /** Center of the generator's physically reachable opening at impact time. */
+  safeAngle?: number;
+  /** Angular velocity of the reference bolide at the reachable opening. */
+  safeAngularVelocity?: number;
 }
 
 export interface RunStats {

@@ -18,6 +18,8 @@ function immutableEventPlan(profile: MusicProfile, seed = 1337) {
     armCount: event.armCount,
     patternId: event.patternId,
     warningDistance: event.warningDistance,
+    safeAngle: event.safeAngle,
+    safeAngularVelocity: event.safeAngularVelocity,
   }));
 }
 

@@ -23,7 +23,15 @@ import {
 } from '../core/types';
 import type { ControlBindings, GraphicsSettings, InputAction, SettingsState } from '../settings/SettingsStore';
 import { classifyMusicEventTiming, isInsideMusicEventWindow, synchronizeDistanceToMusic } from './rhythm';
-import { generateTrack, radialAt, sampleTrackFrame, type TrackFrame, type TrackPlan } from './track';
+import { stepWallRideSteering, type SteeringInput } from './steering';
+import {
+  generateTrack,
+  getTrackEventSafeCorridors,
+  radialAt,
+  sampleTrackFrame,
+  type TrackFrame,
+  type TrackPlan,
+} from './track';
 import { createTrackTimeline, type TrackTimeline } from './timeline';
 
 type GameState = 'menu' | 'countdown' | 'playing' | 'finished';
@@ -557,16 +565,14 @@ export class BallisticGame {
       new THREE.MeshBasicMaterial({ color: warningColor, transparent: true, opacity: 0.48, toneMapped: false }),
     );
     group.add(ring);
-    const safeAngle = event.kind === 'gate'
+    const safeAngle = event.safeAngle ?? (event.kind === 'gate'
       ? event.angle
       : event.kind === 'halfwall'
         ? event.angle + Math.PI
         : event.kind === 'blade' || event.kind === 'cross'
           ? event.rotationPhase + Math.PI / Math.max(2, event.armCount)
-          : event.angle + Math.PI;
-    const markerAngles = event.kind === 'bastion'
-      ? [event.angle - event.gapWidth - 0.28, event.angle + event.gapWidth + 0.28]
-      : [safeAngle];
+          : event.angle + Math.PI);
+    const markerAngles = [safeAngle];
     const safeMaterial = new THREE.MeshBasicMaterial({
       color: 0x4ffff2,
       transparent: true,
@@ -575,11 +581,15 @@ export class BallisticGame {
       blending: THREE.AdditiveBlending,
     });
     for (const angle of markerAngles) {
-      const halfArc = event.kind === 'gate'
-        ? Math.min(0.5, event.gapWidth * 0.5)
-        : event.kind === 'bastion'
-          ? 0.22
-          : 0.3;
+      const safeCorridor = getTrackEventSafeCorridors(event).reduce(
+        (nearest, corridor) => (
+          !nearest || angularDistance(angle, corridor.center) < angularDistance(angle, nearest.center)
+            ? corridor
+            : nearest
+        ),
+        undefined as ReturnType<typeof getTrackEventSafeCorridors>[number] | undefined,
+      );
+      const halfArc = clamp((safeCorridor?.halfWidth ?? 0.4) * 0.82, 0.32, 0.72);
       const safeArc = new THREE.Mesh(
         new THREE.TorusGeometry(this.plan.radius - 1.08, 0.22, 5, 28, halfArc * 2),
         safeMaterial,
@@ -1191,12 +1201,16 @@ export class BallisticGame {
     const right = this.isActionPressed('right') || this.mobileInput.get('right');
     const cooling = this.isActionPressed('cool') || this.mobileInput.get('cool');
     const boostHeld = this.isActionPressed('boost') || this.mobileInput.get('boost');
-    const steering = (left ? 1 : 0) - (right ? 1 : 0);
-    const steeringForce = 6.8 * theme.handling * (1 + this.config.garage.engine * 0.025);
-    this.angularVelocity += steering * steeringForce * dt;
-    this.angularVelocity *= Math.exp(-dt * 4.5);
-    this.angularVelocity = clamp(this.angularVelocity, -2.65, 2.65);
-    this.angle = wrapAngle(this.angle + this.angularVelocity * dt);
+    const steering = ((left ? 1 : 0) - (right ? 1 : 0)) as SteeringInput;
+    const steeringState = stepWallRideSteering(
+      { angle: this.angle, angularVelocity: this.angularVelocity },
+      steering,
+      theme.handling,
+      this.config.garage.engine,
+      dt,
+    );
+    this.angle = steeringState.angle;
+    this.angularVelocity = steeringState.angularVelocity;
 
     this.abilityCooldown = Math.max(0, this.abilityCooldown - dt);
     this.weaponCooldown = Math.max(0, this.weaponCooldown - dt);
