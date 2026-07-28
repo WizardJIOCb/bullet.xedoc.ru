@@ -24,8 +24,15 @@ import {
 import type { ControlBindings, GraphicsSettings, InputAction, SettingsState } from '../settings/SettingsStore';
 import { resolveBoostVisualTarget, stepBoostVisualIntensity } from './boost';
 import { computeObstacleKnockback, isObstacleCollision } from './collision';
+import { ChaseDeathFx } from './deathFx';
 import { classifyMusicEventTiming, isInsideMusicEventWindow, synchronizeDistanceToMusic } from './rhythm';
 import { stepWallRideSteering, type SteeringInput } from './steering';
+import {
+  DEATH_MUSIC_FADE_DURATION,
+  createDeathSequenceState,
+  stepDeathSequence,
+  type DeathSequenceState,
+} from './deathSequence';
 import {
   generateTrack,
   getTrackEventSafeCorridors,
@@ -36,7 +43,7 @@ import {
 } from './track';
 import { createTrackTimeline, type TrackTimeline } from './timeline';
 
-type GameState = 'menu' | 'countdown' | 'playing' | 'finished';
+type GameState = 'menu' | 'countdown' | 'playing' | 'dying' | 'finished';
 
 interface GameHooks {
   onHud: (stats: RunStats) => void;
@@ -151,6 +158,7 @@ export class BallisticGame {
   private readonly vehicleImpactGlow: THREE.Group;
   private readonly vehicleImpactMaterial: THREE.MeshBasicMaterial;
   private readonly chaseBoostEffect: ChaseBoostEffect;
+  private readonly deathFx: ChaseDeathFx;
   private streakGeometry: THREE.BufferGeometry | null = null;
   private streakLines: THREE.LineSegments | null = null;
   private streaks: StreakSpec[] = [];
@@ -210,6 +218,9 @@ export class BallisticGame {
   private inputCapture = false;
   private disposed = false;
   private visibilityPaused = false;
+  private deathSequence: DeathSequenceState | null = null;
+  private pendingResult: RunResult | null = null;
+  private resultDelay = 0;
 
   constructor(canvas: HTMLCanvasElement, audio: AudioEngine, hooks: GameHooks, settings: Pick<SettingsState, 'graphics' | 'controls'>) {
     this.canvas = canvas;
@@ -262,7 +273,8 @@ export class BallisticGame {
     });
     this.chaseBoostEffect = this.createChaseBoostEffect();
     this.vehicle.add(this.chaseBoostEffect.group);
-    this.chaseScene.add(this.vehicle);
+    this.deathFx = new ChaseDeathFx(this.vehicle);
+    this.chaseScene.add(this.vehicle, this.deathFx.group);
 
     this.plan = generateTrack(TRACKS.aurora, this.audio.getProfile(), 1);
     this.buildWorld('aurora', 1);
@@ -323,6 +335,7 @@ export class BallisticGame {
   }
 
   async startRun(config: RunConfig): Promise<void> {
+    this.visibilityPaused = false;
     this.config = config;
     this.trackId = config.track;
     this.buildWorld(config.track, config.seed);
@@ -405,6 +418,11 @@ export class BallisticGame {
   backToMenu(): void {
     this.audio.stop();
     this.state = 'menu';
+    this.visibilityPaused = false;
+    this.deathFx.reset();
+    this.deathSequence = null;
+    this.pendingResult = null;
+    this.resultDelay = 0;
     this.resetBoostVisuals();
     this.config = null;
     this.pendingUpgradeOptions = [];
@@ -1362,6 +1380,8 @@ export class BallisticGame {
       trail.scale.set(1, 1, 1);
     }
     this.chaseCamera.fov = 76;
+    this.chaseCamera.position.set(0, 0, 0);
+    this.chaseCamera.rotation.set(0, 0, 0);
     this.chaseCamera.updateProjectionMatrix();
   }
 
@@ -1483,6 +1503,10 @@ export class BallisticGame {
       this.removeAndDispose(effect.wave);
     }
     this.chaseImpactEffects.length = 0;
+    this.deathFx.reset();
+    this.deathSequence = null;
+    this.pendingResult = null;
+    this.resultDelay = 0;
     const baseSpeed = this.plan.length / this.plan.runDuration;
     this.distance = 0;
     this.speed = baseSpeed * 0.72;
@@ -1518,6 +1542,7 @@ export class BallisticGame {
     this.queuedUpgradePicks = 0;
     this.lastCollisionCursor = 0;
     this.lastCollisionAudioTime = 0;
+    this.fixedAccumulator = 0;
     this.runUpgrades.clear();
     this.emitUpgradeState();
     for (let index = 0; index < this.rivals.length; index += 1) {
@@ -1527,8 +1552,9 @@ export class BallisticGame {
 
   private readonly frame = (now: number): void => {
     if (this.disposed) return;
-    const dt = clamp((now - this.lastFrameTime) / 1000, 0, 0.05);
+    const frameDt = clamp((now - this.lastFrameTime) / 1000, 0, 0.05);
     this.lastFrameTime = now;
+    const dt = this.visibilityPaused ? 0 : frameDt;
     this.lastBands = this.audio.update(dt);
 
     if (this.state === 'countdown') {
@@ -1546,9 +1572,9 @@ export class BallisticGame {
 
     if (this.state === 'playing') {
       this.fixedAccumulator = Math.min(this.fixedAccumulator + dt, FIXED_STEP * 8);
-      while (this.fixedAccumulator >= FIXED_STEP) {
-        this.stepSimulation(FIXED_STEP);
+      while (this.fixedAccumulator >= FIXED_STEP && this.state === 'playing') {
         this.fixedAccumulator -= FIXED_STEP;
+        this.stepSimulation(FIXED_STEP);
       }
     } else if (
       this.state === 'menu'
@@ -1558,30 +1584,41 @@ export class BallisticGame {
       this.angle = wrapAngle(this.angle + dt * 0.12);
     }
 
+    let resultReady = false;
+    if (this.state === 'dying' && this.deathSequence) {
+      const deathFrame = stepDeathSequence(this.deathSequence, dt);
+      this.deathSequence = deathFrame.state;
+      resultReady = deathFrame.resultReady;
+    } else if (this.state === 'finished' && this.pendingResult) {
+      this.resultDelay = Math.max(0, this.resultDelay - dt);
+      resultReady = this.resultDelay <= 0;
+    }
+
     this.updateVisuals(dt);
     this.uiAccumulator += dt;
     if (this.uiAccumulator > 1 / 30) {
       this.uiAccumulator = 0;
-      if (this.state === 'playing' || this.state === 'countdown') this.hooks.onHud(this.getStats());
+      if (this.state === 'playing' || this.state === 'countdown' || this.state === 'dying') this.hooks.onHud(this.getStats());
     }
     this.composer.render(dt);
-    if (this.vehicle.visible || this.chaseImpactEffects.length > 0) {
+    if (this.vehicle.visible || this.chaseImpactEffects.length > 0 || this.deathFx.active) {
       const autoClear = this.renderer.autoClear;
       this.renderer.autoClear = false;
       this.renderer.clearDepth();
       this.renderer.render(this.chaseScene, this.chaseCamera);
       this.renderer.autoClear = autoClear;
     }
+    if (resultReady) this.deliverPendingResult();
     this.animationFrame = requestAnimationFrame(this.frame);
   };
 
   private readonly handleVisibilityChange = (): void => {
-    if (document.hidden && this.state === 'playing') {
+    if (document.hidden && (this.state === 'playing' || this.state === 'dying')) {
       this.visibilityPaused = true;
       this.audio.pause();
       return;
     }
-    if (!document.hidden && this.visibilityPaused && this.state === 'playing') {
+    if (!document.hidden && this.visibilityPaused && (this.state === 'playing' || this.state === 'dying')) {
       this.visibilityPaused = false;
       this.lastFrameTime = performance.now();
       void this.audio.resume();
@@ -1756,6 +1793,7 @@ export class BallisticGame {
           this.collectEvent(event, 'CRYO -34');
         } else event.resolved = true;
       }
+      if (this.state !== 'playing') return;
     }
   }
 
@@ -1796,7 +1834,8 @@ export class BallisticGame {
     this.damageKick = 1;
     this.impactFlashTimer = 0.46;
     this.impactSlide = impactDirection;
-    this.audio.playEffect('impact');
+    const fatal = this.shield <= 0;
+    if (!fatal) this.audio.playEffect('impact');
     this.spawnImpactEffects(event, impactAngle, impactDirection);
     this.hooks.onImpact(impactDirection);
     this.hooks.onToast(
@@ -1804,7 +1843,7 @@ export class BallisticGame {
       this.shield > 0 ? `AUTO-SLIDE // SHIELD ${this.shield}/${this.maxShield}` : 'HULL FAILURE',
       'red',
     );
-    if (this.shield <= 0) this.finishRun(false);
+    if (fatal) this.finishRun(false);
   }
 
   private collectEvent(event: TrackEvent, label: string): void {
@@ -1916,17 +1955,27 @@ export class BallisticGame {
   }
 
   private finishRun(survived: boolean): void {
-    if (this.state === 'finished') return;
-    this.state = 'finished';
-    this.audio.stop();
+    if (this.state !== 'playing') return;
     this.pendingUpgradeOptions = [];
     this.queuedUpgradePicks = 0;
     this.emitUpgradeState();
+    const result = this.createRunResult(survived);
+    if (!survived) {
+      this.beginDeathSequence(result);
+      return;
+    }
+    this.state = 'finished';
+    this.audio.stop();
+    this.pendingResult = result;
+    this.resultDelay = 0.42;
+  }
+
+  private createRunResult(survived: boolean): RunResult {
     const rank = this.getRank();
     const accuracy = this.shots > 0 ? this.hits / this.shots : 0;
     const finalScore = Math.round(this.score + (survived ? 5000 : 0) + (4 - rank) * 1200);
     const credits = Math.max(90, Math.round(finalScore / 42 + this.kills * 8));
-    const result: RunResult = {
+    return {
       score: finalScore,
       credits,
       maxSpeed: this.maxRunSpeed * 12.4,
@@ -1939,7 +1988,46 @@ export class BallisticGame {
       trackName: TRACKS[this.trackId].name,
       seed: this.plan.seed,
     };
-    window.setTimeout(() => this.hooks.onFinish(result), 420);
+  }
+
+  private beginDeathSequence(result: RunResult): void {
+    this.state = 'dying';
+    this.pendingResult = result;
+    this.resultDelay = 0;
+    this.deathSequence = createDeathSequenceState();
+    this.fixedAccumulator = 0;
+    this.releaseInputs();
+    this.boostVisualTarget = 0;
+    this.overdriveTimer = 0;
+    const explosionSeed = (
+      this.plan.seed
+      ^ Math.imul(Math.round(this.distance * 16), 0x45d9f3b)
+      ^ Math.imul(Math.round(this.score) + this.kills * 131, 0x27d4eb2d)
+    ) >>> 0;
+    this.audio.fadeOutMusic(DEATH_MUSIC_FADE_DURATION);
+    this.audio.playDeathExplosion(explosionSeed, 1.08);
+    this.deathFx.start({
+      seed: explosionSeed,
+      quality: this.graphicsSettings.quality,
+      reducedFlashes: this.graphicsSettings.reducedFlashes,
+      impactDirection: this.impactSlide < 0 ? -1 : 1,
+    });
+    this.damageKick = this.graphicsSettings.reducedFlashes ? 0.72 : 1.5;
+  }
+
+  private deliverPendingResult(): void {
+    const result = this.pendingResult;
+    if (!result) return;
+    const wasDying = this.state === 'dying';
+    this.pendingResult = null;
+    this.resultDelay = 0;
+    this.deathSequence = null;
+    this.state = 'finished';
+    if (wasDying) {
+      this.audio.stop();
+      this.deathFx.reset();
+    }
+    this.hooks.onFinish(result);
   }
 
   private updateVisuals(dt: number): void {
@@ -1956,6 +2044,22 @@ export class BallisticGame {
     const phaseTarget = this.phaseTimer > 0 ? this.plan.radius * 0.22 : this.plan.radius - 1.15;
     this.cameraRadial = damp(this.cameraRadial || phaseTarget, phaseTarget, this.phaseTimer > 0 ? 7 : 4, dt);
     this.updateChaseBoostVisuals(dt);
+    const deathFxFrame = this.state === 'dying' ? this.deathFx.update(dt) : null;
+    if (deathFxFrame?.active) {
+      const cameraMotion = this.graphicsSettings.cameraShake && !this.graphicsSettings.reducedFlashes ? 1 : 0;
+      this.chaseCamera.position.set(
+        deathFxFrame.cameraOffsetX * cameraMotion,
+        deathFxFrame.cameraOffsetY * cameraMotion,
+        0,
+      );
+      this.chaseCamera.rotation.set(0, 0, deathFxFrame.cameraRoll * cameraMotion);
+      this.chaseCamera.fov = 76 + deathFxFrame.fovKick;
+      this.chaseCamera.updateProjectionMatrix();
+    } else {
+      this.chaseCamera.position.x = damp(this.chaseCamera.position.x, 0, 12, dt);
+      this.chaseCamera.position.y = damp(this.chaseCamera.position.y, 0, 12, dt);
+      this.chaseCamera.rotation.z = damp(this.chaseCamera.rotation.z, 0, 12, dt);
+    }
     const boostStrength = clamp(this.boostVisualIntensity / 1.2, 0, 1);
     const boostKick = clamp(this.boostVisualKick, 0, 1);
     const craftLean = clamp(this.angularVelocity * 0.045, -0.24, 0.24);
@@ -1971,7 +2075,9 @@ export class BallisticGame {
       Math.PI,
       craftLean + impactRecoil * 0.16,
     );
-    this.vehicle.visible = this.state !== 'menu' && (this.state !== 'finished' || holdingFinalImpact);
+    this.vehicle.visible = this.state !== 'menu'
+      && this.state !== 'dying'
+      && (this.state !== 'finished' || holdingFinalImpact);
     this.engineGlow.scale.setScalar(
       0.75 + this.lastBands.bass * 0.8 + boostStrength * 0.72 + (this.overdriveTimer > 0 ? 0.16 : 0),
     );
@@ -2032,7 +2138,8 @@ export class BallisticGame {
     this.renderer.toneMappingExposure = 0.98
       + this.lastBands.pulse * 0.15
       + boostStrength * (this.graphicsSettings.reducedFlashes ? 0.008 : 0.016)
-      + this.damageKick * (this.graphicsSettings.reducedFlashes ? 0.025 : 0.08);
+      + this.damageKick * (this.graphicsSettings.reducedFlashes ? 0.025 : 0.08)
+      + (deathFxFrame?.exposureKick ?? 0);
 
     this.updateEventVisuals(dt, activeDistance);
     this.updateBulletVisuals();
@@ -2401,6 +2508,7 @@ export class BallisticGame {
       this.removeAndDispose(effect.wave);
     }
     this.chaseImpactEffects.length = 0;
+    this.deathFx.dispose();
     this.removeAndDispose(this.vehicle);
     this.composer.dispose();
     this.renderer.dispose();

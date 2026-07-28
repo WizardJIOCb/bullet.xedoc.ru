@@ -1,4 +1,4 @@
-import { clamp, hashString } from '../core/math';
+import { clamp, hashString, mulberry32 } from '../core/math';
 import type { MusicProfile, MusicTransition, RhythmBeat } from '../core/types';
 import { createDefaultMusicProfile } from '../game/track';
 import type { AudioSettings } from '../settings/SettingsStore';
@@ -50,6 +50,8 @@ const MAX_AUDIO_FILE_BYTES = 48 * 1024 * 1024;
 const MAX_AUDIO_DURATION = 12 * 60;
 const MAX_PLAYBACK_DURATION = 108;
 const AUDIO_METADATA_TIMEOUT = 3000;
+const DEFAULT_MUSIC_FADE_SECONDS = 1.65;
+const MIN_AUDIO_GAIN = 0.0001;
 
 export class AudioEngine {
   private context: AudioContext | null = null;
@@ -60,6 +62,7 @@ export class AudioEngine {
   private musicAccentPeakGain = 1;
   private musicAccentPeakEq = 0;
   private musicAccentReleaseAt = 0;
+  private musicFadeGain: GainNode | null = null;
   private musicGain: GainNode | null = null;
   private effectsGain: GainNode | null = null;
   private outputGain: GainNode | null = null;
@@ -85,6 +88,8 @@ export class AudioEngine {
   private beatPulse = 0;
   private smoothedBass = 0;
   private noiseBuffer: AudioBuffer | null = null;
+  private deathNoiseBuffer: AudioBuffer | null = null;
+  private deathExplosionSequence = 0;
   private readonly activeSources = new Map<AudioScheduledSourceNode, () => void>();
   private audioSettings: AudioSettings = {
     masterVolume: 0.9,
@@ -125,6 +130,7 @@ export class AudioEngine {
 
     const context = this.ensureContext();
     this.resetMusicAccent();
+    this.resetMusicFade();
     const generation = ++this.previewGeneration;
     const offset = this.previewOffset >= duration ? 0 : clamp(this.previewOffset, 0, duration);
     try {
@@ -220,6 +226,42 @@ export class AudioEngine {
     this.outputGain.gain.setTargetAtTime(this.audioSettings.muted ? 0 : this.audioSettings.masterVolume, now, 0.025);
   }
 
+  /** Fades only the soundtrack, leaving impact and explosion effects audible. */
+  fadeOutMusic(durationSeconds = DEFAULT_MUSIC_FADE_SECONDS): number {
+    const duration = clamp(
+      Number.isFinite(durationSeconds) ? durationSeconds : DEFAULT_MUSIC_FADE_SECONDS,
+      0.08,
+      6,
+    );
+    const context = this.context;
+    const fade = this.musicFadeGain?.gain;
+    if (
+      !context
+      || !fade
+      || context.state !== 'running'
+      || this.transportMode !== 'game'
+      || !this.running
+    ) return duration;
+
+    this.resetMusicAccent();
+    const now = context.currentTime;
+    const held = Math.max(MIN_AUDIO_GAIN, this.holdAudioParam(fade, now, 1));
+    fade.setValueAtTime(held, now);
+    fade.exponentialRampToValueAtTime(MIN_AUDIO_GAIN, now + duration);
+    fade.setValueAtTime(0, now + duration);
+    return duration;
+  }
+
+  /** Restores the neutral per-run soundtrack envelope without changing user volume. */
+  resetMusicFade(): void {
+    const context = this.context;
+    const fade = this.musicFadeGain?.gain;
+    if (!context || !fade) return;
+    const now = context.currentTime;
+    fade.cancelScheduledValues(now);
+    fade.setValueAtTime(1, now);
+  }
+
   /** Rewards an on-beat action by briefly lifting the music itself, without a new SFX source. */
   accentMusic(amount = 1): void {
     const context = this.context;
@@ -298,6 +340,7 @@ export class AudioEngine {
     this.musicInput = this.context.createGain();
     this.musicAccentFilter = this.context.createBiquadFilter();
     this.musicAccentGain = this.context.createGain();
+    this.musicFadeGain = this.context.createGain();
     this.musicGain = this.context.createGain();
     this.effectsGain = this.context.createGain();
     this.outputGain = this.context.createGain();
@@ -306,6 +349,7 @@ export class AudioEngine {
     this.musicAccentFilter.frequency.value = 180;
     this.musicAccentFilter.gain.value = 0;
     this.musicAccentGain.gain.value = 1;
+    this.musicFadeGain.gain.value = 1;
     this.musicGain.gain.value = this.audioSettings.musicVolume;
     this.effectsGain.gain.value = this.audioSettings.effectsVolume;
     this.outputGain.gain.value = this.audioSettings.muted ? 0 : this.audioSettings.masterVolume;
@@ -317,12 +361,14 @@ export class AudioEngine {
     this.musicInput.connect(this.analyser);
     this.analyser.connect(this.musicAccentFilter);
     this.musicAccentFilter.connect(this.musicAccentGain);
-    this.musicAccentGain.connect(this.musicGain);
+    this.musicAccentGain.connect(this.musicFadeGain);
+    this.musicFadeGain.connect(this.musicGain);
     this.musicGain.connect(this.outputGain);
     this.effectsGain.connect(this.outputGain);
     this.outputGain.connect(this.limiter);
     this.limiter.connect(this.context.destination);
     this.noiseBuffer = this.createNoiseBuffer(this.context);
+    this.deathNoiseBuffer = this.createNoiseBuffer(this.context, 2, 0xd347b00f);
     this.applyAudioSettings();
     return this.context;
   }
@@ -605,6 +651,7 @@ export class AudioEngine {
   async start(paused = false): Promise<void> {
     const context = this.ensureContext();
     this.resetMusicAccent();
+    this.resetMusicFade();
     this.stopPreview(true);
     this.clearTrackSource();
     if (paused) {
@@ -657,6 +704,7 @@ export class AudioEngine {
     this.running = false;
     this.clearTrackSource();
     this.clearActiveSources();
+    this.resetMusicFade();
     if (this.context) this.startedAt = this.context.currentTime;
     if (this.context?.state === 'running') void this.context.suspend();
   }
@@ -784,11 +832,12 @@ export class AudioEngine {
     return beats[Math.max(0, left - 1)]?.time;
   }
 
-  private createNoiseBuffer(context: AudioContext): AudioBuffer {
-    const length = Math.floor(context.sampleRate * 0.12);
+  private createNoiseBuffer(context: AudioContext, duration = 0.12, seed?: number): AudioBuffer {
+    const length = Math.floor(context.sampleRate * duration);
     const buffer = context.createBuffer(1, length, context.sampleRate);
     const channel = buffer.getChannelData(0);
-    for (let index = 0; index < length; index += 1) channel[index] = Math.random() * 2 - 1;
+    const random = seed === undefined ? Math.random : mulberry32(seed);
+    for (let index = 0; index < length; index += 1) channel[index] = random() * 2 - 1;
     return buffer;
   }
 
@@ -862,6 +911,200 @@ export class AudioEngine {
       noise(520, 0.1, 0.18);
       tone('square', 190, 58, 0.14, 0.08);
     }
+  }
+
+  /**
+   * Plays a seeded, multi-layer hull explosion through the effects bus.
+   * The sequence counter deliberately changes repeat attempts while preserving
+   * deterministic output for the same ordered series of seeds.
+   *
+   * @returns the audible tail length in seconds, or zero when audio is inactive.
+   */
+  playDeathExplosion(seed: number, amount = 1): number {
+    const context = this.context;
+    const destination = this.effectsGain;
+    const noiseBuffer = this.deathNoiseBuffer;
+    if (
+      !context
+      || !destination
+      || !noiseBuffer
+      || context.state !== 'running'
+      || this.transportMode !== 'game'
+      || !this.running
+    ) return 0;
+
+    const intensity = clamp(Number.isFinite(amount) ? amount : 1, 0.05, 1.5);
+    const normalizedSeed = Number.isFinite(seed) ? Math.trunc(seed) >>> 0 : this.profile.seed;
+    this.deathExplosionSequence += 1;
+    const variationSeed = (
+      normalizedSeed
+      ^ this.profile.seed
+      ^ Math.imul(this.deathExplosionSequence, 0x9e3779b9)
+      ^ 0xd347b00f
+    ) >>> 0;
+    const random = mulberry32(variationSeed);
+    const archetype = Math.floor(random() * 4);
+    const time = context.currentTime;
+
+    const tone = (
+      type: OscillatorType,
+      from: number,
+      to: number,
+      duration: number,
+      level: number,
+      delay = 0,
+      pan = 0,
+    ): void => {
+      const start = time + delay;
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      const panner = context.createStereoPanner();
+      oscillator.type = type;
+      oscillator.frequency.setValueAtTime(Math.max(20, from), start);
+      oscillator.frequency.exponentialRampToValueAtTime(Math.max(20, to), start + duration);
+      gain.gain.setValueAtTime(MIN_AUDIO_GAIN, start);
+      gain.gain.exponentialRampToValueAtTime(Math.max(MIN_AUDIO_GAIN, level * intensity), start + 0.008);
+      gain.gain.exponentialRampToValueAtTime(MIN_AUDIO_GAIN, start + duration);
+      panner.pan.setValueAtTime(clamp(pan, -1, 1), start);
+      oscillator.connect(gain);
+      gain.connect(panner);
+      panner.connect(destination);
+      this.registerSource(oscillator, () => {
+        gain.disconnect();
+        panner.disconnect();
+      });
+      oscillator.start(start);
+      oscillator.stop(start + duration + 0.015);
+    };
+
+    const noise = (
+      filterType: BiquadFilterType,
+      from: number,
+      to: number,
+      q: number,
+      duration: number,
+      level: number,
+      delay = 0,
+      pan = 0,
+      playbackRate = 1,
+      offset = 0,
+    ): void => {
+      const start = time + delay;
+      const source = context.createBufferSource();
+      const filter = context.createBiquadFilter();
+      const gain = context.createGain();
+      const panner = context.createStereoPanner();
+      source.buffer = noiseBuffer;
+      source.playbackRate.setValueAtTime(clamp(playbackRate, 0.45, 1.8), start);
+      filter.type = filterType;
+      filter.frequency.setValueAtTime(Math.max(20, from), start);
+      filter.frequency.exponentialRampToValueAtTime(Math.max(20, to), start + duration);
+      filter.Q.setValueAtTime(Math.max(0.1, q), start);
+      gain.gain.setValueAtTime(MIN_AUDIO_GAIN, start);
+      gain.gain.exponentialRampToValueAtTime(Math.max(MIN_AUDIO_GAIN, level * intensity), start + 0.006);
+      gain.gain.exponentialRampToValueAtTime(MIN_AUDIO_GAIN, start + duration);
+      panner.pan.setValueAtTime(clamp(pan, -1, 1), start);
+      source.connect(filter);
+      filter.connect(gain);
+      gain.connect(panner);
+      panner.connect(destination);
+      this.registerSource(source, () => {
+        filter.disconnect();
+        gain.disconnect();
+        panner.disconnect();
+      });
+      source.start(start, clamp(offset, 0, 0.42));
+      source.stop(start + duration + 0.01);
+    };
+
+    const bodyDuration = 1.04 + random() * 0.34 + (archetype === 0 ? 0.16 : 0);
+    const subDuration = 0.78 + random() * 0.32 + (archetype === 0 ? 0.18 : 0);
+    const secondaryDelay = 0.2 + random() * 0.28;
+    const secondaryDuration = 0.34 + random() * 0.24;
+    const fragmentCount = 2 + (archetype === 2 ? 2 : 0) + Math.floor(random() * 2);
+    let tailDuration = Math.max(bodyDuration, subDuration, secondaryDelay + secondaryDuration);
+
+    noise(
+      'lowpass',
+      480 + random() * 260,
+      105 + random() * 95,
+      0.7 + random() * 0.9,
+      bodyDuration,
+      archetype === 0 ? 0.38 : 0.31,
+      0,
+      (random() - 0.5) * 0.18,
+      0.68 + random() * 0.28,
+      random() * 0.32,
+    );
+    noise(
+      'highpass',
+      1_800 + random() * 2_400,
+      5_600 + random() * 2_600,
+      0.5 + random() * 1.4,
+      0.11 + random() * 0.09,
+      archetype === 1 ? 0.3 : 0.22,
+      0,
+      (random() - 0.5) * 0.6,
+      1.05 + random() * 0.45,
+      random() * 0.42,
+    );
+    tone(
+      'sine',
+      92 + random() * 48,
+      24 + random() * 16,
+      subDuration,
+      archetype === 0 ? 0.32 : 0.26,
+      0,
+      (random() - 0.5) * 0.12,
+    );
+    tone(
+      archetype === 1 ? 'sawtooth' : 'triangle',
+      190 + random() * 170,
+      42 + random() * 44,
+      0.38 + random() * 0.22,
+      0.14,
+      0.018 + random() * 0.025,
+      (random() - 0.5) * 0.28,
+    );
+
+    noise(
+      'bandpass',
+      260 + random() * 540,
+      95 + random() * 180,
+      1.1 + random() * 1.6,
+      secondaryDuration,
+      archetype === 3 ? 0.29 : 0.2,
+      secondaryDelay,
+      (random() - 0.5) * 1.1,
+      0.74 + random() * 0.36,
+      random() * 0.36,
+    );
+    tone(
+      'sine',
+      78 + random() * 62,
+      27 + random() * 22,
+      secondaryDuration + 0.08,
+      0.14,
+      secondaryDelay,
+      (random() - 0.5) * 1.1,
+    );
+
+    for (let index = 0; index < fragmentCount; index += 1) {
+      const delay = 0.1 + index * (0.075 + random() * 0.055) + random() * 0.06;
+      const duration = 0.14 + random() * 0.24;
+      tailDuration = Math.max(tailDuration, delay + duration);
+      tone(
+        index % 2 === 0 ? 'triangle' : 'sawtooth',
+        360 + random() * 880 + archetype * 70,
+        58 + random() * 130,
+        duration,
+        0.055 + random() * 0.04,
+        delay,
+        (random() - 0.5) * 1.6,
+      );
+    }
+
+    return tailDuration + 0.03;
   }
 
   private scheduleSynth(): void {
@@ -1438,11 +1681,14 @@ export class AudioEngine {
     this.analyser?.disconnect();
     this.musicAccentFilter?.disconnect();
     this.musicAccentGain?.disconnect();
+    this.musicFadeGain?.disconnect();
     this.musicGain?.disconnect();
     this.effectsGain?.disconnect();
     this.outputGain?.disconnect();
     this.limiter?.disconnect();
     if (this.context && this.context.state !== 'closed') await this.context.close();
     this.context = null;
+    this.noiseBuffer = null;
+    this.deathNoiseBuffer = null;
   }
 }
