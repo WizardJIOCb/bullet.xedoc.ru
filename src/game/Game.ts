@@ -545,11 +545,13 @@ export class BallisticGame {
     group.userData.warningFor = event.id;
     group.position.copy(frame.position);
     group.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(frame.normal, frame.binormal, frame.tangent));
-    const warningColor = event.kind === 'bastion'
-      ? 0xff9b42
-      : event.kind === 'cross' && event.trigger === 'drop'
-        ? 0xff4f86
-        : 0xffd35a;
+    const warningColor = event.kind === 'gate'
+      ? 0xff315f
+      : event.kind === 'bastion'
+        ? 0xff9b42
+        : event.kind === 'cross' && event.trigger === 'drop'
+          ? 0xff4f86
+          : 0xffd35a;
     const ring = new THREE.Mesh(
       new THREE.TorusGeometry(this.plan.radius - 0.62, 0.085, 4, 36),
       new THREE.MeshBasicMaterial({ color: warningColor, transparent: true, opacity: 0.48, toneMapped: false }),
@@ -562,16 +564,38 @@ export class BallisticGame {
         : event.kind === 'blade' || event.kind === 'cross'
           ? event.rotationPhase + Math.PI / Math.max(2, event.armCount)
           : event.angle + Math.PI;
-    const markerGeometry = new THREE.BoxGeometry(1.25, 0.18, 0.7);
-    const markerMaterial = new THREE.MeshBasicMaterial({ color: 0xfff0a3, toneMapped: false });
     const markerAngles = event.kind === 'bastion'
       ? [event.angle - event.gapWidth - 0.28, event.angle + event.gapWidth + 0.28]
-      : [-0.16, 0, 0.16].map((offset) => safeAngle + offset);
+      : [safeAngle];
+    const safeMaterial = new THREE.MeshBasicMaterial({
+      color: 0x4ffff2,
+      transparent: true,
+      opacity: 0.92,
+      toneMapped: false,
+      blending: THREE.AdditiveBlending,
+    });
     for (const angle of markerAngles) {
-      const marker = new THREE.Mesh(markerGeometry, markerMaterial);
-      marker.position.set(Math.cos(angle) * (this.plan.radius - 1.02), Math.sin(angle) * (this.plan.radius - 1.02), 0);
-      marker.rotation.z = angle + Math.PI / 2;
-      group.add(marker);
+      const halfArc = event.kind === 'gate'
+        ? Math.min(0.5, event.gapWidth * 0.5)
+        : event.kind === 'bastion'
+          ? 0.22
+          : 0.3;
+      const safeArc = new THREE.Mesh(
+        new THREE.TorusGeometry(this.plan.radius - 1.08, 0.22, 5, 28, halfArc * 2),
+        safeMaterial,
+      );
+      safeArc.rotation.z = angle - halfArc;
+      const arrow = new THREE.Mesh(
+        new THREE.ConeGeometry(0.52, 1.8, 3),
+        safeMaterial,
+      );
+      arrow.position.set(
+        Math.cos(angle) * (this.plan.radius - 1.08),
+        Math.sin(angle) * (this.plan.radius - 1.08),
+        0,
+      );
+      arrow.rotation.z = angle + Math.PI / 2;
+      group.add(safeArc, arrow);
     }
     return group;
   }
@@ -586,41 +610,89 @@ export class BallisticGame {
     visual.userData.kind = event.kind;
 
     if (event.kind === 'gate') {
-      const geometry = new THREE.BoxGeometry(4.25, 1.35, 2.65);
-      const material = new THREE.MeshStandardMaterial({
-        color: 0x240308,
-        emissive: theme.colors.danger,
-        emissiveIntensity: 0.24,
-        roughness: 0.62,
-        metalness: 0.36,
+      matrix.makeBasis(frame.normal, frame.binormal, frame.tangent);
+      visual.position.copy(frame.position);
+      visual.quaternion.setFromRotationMatrix(matrix);
+
+      const outerRadius = this.plan.radius - 0.18;
+      const barrierDepth = clamp(this.plan.radius * 0.48, 5.8, 6.6);
+      const innerRadius = outerRadius - barrierDepth;
+      const barrierRadius = (outerRadius + innerRadius) * 0.5;
+      const blockedStart = event.angle + event.gapWidth;
+      const blockedArc = TAU - event.gapWidth * 2;
+      const blockedEnd = blockedStart + blockedArc;
+      // Music-locked collision timing may lead or trail the spatial plane slightly.
+      // Keep the rendered barrier around the full synchronization envelope.
+      const longitudinalBefore = 6.2;
+      const longitudinalAfter = 2.4;
+      const longitudinalDepth = longitudinalBefore + longitudinalAfter;
+      const barrierShape = new THREE.Shape();
+      barrierShape.absarc(0, 0, outerRadius, blockedStart, blockedEnd, false);
+      barrierShape.lineTo(Math.cos(blockedEnd) * innerRadius, Math.sin(blockedEnd) * innerRadius);
+      barrierShape.absarc(0, 0, innerRadius, blockedEnd, blockedStart, true);
+      barrierShape.closePath();
+      const barrierGeometry = new THREE.ExtrudeGeometry(barrierShape, {
+        depth: longitudinalDepth,
+        bevelEnabled: false,
+        curveSegments: 64,
       });
-      const warningMaterial = new THREE.MeshBasicMaterial({ color: 0xffd45b, toneMapped: false });
-      for (let lane = 0; lane < 16; lane += 1) {
-        const angle = (lane / 16) * TAU;
-        if (angularDistance(angle, event.angle) < event.gapWidth) continue;
-        const radial = radialAt(frame, angle);
-        const circumferential = frame.normal.clone().multiplyScalar(-Math.sin(angle)).add(frame.binormal.clone().multiplyScalar(Math.cos(angle))).normalize();
-        const position = frame.position.clone().add(radial.clone().multiplyScalar(this.plan.radius - 0.75));
-        matrix.makeBasis(circumferential, radial, frame.tangent);
-        const panel = new THREE.Mesh(geometry, material);
-        panel.position.copy(position);
-        panel.quaternion.setFromRotationMatrix(matrix);
-        visual.add(panel);
-        if (lane % 3 === 0) {
-          const marker = new THREE.Mesh(new THREE.BoxGeometry(4.36, 0.12, 2.74), warningMaterial);
-          marker.position.copy(position);
-          marker.quaternion.copy(panel.quaternion);
-          visual.add(marker);
-        }
-      }
-      const halo = new THREE.Mesh(
-        new THREE.TorusGeometry(this.plan.radius - 0.48, 0.14, 5, 48, Math.max(0.35, event.gapWidth * 2)),
-        new THREE.MeshBasicMaterial({ color: 0xffe57a, transparent: true, opacity: 0.84, blending: THREE.AdditiveBlending }),
+      barrierGeometry.translate(0, 0, -longitudinalBefore);
+      const barrier = new THREE.Mesh(
+        barrierGeometry,
+        new THREE.MeshStandardMaterial({
+          color: 0x650618,
+          emissive: 0xff174d,
+          emissiveIntensity: 0.7,
+          roughness: 0.44,
+          metalness: 0.5,
+          side: THREE.DoubleSide,
+        }),
       );
-      halo.position.copy(frame.position);
-      halo.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), frame.tangent);
-      halo.rotateZ(event.angle - event.gapWidth);
-      visual.add(halo);
+      const outline = new THREE.LineSegments(
+        new THREE.EdgesGeometry(barrierGeometry, 18),
+        new THREE.LineBasicMaterial({ color: 0xffadc1, transparent: true, opacity: 0.94, toneMapped: false }),
+      );
+      outline.scale.setScalar(1.002);
+      const blockedRim = new THREE.Mesh(
+        new THREE.TorusGeometry(innerRadius, 0.28, 6, 64, blockedArc),
+        new THREE.MeshBasicMaterial({
+          color: 0xff315f,
+          transparent: true,
+          opacity: 0.96,
+          toneMapped: false,
+          blending: THREE.AdditiveBlending,
+        }),
+      );
+      blockedRim.rotation.z = blockedStart;
+      blockedRim.position.z = -longitudinalBefore - 0.02;
+
+      const portalMaterial = new THREE.MeshBasicMaterial({
+        color: 0x4ffff2,
+        transparent: true,
+        opacity: 0.96,
+        toneMapped: false,
+        blending: THREE.AdditiveBlending,
+      });
+      const portalPostWidth = 0.42;
+      const portalPostGeometry = new THREE.BoxGeometry(portalPostWidth, barrierDepth + 0.24, longitudinalDepth + 0.4);
+      const portalPostHalfAngle = (portalPostWidth * 0.5) / barrierRadius;
+      for (const side of [-1, 1]) {
+        const boundaryAngle = event.angle + side * (event.gapWidth + portalPostHalfAngle);
+        const post = new THREE.Mesh(portalPostGeometry, portalMaterial);
+        post.position.set(
+          Math.cos(boundaryAngle) * barrierRadius,
+          Math.sin(boundaryAngle) * barrierRadius,
+          (longitudinalAfter - longitudinalBefore) * 0.5,
+        );
+        post.rotation.z = boundaryAngle - Math.PI / 2;
+        visual.add(post);
+      }
+      const safeRail = new THREE.Mesh(
+        new THREE.TorusGeometry(this.plan.radius - 1.15, 0.2, 5, 48, event.gapWidth * 2),
+        portalMaterial,
+      );
+      safeRail.rotation.z = event.angle - event.gapWidth;
+      visual.add(barrier, outline, blockedRim, safeRail);
       return visual;
     }
 
