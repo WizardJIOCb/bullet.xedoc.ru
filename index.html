@@ -24,6 +24,9 @@
             WEBGL PULSE-RACING PROTOCOL
           </div>
           <div class="menu-header__actions">
+            <button id="account-open" class="icon-button account-trigger" type="button" aria-haspopup="dialog" aria-controls="account-dialog">
+              ID <span id="account-open-label" data-i18n="account.signIn">SIGN IN</span>
+            </button>
             <button id="settings-open" class="icon-button" type="button" aria-haspopup="dialog" aria-controls="settings-dialog">
               CFG <span data-i18n="common.settings">SETTINGS</span>
             </button>
@@ -462,7 +465,7 @@
             <section id="settings-panel-language" class="settings-panel" role="tabpanel" aria-labelledby="settings-tab-language" data-settings-panel="language" hidden>
               <div class="settings-section-heading"><span data-i18n="settings.language.heading">DISPLAY LANGUAGE</span><small data-i18n="settings.language.hint">Applies instantly across the menu, HUD, and race messages</small></div>
               <label class="settings-select" for="settings-language">
-                <span><strong data-i18n="settings.language.label">Game language</strong><small>LANGUAGE PACK</small></span>
+                <span><strong data-i18n="settings.language.label">Game language</strong><small data-i18n="settings.language.pack">LANGUAGE PACK</small></span>
                 <select id="settings-language">
                   <option value="en" data-i18n="settings.language.english">English</option>
                   <option value="ru" data-i18n="settings.language.russian">Русский</option>
@@ -475,6 +478,204 @@
             <button id="settings-reset" class="settings-secondary" type="button" data-i18n="settings.resetTab">RESET TAB</button>
             <span id="settings-status" role="status" aria-live="polite" data-i18n="settings.saved">SETTINGS SAVED LOCALLY</span>
             <button id="settings-done" class="settings-primary" type="button" data-i18n="common.done">DONE</button>
+          </footer>
+        </div>
+      </dialog>
+
+      <dialog id="account-dialog" class="settings-dialog account-dialog" aria-labelledby="account-title">
+        <div class="settings-shell account-shell panel-glass">
+          <header class="settings-header account-header">
+            <div>
+              <span class="settings-kicker">07 // PILOT NETWORK</span>
+              <h2 id="account-title" data-i18n="account.title">PILOT ACCOUNT</h2>
+            </div>
+            <button id="account-close" class="settings-close" type="button" aria-label="Close account" data-i18n-aria-label="account.close">×</button>
+          </header>
+
+          <nav class="settings-tabs account-tabs" role="tablist" aria-label="Account sections" data-i18n-aria-label="account.sections">
+            <button id="account-tab-profile" type="button" role="tab" aria-selected="true" aria-controls="account-panel-profile" tabindex="0" data-account-tab="profile" data-i18n="account.profileTab">PROFILE</button>
+            <button id="account-tab-rankings" type="button" role="tab" aria-selected="false" aria-controls="account-panel-rankings" tabindex="-1" data-account-tab="rankings" data-i18n="account.rankingsTab">RANKINGS</button>
+            <button id="account-tab-achievements" type="button" role="tab" aria-selected="false" aria-controls="account-panel-achievements" tabindex="-1" data-account-tab="achievements" data-i18n="account.achievementsTab">ACHIEVEMENTS</button>
+          </nav>
+
+          <div class="settings-body account-body">
+            <section id="account-panel-profile" class="settings-panel account-panel" role="tabpanel" aria-labelledby="account-tab-profile" data-account-panel="profile">
+              <section id="account-recovery-shard" class="account-recovery-shard" aria-labelledby="account-recovery-shard-title" hidden>
+                <div class="account-recovery-shard__mark" aria-hidden="true">◇</div>
+                <div>
+                  <span class="account-kicker" data-i18n="account.recoveryShardKicker">ONE-TIME RECOVERY SHARD</span>
+                  <h3 id="account-recovery-shard-title" data-i18n="account.recoveryShardTitle">SAVE THIS CODE NOW</h3>
+                  <p data-i18n="account.recoveryShardHint">It will not be shown again. Keep it offline; anyone with this code can reset your password.</p>
+                </div>
+                <label class="account-recovery-code" for="account-recovery-code">
+                  <span data-i18n="account.recoveryCode">RECOVERY CODE</span>
+                  <input id="account-recovery-code" type="text" readonly spellcheck="false" autocomplete="off" value="" />
+                </label>
+                <div class="account-recovery-shard__actions">
+                  <button id="account-recovery-copy" class="online-secondary" type="button" data-i18n="account.copyCode">COPY CODE</button>
+                  <button id="account-recovery-ack" class="online-primary" type="button" data-i18n="account.savedCode">I SAVED IT</button>
+                </div>
+              </section>
+
+              <div id="account-guest" class="account-guest">
+                <div class="settings-section-heading">
+                  <span data-i18n="account.identityHeading">PILOT IDENTITY</span>
+                  <small data-i18n="account.identityHint">Save progression, ranked scores, and achievements across devices</small>
+                </div>
+                <div class="segmented account-auth-switch" role="group" aria-label="Authentication mode" data-i18n-aria-label="account.authMode">
+                  <button class="is-selected" data-account-auth-mode="login" type="button" aria-pressed="true" data-i18n="account.loginTab">SIGN IN</button>
+                  <button data-account-auth-mode="register" type="button" aria-pressed="false" data-i18n="account.registerTab">REGISTER</button>
+                  <button data-account-auth-mode="recover" type="button" aria-pressed="false" data-i18n="account.recoverTab">RECOVER</button>
+                </div>
+
+                <form id="account-login-form" class="account-auth-form" data-account-auth-panel="login">
+                  <label class="online-field" for="account-login-handle">
+                    <span data-i18n="account.handle">PILOT HANDLE</span>
+                    <input id="account-login-handle" name="username" type="text" minlength="3" maxlength="20" required autocomplete="username" spellcheck="false" />
+                  </label>
+                  <label class="online-field" for="account-login-password">
+                    <span data-i18n="account.password">PASSWORD</span>
+                    <input id="account-login-password" name="password" type="password" minlength="10" maxlength="128" required autocomplete="current-password" />
+                  </label>
+                  <button class="online-primary account-auth-submit" type="submit" data-i18n="account.signInAction">CONNECT ACCOUNT</button>
+                </form>
+
+                <form id="account-register-form" class="account-auth-form" data-account-auth-panel="register" hidden>
+                  <label class="online-field" for="account-register-handle">
+                    <span data-i18n="account.handle">PILOT HANDLE</span>
+                    <input id="account-register-handle" name="username" type="text" minlength="3" maxlength="20" pattern="[A-Za-z0-9_-]+" required autocomplete="username" spellcheck="false" aria-describedby="account-register-handle-hint" />
+                    <small id="account-register-handle-hint" data-i18n="account.handleHint">3–20 Latin letters, numbers, underscore, or dash</small>
+                  </label>
+                  <label class="online-field" for="account-register-password">
+                    <span data-i18n="account.newPassword">NEW PASSWORD</span>
+                    <input id="account-register-password" name="new-password" type="password" minlength="10" maxlength="128" required autocomplete="new-password" />
+                  </label>
+                  <label class="online-field" for="account-register-confirm">
+                    <span data-i18n="account.confirmPassword">CONFIRM PASSWORD</span>
+                    <input id="account-register-confirm" name="confirm-password" type="password" minlength="10" maxlength="128" required autocomplete="new-password" />
+                  </label>
+                  <button class="online-primary account-auth-submit" type="submit" data-i18n="account.registerAction">CREATE PILOT ID</button>
+                  <p class="account-auth-note" data-i18n="account.registerHint">A one-time recovery shard will appear after registration.</p>
+                </form>
+
+                <form id="account-recover-form" class="account-auth-form" data-account-auth-panel="recover" hidden>
+                  <label class="online-field" for="account-recover-handle">
+                    <span data-i18n="account.handle">PILOT HANDLE</span>
+                    <input id="account-recover-handle" name="username" type="text" minlength="3" maxlength="20" required autocomplete="username" spellcheck="false" />
+                  </label>
+                  <label class="online-field" for="account-recover-code-input">
+                    <span data-i18n="account.recoveryCode">RECOVERY CODE</span>
+                    <input id="account-recover-code-input" name="recovery-code" type="text" minlength="8" maxlength="128" required autocomplete="one-time-code" spellcheck="false" />
+                  </label>
+                  <label class="online-field" for="account-recover-password">
+                    <span data-i18n="account.newPassword">NEW PASSWORD</span>
+                    <input id="account-recover-password" name="new-password" type="password" minlength="10" maxlength="128" required autocomplete="new-password" />
+                  </label>
+                  <label class="online-field" for="account-recover-confirm">
+                    <span data-i18n="account.confirmPassword">CONFIRM PASSWORD</span>
+                    <input id="account-recover-confirm" name="confirm-password" type="password" minlength="10" maxlength="128" required autocomplete="new-password" />
+                  </label>
+                  <button class="online-primary account-auth-submit" type="submit" data-i18n="account.recoverAction">RESET ACCESS</button>
+                  <p class="account-auth-note" data-i18n="account.recoverHint">Successful recovery rotates the shard and displays a new code once.</p>
+                </form>
+                <p id="account-auth-error" class="account-error" role="alert" hidden></p>
+              </div>
+
+              <div id="account-profile" class="account-profile" hidden>
+                <header class="account-profile__hero">
+                  <div id="account-profile-avatar" class="account-avatar" aria-hidden="true">BE</div>
+                  <div>
+                    <span class="account-kicker" data-i18n="account.syncedPilot">SYNCED PILOT</span>
+                    <h3 id="account-profile-handle">PILOT</h3>
+                    <p id="account-profile-since">—</p>
+                  </div>
+                  <div class="account-profile__rank"><span data-i18n="account.globalRank">GLOBAL RANK</span><strong id="account-profile-rank">—</strong></div>
+                </header>
+
+                <div class="account-stat-grid" aria-label="Pilot statistics" data-i18n-aria-label="account.stats">
+                  <div><span data-i18n="account.runs">RUNS</span><strong id="account-stat-runs">0</strong></div>
+                  <div><span data-i18n="account.finishes">FINISHES</span><strong id="account-stat-finishes">0</strong></div>
+                  <div><span data-i18n="account.victories">VICTORIES</span><strong id="account-stat-victories">0</strong></div>
+                  <div><span data-i18n="account.totalScore">TOTAL SCORE</span><strong id="account-stat-score">0</strong></div>
+                  <div><span data-i18n="account.maxSpeed">MAX SPEED</span><strong id="account-stat-speed">0</strong></div>
+                  <div><span data-i18n="account.unlocked">UNLOCKED</span><strong id="account-stat-achievements">0 / 0</strong></div>
+                </div>
+
+                <section class="account-garage" aria-labelledby="account-garage-title">
+                  <header>
+                    <div><span class="account-kicker" data-i18n="account.garageKicker">CLOUD GARAGE</span><h3 id="account-garage-title" data-i18n="account.garage">GARAGE LOADOUT</h3></div>
+                    <div class="credits"><i></i><strong id="account-profile-credits">0</strong> CR</div>
+                  </header>
+                  <div class="account-garage__modules">
+                    <div><span>ENG</span><strong data-account-garage-level="engine">LV.0</strong></div>
+                    <div><span>CRY</span><strong data-account-garage-level="cooling">LV.0</strong></div>
+                    <div><span>SHD</span><strong data-account-garage-level="shield">LV.0</strong></div>
+                    <div><span>WPN</span><strong data-account-garage-level="weapon">LV.0</strong></div>
+                  </div>
+                </section>
+
+                <section class="account-route-bests" aria-labelledby="account-route-bests-title">
+                  <div class="settings-section-heading"><span id="account-route-bests-title" data-i18n="account.routeBests">ROUTE PERSONAL BESTS</span><small data-i18n="account.routeBestsHint">Ranked score and current route position</small></div>
+                  <div id="account-route-best-list" class="account-route-best-list"></div>
+                </section>
+
+                <section class="account-legacy" aria-labelledby="account-legacy-title">
+                  <div><strong id="account-legacy-title" data-i18n="account.legacyTitle">LOCAL GARAGE IMPORT</strong><small id="account-legacy-hint" data-i18n="account.legacyHint">Merge this device's earlier garage once. Higher module levels are preserved.</small></div>
+                  <button id="account-import-legacy" class="online-secondary" type="button" data-i18n="account.importLegacy">IMPORT LOCAL SAVE</button>
+                </section>
+                <button id="account-logout" class="online-link account-logout" type="button" data-i18n="account.logout">DISCONNECT ACCOUNT</button>
+              </div>
+            </section>
+
+            <section id="account-panel-rankings" class="settings-panel account-panel" role="tabpanel" aria-labelledby="account-tab-rankings" data-account-panel="rankings" hidden>
+              <div class="settings-section-heading">
+                <span data-i18n="leaderboard.heading">PILOT RANKINGS</span>
+                <small data-i18n="leaderboard.provisional">PROVISIONAL BETA // client-authoritative scores</small>
+              </div>
+              <div class="account-ranking-toolbar">
+                <label for="leaderboard-scope"><span data-i18n="leaderboard.scope">BOARD</span>
+                  <select id="leaderboard-scope">
+                    <option value="global" data-i18n="leaderboard.global">GLOBAL // FOUR-ROUTE RATING</option>
+                    <option value="aurora">AURORA SPINE</option>
+                    <option value="reactor">SOLAR RUPTURE</option>
+                    <option value="void">NULL CATHEDRAL</option>
+                    <option value="forge">PULSE FORGE</option>
+                  </select>
+                </label>
+                <span class="account-beta-badge" data-i18n="leaderboard.beta">BETA</span>
+              </div>
+              <p class="account-ranking-note" data-i18n="leaderboard.globalHint">Global rating is the sum of your best ranked score on every route.</p>
+              <div id="leaderboard-own-rank" class="account-own-rank" hidden></div>
+              <div class="account-leaderboard" role="table" aria-label="Pilot leaderboard" data-i18n-aria-label="leaderboard.table">
+                <div class="account-leaderboard__header" role="row">
+                  <span role="columnheader" data-i18n="leaderboard.rank">RANK</span>
+                  <span role="columnheader" data-i18n="leaderboard.pilot">PILOT</span>
+                  <span role="columnheader" data-i18n="leaderboard.runs">RUNS</span>
+                  <span role="columnheader" data-i18n="leaderboard.score">SCORE</span>
+                  <span role="columnheader" data-i18n="leaderboard.date">DATE</span>
+                </div>
+                <div id="leaderboard-list" class="account-leaderboard__body" role="rowgroup"></div>
+              </div>
+              <p id="leaderboard-status" class="account-empty" role="status" aria-live="polite" data-i18n="leaderboard.initial">Choose a board to synchronize the top pilots.</p>
+            </section>
+
+            <section id="account-panel-achievements" class="settings-panel account-panel" role="tabpanel" aria-labelledby="account-tab-achievements" data-account-panel="achievements" hidden>
+              <div class="settings-section-heading">
+                <span data-i18n="achievement.heading">ACHIEVEMENT MATRIX</span>
+                <small id="achievement-summary" data-i18n="achievement.guestSummary">Sign in to synchronize progress</small>
+              </div>
+              <div id="achievement-guest" class="account-guest-callout">
+                <strong data-i18n="achievement.guestTitle">CAREER SIGNAL NOT CONNECTED</strong>
+                <p data-i18n="achievement.guestHint">Ranked milestones and route mastery are stored in your pilot account.</p>
+                <button id="achievement-sign-in" class="online-primary" type="button" data-i18n="account.signInAction">CONNECT ACCOUNT</button>
+              </div>
+              <div id="achievement-list" class="account-achievement-grid" aria-live="polite"></div>
+            </section>
+          </div>
+
+          <footer class="settings-footer account-footer">
+            <span id="account-status" role="status" aria-live="polite" data-i18n="account.guestStatus">GUEST MODE // rankings remain public</span>
+            <button id="account-done" class="settings-primary" type="button" data-i18n="common.done">DONE</button>
           </footer>
         </div>
       </dialog>
@@ -541,7 +742,7 @@
 
       <section id="results-screen" class="screen screen--overlay results-screen" aria-labelledby="result-title">
         <div class="results-shell panel-glass">
-          <div class="result-rank"><span data-i18n="results.runRank">RUN RANK</span><strong id="result-rank">S</strong><i></i></div>
+          <div class="result-rank"><span data-i18n="results.runRank">RUN GRADE</span><strong id="result-rank">S</strong><i></i></div>
           <div class="results-copy">
             <div id="result-status" class="upgrade-kicker" data-i18n="results.signalConquered">SIGNAL CONQUERED</div>
             <h2 id="result-title" data-i18n="results.complete">PULSE COMPLETE</h2>
@@ -556,6 +757,60 @@
             <div><span data-i18n="results.targets">TARGETS ERASED</span><strong id="result-kills">0</strong></div>
             <div><span data-i18n="results.reward">REWARD</span><strong id="result-credits">+0 CR</strong></div>
           </div>
+          <section id="result-race-summary" class="result-race-summary" aria-labelledby="result-race-summary-title">
+            <header class="result-race-summary__header">
+              <h3 id="result-race-summary-title" data-i18n="results.raceSummary">RACE SUMMARY</h3>
+              <p id="result-performance-summary" data-i18n="results.performancePending">COURSE TELEMETRY PENDING</p>
+            </header>
+            <dl class="result-race-summary__metrics">
+              <div>
+                <dt id="result-position-label" data-i18n="results.finishPosition">FINISH POSITION</dt>
+                <dd><strong id="result-position">— / —</strong></dd>
+              </div>
+              <div>
+                <dt data-i18n="results.finishTime">FINISH TIME</dt>
+                <dd><strong id="result-time">00:00.000</strong></dd>
+              </div>
+              <div>
+                <dt data-i18n="results.courseGrade">COURSE GRADE</dt>
+                <dd><strong id="result-course-grade">—</strong></dd>
+              </div>
+              <div>
+                <dt data-i18n="results.obstacleClearance">OBSTACLE CLEARANCE</dt>
+                <dd>
+                  <strong id="result-obstacle-clearance">—%</strong>
+                  <small id="result-obstacle-detail" data-i18n="results.obstaclePending">AWAITING OBSTACLE TELEMETRY</small>
+                </dd>
+              </div>
+            </dl>
+          </section>
+          <section id="result-rivals" class="result-rivals" aria-labelledby="result-rivals-title">
+            <header class="result-rivals__header">
+              <h3 id="result-rivals-title" data-i18n="results.rivalStandings">RACE STANDINGS</h3>
+              <p id="result-rivals-note" data-i18n="results.rivalStandingsHint">FINAL DATA FOR EVERY PILOT IN THIS RUN</p>
+            </header>
+            <div class="result-rivals__viewport">
+              <table id="result-rivals-table">
+                <caption class="visually-hidden" data-i18n="results.rivalStandingsCaption">Final race standings and pilot performance</caption>
+                <thead>
+                  <tr>
+                    <th scope="col" data-i18n="results.standingPosition">POS</th>
+                    <th scope="col" data-i18n="results.standingPilot">PILOT</th>
+                    <th scope="col" data-i18n="results.standingTime">TIME</th>
+                    <th scope="col" data-i18n="results.standingScore">SCORE</th>
+                    <th scope="col" data-i18n="results.standingObstacles">OBSTACLES</th>
+                    <th scope="col" data-i18n="results.standingStatus">STATUS</th>
+                  </tr>
+                </thead>
+                <tbody id="result-rivals-body">
+                  <tr id="result-rivals-placeholder">
+                    <td colspan="6" data-i18n="results.standingsPending">RACE TELEMETRY PENDING</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+          <p id="result-account-status" class="result-account-status" data-tone="muted" role="status" aria-live="polite" data-i18n="account.result.guest">GUEST SAVE // THIS DEVICE</p>
           <div class="result-actions">
             <button id="replay-run" class="launch-button launch-button--compact" type="button"><span>↻</span><strong data-i18n="results.replay">REPLAY SEED</strong></button>
             <button id="return-menu" class="secondary-button" type="button" data-i18n="results.return">RETURN TO GARAGE</button>

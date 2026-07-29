@@ -127,10 +127,16 @@ export interface RemoteRacerState {
   angle: number;
   speed: number;
   shield: number;
+  /** Latest synchronized score, when supplied by an online race state. */
+  score?: number;
   active?: boolean;
   destroyed?: boolean;
   finished?: boolean;
-  /** Authoritative server timestamp for a completed online run. */
+  /** The pilot left the active match without a terminal packet. */
+  dnf?: boolean;
+  /** Authoritative server timestamp for either a finish or a destruction. */
+  terminalAt?: number;
+  /** @deprecated Use terminalAt. Kept for compatibility with older clients. */
   finishedAt?: number;
 }
 
@@ -210,6 +216,36 @@ export interface RivalRaceMarker {
   boost: number;
 }
 
+export type RaceStandingKind = 'player' | 'ai' | 'human';
+export type RaceStandingStatus = 'finished' | 'destroyed' | 'racing' | 'dnf';
+
+export interface ObstaclePerformance {
+  /** Every major hazard generated for the course. */
+  total: number;
+  /** Hazards actually reached before the run ended. */
+  encountered: number;
+  /** Reached hazards passed, phased through, or destroyed without a hull contact. */
+  cleared: number;
+  /** Physical contacts with course hazards. */
+  collisions: number;
+  /** Normalized 0..1 clearance ratio across encountered hazards. */
+  clearance: number;
+}
+
+export interface RaceStanding {
+  id: string;
+  name: string;
+  kind: RaceStandingKind;
+  status: RaceStandingStatus;
+  place: number;
+  progress: number;
+  /** Race clock in seconds. Null means the pilot has not finished. */
+  elapsedTime: number | null;
+  /** Real synchronized score when available; AI telemetry deliberately leaves it null. */
+  score: number | null;
+  obstaclePerformance: ObstaclePerformance | null;
+}
+
 export interface RunResult {
   score: number;
   credits: number;
@@ -222,6 +258,13 @@ export interface RunResult {
   survived: boolean;
   trackName: string;
   seed: number;
+  /** Optional rich local telemetry. The account API ignores it for score authority. */
+  elapsedTime?: number;
+  competitorCount?: number;
+  courseProgress?: number;
+  courseQuality?: number;
+  obstaclePerformance?: ObstaclePerformance;
+  standings?: RaceStanding[];
 }
 
 export const TRACKS: Record<TrackId, TrackTheme> = {

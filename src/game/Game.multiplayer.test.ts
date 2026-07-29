@@ -30,12 +30,15 @@ interface AiHarness {
 
 interface RemoteHarness {
   setRemoteRacers(states: readonly RemoteRacerState[]): void;
+  refreshRunReport(result: Readonly<RunResult>): RunResult;
   remoteRacers: Map<string, {
     mesh: THREE.Group;
     targetProgress: number;
     name: string;
     colorIndex: number;
     active: boolean;
+    dnf: boolean;
+    terminalAt: number | null;
   }>;
   dynamicLayer: THREE.Group;
   createRemoteRacerMesh: Mock;
@@ -48,6 +51,7 @@ interface SnapshotHarness {
   state: 'menu' | 'countdown' | 'playing' | 'dying' | 'finished';
   angle: number;
   shield: number;
+  pendingResult: RunResult | null;
 }
 
 interface RankHarness {
@@ -65,16 +69,28 @@ interface RankHarness {
     active: boolean;
     finished: boolean;
     targetProgress: number;
-    finishedAt: number | null;
+    terminalAt: number | null;
   }>;
 }
 
 interface AiStepHarness {
-  updateRivals(dt: number, paceReference: number, transportTime: number): void;
+  updateRivals(
+    dt: number,
+    paceReference: number,
+    transportTime: number,
+    interactive?: boolean,
+    targetTickOverride?: number,
+  ): void;
   onlineRivalsReadyForResult(): boolean;
+  catchUpOnlineRivalsToTick(targetTick: number): void;
+  catchUpSoloRivalsForReport(): void;
+  rivalsReadyForResult(): boolean;
   rivals: Array<{ ai: RivalAIState }>;
   rivalAiTick: number;
   rivalAiCatchupBudget: number;
+  onlineRun: boolean;
+  state: 'playing' | 'finished';
+  trackEventsById: Map<number, TrackEvent>;
 }
 
 interface HazardResolveHarness {
@@ -169,6 +185,9 @@ function onlineAiStepHarness(serverElapsedMs?: number): AiStepHarness {
       ai: createRivalAIState(profile, { distance: 100, angle: 0 }, model.baseSpeed),
       lastOutput: null,
       color: 0xff00ff,
+      maxSpeed: model.baseSpeed,
+      obstaclesEncountered: 0,
+      obstacleCollisions: 0,
     }],
     rivalDraftCooldown: 0,
     rivalCalloutCooldown: 0,
@@ -178,6 +197,7 @@ function onlineAiStepHarness(serverElapsedMs?: number): AiStepHarness {
     rivalAiTick: 0,
     rivalAiCatchupBudget: 120,
     onlineRun: true,
+    state: 'playing',
     onlineTimeProvider: serverElapsedMs === undefined ? null : () => serverElapsedMs,
     onlineRaceOriginTime: serverElapsedMs === undefined ? null : 0,
     distance: 500,
@@ -185,6 +205,7 @@ function onlineAiStepHarness(serverElapsedMs?: number): AiStepHarness {
     angle: 2,
     angularVelocity: 0,
     plan: { length: 18_000, runDuration: 60 },
+    trackEventsById: new Map(),
     flux: 100,
     score: 0,
     audio: { accentMusic: vi.fn(), playEffect: vi.fn() },
@@ -254,6 +275,7 @@ describe('BallisticGame multiplayer gameplay hooks', () => {
       state: 'playing',
       angle: 0.73,
       shield: 2,
+      pendingResult: null,
       getStats: vi.fn(() => stats),
     }) as unknown as SnapshotHarness;
 
@@ -274,6 +296,8 @@ describe('BallisticGame multiplayer gameplay hooks', () => {
     });
 
     game.state = 'dying';
+    game.pendingResult = { score: 19_876 } as RunResult;
+    expect(game.getLocalRaceSnapshot().score).toBe(19_876);
     expect(game.getLocalRaceSnapshot()).toMatchObject({ active: true, running: false, destroyed: true, finished: false });
     game.state = 'finished';
     game.shield = 0;
@@ -312,6 +336,57 @@ describe('BallisticGame multiplayer gameplay hooks', () => {
     expect(game.dynamicLayer.children).toHaveLength(0);
   });
 
+  it('retains terminal destruction time and disconnected DNF rows in refreshed reports', () => {
+    const game = remoteHarness();
+    Object.assign(game as object, {
+      onlineRun: true,
+      state: 'finished',
+      plan: { length: 1_000, runDuration: 60, events: [] },
+      distance: 1_000,
+      simulationTick: 7_200,
+      rivalAiTick: 7_200,
+      rivals: [],
+      onlineRaceOriginTime: 10_000,
+      obstaclesEncountered: 0,
+      obstacleCollisions: 0,
+    });
+    game.setRemoteRacers([
+      {
+        id: 'wreck', name: 'Wreck', progress: 0.72, angle: 0.3, speed: 0, shield: 0,
+        score: 4_200, active: false, destroyed: true, terminalAt: 22_500,
+      },
+      {
+        id: 'drop', name: 'Drop', progress: 0.44, angle: -0.2, speed: 0, shield: 2,
+        score: 2_100, active: false, dnf: true,
+      },
+    ]);
+
+    const refreshed = game.refreshRunReport({
+      score: 9_000,
+      credits: 220,
+      maxSpeed: 3_000,
+      accuracy: 0.5,
+      perfects: 3,
+      nearMisses: 1,
+      kills: 0,
+      rank: 1,
+      survived: true,
+      trackName: 'AURORA SPINE',
+      seed: 12,
+    });
+
+    expect(refreshed.standings?.find((standing) => standing.id === 'wreck')).toMatchObject({
+      status: 'destroyed',
+      elapsedTime: 12.5,
+      score: 4_200,
+    });
+    expect(refreshed.standings?.find((standing) => standing.id === 'drop')).toMatchObject({
+      status: 'dnf',
+      elapsedTime: null,
+      score: 2_100,
+    });
+  });
+
   it('counts bots and humans that actually finished before the local player', () => {
     const game = Object.assign(Object.create(BallisticGame.prototype) as object, {
       distance: 1_000,
@@ -326,15 +401,15 @@ describe('BallisticGame multiplayer gameplay hooks', () => {
         { ai: { distance: 1_000, finishTick: 600 } },
       ],
       remoteRacers: new Map([
-        ['early', { destroyed: false, active: false, finished: true, targetProgress: 1, finishedAt: 49_900 }],
-        ['late', { destroyed: false, active: false, finished: true, targetProgress: 1, finishedAt: 50_100 }],
+        ['early', { destroyed: false, active: false, finished: true, targetProgress: 1, terminalAt: 49_900 }],
+        ['late', { destroyed: false, active: false, finished: true, targetProgress: 1, terminalAt: 50_100 }],
       ]),
     }) as unknown as RankHarness;
 
     expect(game.getRank()).toBe(3);
   });
 
-  it('recalculates placement rewards from the stable starting grid', () => {
+  it('keeps terminal placement rewards stable while refreshing report telemetry', () => {
     const game = Object.assign(Object.create(BallisticGame.prototype) as object, {
       raceCompetitorCount: 5,
       kills: 2,
@@ -355,9 +430,15 @@ describe('BallisticGame multiplayer gameplay hooks', () => {
     };
 
     expect(game.refreshRunResultPlacement(initial)).toMatchObject({
-      rank: 3,
-      score: 7_400,
-      credits: 192,
+      rank: 2,
+      score: 8_600,
+      credits: 221,
+    });
+
+    expect(game.refreshRunResultPlacement({ ...initial, survived: false })).toMatchObject({
+      rank: 2,
+      score: 8_600,
+      credits: 221,
     });
   });
 
@@ -409,8 +490,37 @@ describe('BallisticGame multiplayer gameplay hooks', () => {
     resumedClient.updateRivals(1 / 120, 9_999, 99);
 
     expect(resumedClient.rivalAiTick).toBe(240);
-    expect(resumedClient.onlineRivalsReadyForResult()).toBe(true);
+    expect(resumedClient.onlineRivalsReadyForResult()).toBe(false);
     expect(resumedClient.rivals[0].ai).toEqual(steadyClient.rivals[0].ai);
+
+    const reportTarget = Math.ceil(60 * 1.6 * 120);
+    for (let frame = 0; frame < 100 && !resumedClient.onlineRivalsReadyForResult(); frame += 1) {
+      resumedClient.rivalAiCatchupBudget = 120;
+      resumedClient.updateRivals(1 / 120, 0, 0, false, reportTarget);
+    }
+    expect(resumedClient.onlineRivalsReadyForResult()).toBe(true);
+    expect(resumedClient.rivals[0].ai.finishTick).not.toBeNull();
+  });
+
+  it('synchronizes online AI to the local terminal tick before result broadcast', () => {
+    const game = onlineAiStepHarness();
+
+    game.catchUpOnlineRivalsToTick(480);
+
+    expect(game.rivalAiTick).toBe(480);
+  });
+
+  it('fast-forwards slower solo AI to a bounded final report after the player stops', () => {
+    const game = onlineAiStepHarness();
+    game.onlineRun = false;
+    game.state = 'finished';
+    for (let frame = 0; frame < 80 && !game.rivalsReadyForResult(); frame += 1) {
+      game.catchUpSoloRivalsForReport();
+    }
+
+    expect(game.rivalsReadyForResult()).toBe(true);
+    expect(game.rivals[0].ai.finishTick).not.toBeNull();
+    expect(game.rivalAiTick).toBeLessThanOrEqual(Math.ceil(60 * 1.6 * 120));
   });
 
   it('uses the shared rotating-obstacle classifier and ignores destroyed solo hazards', () => {

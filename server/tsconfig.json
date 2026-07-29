@@ -12,8 +12,10 @@
     "isolatedModules": true
   },
   "include": [
-    "./*.ts",
+    "./**/*.ts",
     "../src/online/protocol.ts",
-    "../src/core/types.ts"
+    "../src/core/types.ts",
+    "../src/account/protocol.ts",
+    "../src/account/achievements.ts"
   ]
 }

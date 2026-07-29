@@ -44,8 +44,18 @@ function harness(): DeathHarness {
     nearMisses: 4,
     maxRunSpeed: 210,
     distance: 840,
+    simulationTick: 7_200,
+    obstacleCollisions: 1,
     trackId: 'aurora',
-    plan: { seed: 0x1234abcd },
+    plan: {
+      seed: 0x1234abcd,
+      length: 1_000,
+      events: [
+        { kind: 'gate', resolved: true, destroyed: false },
+        { kind: 'cross', resolved: false, destroyed: false },
+        { kind: 'boost', resolved: true, destroyed: false },
+      ],
+    },
     rivals: [],
     graphicsSettings: { quality: 'quality', reducedFlashes: false },
     impactSlide: -1,
@@ -70,6 +80,19 @@ describe('BallisticGame death sequence', () => {
     expect(game.state).toBe('dying');
     expect(game.deathSequence).toEqual({ elapsed: 0, resultIssued: false });
     expect(game.pendingResult).toMatchObject({ survived: false, score: expect.any(Number) });
+    expect(game.pendingResult).toMatchObject({
+      elapsedTime: 60,
+      competitorCount: 1,
+      courseProgress: 0.84,
+      obstaclePerformance: {
+        total: 2,
+        encountered: 1,
+        cleared: 0,
+        collisions: 1,
+        clearance: 0,
+      },
+      standings: [{ id: 'player', status: 'destroyed', place: 1 }],
+    });
     expect(game.fixedAccumulator).toBe(0);
     expect(game.boostVisualTarget).toBe(0);
     expect(game.overdriveTimer).toBe(0);

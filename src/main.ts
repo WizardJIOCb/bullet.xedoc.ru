@@ -1,10 +1,19 @@
 import './styles.css';
+import { AccountApiError, AccountClient } from './account/AccountClient';
+import type {
+  AccountAchievement,
+  AccountRunContext,
+  GarageModuleId,
+  LeaderboardScope,
+} from './account/protocol';
 import { AudioEngine, AudioImportError, type CatalogAudioTrack } from './audio/AudioEngine';
 import { ABILITIES, TRACKS, WEAPONS, type AbilityId, type GarageState, type RemoteRacerState, type RunConfig, type RunResult, type RunStats, type TrackId, type UpgradeDefinition, type UpgradeId, type WeaponId } from './core/types';
 import { BallisticGame, type RivalStartDescriptor } from './game/Game';
+import { courseGradeFromQuality, type CourseGrade } from './game/runReport';
 import { TouchInputRouter, type TouchInputAction } from './input/TouchInputRouter';
 import { MusicPreviewController } from './ui/MusicPreview';
 import { RaceTimelineController } from './ui/RaceTimeline';
+import { AccountDialogController } from './ui/AccountDialog';
 import { createBrowserMusicLibrary, type MusicLibrarySnapshot, type MusicPlaylist } from './music/MusicLibrary';
 import {
   abilityDescription,
@@ -119,7 +128,8 @@ setLanguage(settings.language);
 applyDocumentTranslations();
 const audio = new AudioEngine();
 audio.setAudioSettings(settings.audio);
-let garage = loadGarage();
+let guestGarage = loadGarage();
+let garage = { ...guestGarage };
 let selectedTrack: TrackId = 'aurora';
 let selectedWeapon: WeaponId = 'pulse';
 let selectedAbility: AbilityId = 'phase';
@@ -141,7 +151,13 @@ let onlineRooms: OnlineRoomSummary[] = [];
 let onlineMatch: AuthoritativeRaceConfig | null = null;
 let currentRunIsOnline = false;
 let onlineStartTimer = 0;
+let activeAccountRun: AccountRunContext | null = null;
+let accountRunPreparationEpoch = 0;
+let activeRunProgressOwner: 'guest' | 'account' | 'none' = 'guest';
+let activeRunPreviousBest = guestGarage.bestScore;
+const pendingGarageUpgrades = new Set<GarageModuleId>();
 const remoteRaceStates = new Map<string, ServerRaceState>();
+let displayedRunResult: RunResult | null = null;
 
 const game = new BallisticGame(query<HTMLCanvasElement>('#game-canvas'), audio, {
   onHud: updateHud,
@@ -219,6 +235,104 @@ const settingsDialog = query<HTMLDialogElement>('#settings-dialog');
 const settingsStatus = query<HTMLElement>('#settings-status');
 let activeSettingsTab: SettingsTab = 'audio';
 let bindingCapture: BindingCapture | null = null;
+
+const accountClient = new AccountClient();
+const accountDialogElement = query<HTMLDialogElement>('#account-dialog');
+
+function hasLegacyProgress(state: GarageState): boolean {
+  return state.runs > 0
+    || state.bestScore > 0
+    || state.credits !== DEFAULT_GARAGE.credits
+    || state.engine > 0
+    || state.cooling > 0
+    || state.shield > 0
+    || state.weapon > 0;
+}
+
+function accountErrorMessage(error: unknown): string {
+  if (!(error instanceof AccountApiError)) return error instanceof Error ? error.message : t('account.actionFailed');
+  const keys: Partial<Record<string, TranslationKey>> = {
+    HANDLE_TAKEN: 'account.error.handleTaken',
+    INVALID_CREDENTIALS: 'account.error.invalidCredentials',
+    INVALID_RECOVERY: 'account.error.invalidRecovery',
+    RATE_LIMITED: 'account.error.rateLimited',
+    NETWORK_ERROR: 'account.error.network',
+    UNAUTHENTICATED: 'account.error.sessionExpired',
+    AUTH_REQUIRED: 'account.error.sessionExpired',
+    PROFILE_CONFLICT: 'account.error.profileConflict',
+    INSUFFICIENT_CREDITS: 'account.error.insufficientCredits',
+  };
+  return keys[error.code] ? t(keys[error.code]!) : error.message || t('account.actionFailed');
+}
+
+async function localizedAccountAction<T>(action: () => Promise<T>): Promise<T> {
+  try {
+    return await action();
+  } catch (error) {
+    throw new Error(accountErrorMessage(error), { cause: error });
+  }
+}
+
+const accountDialog = new AccountDialogController({
+  onLogin: async ({ handle, password }) => {
+    await localizedAccountAction(() => accountClient.login(handle, password));
+  },
+  onRegister: async (request) => {
+    const response = await localizedAccountAction(() => accountClient.register({
+      ...request,
+      ...(hasLegacyProgress(guestGarage) ? { legacyGarage: { ...guestGarage } } : {}),
+    }));
+    accountDialog.showRecoveryShard(response.recoveryCode);
+  },
+  onRecover: async (request) => {
+    const response = await localizedAccountAction(() => accountClient.recover(request));
+    accountDialog.showRecoveryShard(response.recoveryCode);
+  },
+  onLogout: async () => {
+    await localizedAccountAction(() => accountClient.logout());
+  },
+  onImportLegacy: async () => {
+    await localizedAccountAction(() => accountClient.importLegacy({ ...guestGarage }));
+    showToast(t('account.legacyLinked'), t('account.legacyLinkedHint'), 'cyan');
+  },
+  onLoadLeaderboard: async (scope: LeaderboardScope) => {
+    try {
+      accountDialog.setLeaderboard(await accountClient.leaderboard(scope));
+    } catch (error) {
+      if (accountDialog.getLeaderboardScope() === scope) {
+        accountDialog.setLeaderboardError(accountErrorMessage(error));
+      }
+    }
+  },
+  onOpenChange: (open) => {
+    game.setInputCapture(open || settingsDialog.open);
+  },
+}, document);
+
+accountClient.subscribe((snapshot) => {
+  if (snapshot.status === 'loading') {
+    accountDialog.setSnapshot({ status: 'loading' });
+    return;
+  }
+  if (snapshot.status === 'authenticated' && snapshot.profile) {
+    garage = { ...snapshot.profile.garage };
+    accountDialog.setSnapshot({ status: 'authenticated', profile: snapshot.profile });
+    if (!onlineRoom && (!onlineNameInput.value || normalizePilotName(onlineNameInput.value) === 'PILOT')) {
+      onlineNameInput.value = normalizePilotName(snapshot.profile.handle);
+    }
+    updateGarageUi();
+    return;
+  }
+  garage = { ...guestGarage };
+  accountDialog.setSnapshot({ status: 'guest' });
+  if (snapshot.error) accountDialog.setAuthError(snapshot.error.message);
+  updateGarageUi();
+});
+
+const accountBootstrapController = new AbortController();
+const accountBootstrapTimeout = window.setTimeout(() => accountBootstrapController.abort(), 3_000);
+const accountBootstrap = accountClient.bootstrap(accountBootstrapController.signal)
+  .finally(() => window.clearTimeout(accountBootstrapTimeout));
 
 const CONTROL_GROUPS: Array<{ label: string; actions: Array<{ id: InputAction; nameKey: TranslationKey; detail: string }> }> = [
   {
@@ -435,7 +549,7 @@ function cancelBindingCapture(message = 'KEY CAPTURE CANCELLED'): void {
   if (!bindingCapture) return;
   const cancelled = bindingCapture;
   bindingCapture = null;
-  game.setInputCapture(settingsDialog.open);
+    game.setInputCapture(settingsDialog.open || accountDialogElement.open);
   setSettingsStatus(message);
   renderControlsSettings();
   query<HTMLButtonElement>(`[data-binding-action="${cancelled.action}"][data-binding-slot="${cancelled.slot}"]`)?.focus();
@@ -443,6 +557,7 @@ function cancelBindingCapture(message = 'KEY CAPTURE CANCELLED'): void {
 
 function refreshLocalizedUi(): void {
   applyDocumentTranslations();
+  accountDialog.refreshTranslations();
   setText('#weapon-description', weaponDescription(selectedWeapon));
   setText('#ability-description', abilityDescription(selectedAbility));
   renderMusicCatalog();
@@ -514,7 +629,8 @@ function updateGarageUi(): void {
     setText(`[data-level-for="${module}"]`, `LV.${level}`);
     setText(`[data-cost-for="${module}"]`, level >= 5 ? 'MAX' : `${cost} CR`);
     const button = query<HTMLButtonElement>(`.garage-module[data-module="${module}"]`);
-    button.disabled = level >= 5;
+    button.disabled = level >= 5 || pendingGarageUpgrades.size > 0 || Boolean(onlineRoom);
+    button.classList.toggle('is-syncing', pendingGarageUpgrades.has(module));
     button.classList.toggle('is-affordable', garage.credits >= cost && level < 5);
   }
 }
@@ -629,6 +745,15 @@ function showToast(message: string, detail = '', tone: 'cyan' | 'gold' | 'red' |
   toastTimer = window.setTimeout(() => toast.classList.remove('is-visible'), 1300);
 }
 
+function announceAccountAchievements(unlocked: readonly AccountAchievement[]): void {
+  if (unlocked.length === 0) return;
+  const achievement = unlocked[0];
+  const track = achievement.trackId ? TRACKS[achievement.trackId].name : '';
+  const name = t(`achievement.${achievement.id}.name` as TranslationKey, { track });
+  const detail = unlocked.length > 1 ? `${name} // +${unlocked.length - 1}` : name;
+  showToast(t('achievement.unlockedState'), detail, achievement.tone);
+}
+
 function showCountdown(value: string | null): void {
   const countdown = query<HTMLElement>('#countdown');
   countdown.textContent = value || '';
@@ -694,6 +819,7 @@ function renderUpgradeState(pending: UpgradeDefinition[], installed: UpgradeDefi
 }
 
 function rankFromResult(result: RunResult): string {
+  if (Number.isFinite(result.courseQuality)) return courseGradeFromQuality(result.courseQuality as number);
   if (!result.survived) return 'D';
   if (result.rank === 1 && result.accuracy > 0.55 && result.perfects >= 8) return 'S';
   if (result.rank <= 2) return 'A';
@@ -701,13 +827,245 @@ function rankFromResult(result: RunResult): string {
   return 'C';
 }
 
+function formatRaceTime(seconds: number | null | undefined): string {
+  if (seconds === null || seconds === undefined || !Number.isFinite(seconds)) return '—';
+  const totalMilliseconds = Math.max(0, Math.round(seconds * 1_000));
+  const minutes = Math.floor(totalMilliseconds / 60_000);
+  const wholeSeconds = Math.floor((totalMilliseconds % 60_000) / 1_000);
+  const milliseconds = totalMilliseconds % 1_000;
+  return `${String(minutes).padStart(2, '0')}:${String(wholeSeconds).padStart(2, '0')}.${String(milliseconds).padStart(3, '0')}`;
+}
+
+function performanceKeyForGrade(grade: CourseGrade): TranslationKey {
+  return {
+    S: 'results.performanceFlawless',
+    A: 'results.performanceExcellent',
+    B: 'results.performanceStrong',
+    C: 'results.performanceUnstable',
+    D: 'results.performanceCritical',
+  }[grade] as TranslationKey;
+}
+
+function renderRaceStandings(result: RunResult): void {
+  const body = query<HTMLTableSectionElement>('#result-rivals-body');
+  body.replaceChildren();
+  const standings = result.standings ?? [];
+  setText('#result-rivals-note', t(!result.survived
+    ? 'results.rivalStandingsElimination'
+    : standings.some((standing) => standing.status === 'racing')
+      ? 'results.rivalStandingsLive'
+      : 'results.rivalStandingsHint'));
+  if (standings.length === 0) {
+    const row = document.createElement('tr');
+    const cell = document.createElement('td');
+    cell.colSpan = 6;
+    cell.textContent = t('results.standingsPending');
+    row.append(cell);
+    body.append(row);
+    return;
+  }
+
+  for (const standing of standings) {
+    const row = document.createElement('tr');
+    row.dataset.status = standing.status;
+    if (standing.kind === 'player') row.classList.add('is-player');
+
+    const position = document.createElement('td');
+    position.dataset.label = t('results.standingPosition');
+    position.textContent = `#${standing.place}`;
+
+    const pilot = document.createElement('td');
+    pilot.dataset.label = t('results.standingPilot');
+    const pilotName = document.createElement('strong');
+    pilotName.textContent = standing.kind === 'player' ? t('results.pilotYou') : standing.name;
+    const pilotKind = document.createElement('small');
+    pilotKind.textContent = standing.kind === 'player'
+      ? t('results.pilotYou')
+      : t(standing.kind === 'ai' ? 'results.pilotAi' : 'results.pilotOnline');
+    pilot.append(pilotName, pilotKind);
+
+    const time = document.createElement('td');
+    time.dataset.label = t('results.standingTime');
+    time.textContent = formatRaceTime(standing.elapsedTime);
+
+    const score = document.createElement('td');
+    score.dataset.label = t('results.standingScore');
+    score.textContent = standing.score === null ? '—' : Math.round(standing.score).toLocaleString(getLocaleTag());
+
+    const obstacles = document.createElement('td');
+    obstacles.dataset.label = t('results.standingObstacles');
+    const obstaclePerformance = standing.obstaclePerformance;
+    obstacles.textContent = obstaclePerformance
+      ? `${obstaclePerformance.cleared}/${obstaclePerformance.encountered} · ${obstaclePerformance.collisions}×`
+      : '—';
+
+    const status = document.createElement('td');
+    status.dataset.label = t('results.standingStatus');
+    status.textContent = standing.status === 'finished'
+      ? t('results.pilotFinished')
+      : standing.status === 'destroyed'
+        ? t('results.pilotDestroyed')
+        : standing.status === 'racing'
+          ? t('results.pilotRacing', { progress: Math.round(standing.progress * 100) })
+          : t('results.pilotDidNotFinish');
+
+    row.append(position, pilot, time, score, obstacles, status);
+    body.append(row);
+  }
+}
+
+function renderRaceSummary(result: RunResult): void {
+  const quality = Number.isFinite(result.courseQuality) ? result.courseQuality as number : 0;
+  const grade = courseGradeFromQuality(quality);
+  const competitorCount = Math.max(
+    result.rank,
+    result.competitorCount ?? 0,
+    result.standings?.length ?? 0,
+    1,
+  );
+  const progress = Math.round(Math.max(0, Math.min(1, result.courseProgress ?? (result.survived ? 1 : 0))) * 100);
+  const performance = t(performanceKeyForGrade(grade));
+  const obstaclePerformance = result.obstaclePerformance;
+
+  setText('#result-position-label', t(result.survived ? 'results.finishPosition' : 'results.eliminationPosition'));
+  setText('#result-position', `${result.rank} / ${competitorCount}`);
+  setText('#result-time', formatRaceTime(result.elapsedTime));
+  setText('#result-course-grade', grade);
+  setText('#result-performance-summary', t('results.courseCompletion', { performance, progress }));
+  setText('#result-obstacle-clearance', obstaclePerformance
+    ? `${Math.round(obstaclePerformance.clearance * 100)}%`
+    : '—%');
+  setText('#result-obstacle-detail', obstaclePerformance
+    ? t('results.obstacleDetail', {
+        cleared: obstaclePerformance.cleared,
+        total: obstaclePerformance.encountered,
+        collisions: obstaclePerformance.collisions,
+      })
+    : t('results.obstaclePending'));
+  renderRaceStandings(result);
+}
+
+function refreshVisibleRaceReport(): void {
+  if (!displayedRunResult || !resultsScreen.classList.contains('is-active')) return;
+  displayedRunResult = game.refreshRunReport(displayedRunResult);
+  renderRaceSummary(displayedRunResult);
+}
+
+function setResultAccountStatus(message: string, tone: 'cyan' | 'gold' | 'red' | 'muted' = 'muted'): void {
+  const element = document.querySelector<HTMLElement>('#result-account-status');
+  if (!element) return;
+  element.textContent = message;
+  element.dataset.tone = tone;
+}
+
+async function prepareAccountRun(config: RunConfig, online: boolean): Promise<RunConfig> {
+  const preparationEpoch = ++accountRunPreparationEpoch;
+  activeAccountRun = null;
+  activeRunProgressOwner = 'none';
+  if (accountClient.getSnapshot().status === 'loading') await accountBootstrap;
+  const accountSnapshot = accountClient.getSnapshot();
+  if (accountSnapshot.status !== 'authenticated' || !accountSnapshot.profile) {
+    if (preparationEpoch === accountRunPreparationEpoch) {
+      activeRunProgressOwner = 'guest';
+      activeRunPreviousBest = guestGarage.bestScore;
+    }
+    return { ...config, garage: { ...guestGarage } };
+  }
+  activeRunPreviousBest = accountSnapshot.profile.garage.bestScore;
+  try {
+    const ticket = await accountClient.startRun({
+      trackId: config.track,
+      weapon: config.weapon,
+      ability: config.ability,
+      mode: online ? 'online' : 'solo',
+      musicSource: audio.getSourceKind(),
+      musicId: selectedMusicId,
+      requestedSeed: config.seed,
+      aiOpponents: config.aiOpponents ?? 3,
+    });
+    if (preparationEpoch !== accountRunPreparationEpoch) return config;
+    activeAccountRun = { ticket, startedAt: Date.now() };
+    activeRunProgressOwner = 'account';
+    garage = { ...ticket.garage };
+    updateGarageUi();
+    if (!online && ticket.rankedEligible) {
+      lastRunSeed = ticket.seed;
+      refreshCoursePreview();
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+    return { ...config, seed: ticket.seed, garage: { ...ticket.garage } };
+  } catch (error) {
+    if (preparationEpoch !== accountRunPreparationEpoch) return config;
+    activeRunProgressOwner = 'none';
+    const message = accountErrorMessage(error);
+    accountDialog.setStatus(message);
+    showToast(t('account.runOffline'), t('account.runOfflineHint'), 'red');
+    return config;
+  }
+}
+
+async function syncAccountRunResult(
+  context: AccountRunContext,
+  result: RunResult,
+  previousBest: number,
+): Promise<void> {
+  setResultAccountStatus(t('account.result.syncing'), 'cyan');
+  try {
+    const response = await accountClient.finishRun(context.ticket.runId, result);
+    if (accountClient.getSnapshot().profile?.accountId !== response.profile.accountId) return;
+    setText('#result-credits', `+${response.creditsAwarded} CR`);
+    setText('#result-best', result.score > previousBest
+      ? t('results.newBest')
+      : t('results.personalBest', { score: response.profile.garage.bestScore.toLocaleString(getLocaleTag()) }));
+    setResultAccountStatus(response.ranked
+      ? t('account.result.ranked', {
+        trackRank: response.trackRank ?? '—',
+        globalRank: response.globalRank ?? '—',
+      })
+      : t('account.result.unranked'), response.ranked ? 'gold' : 'cyan');
+    announceAccountAchievements(response.newlyUnlocked);
+  } catch (error) {
+    const apiError = error instanceof AccountApiError ? error : null;
+    if (!apiError || apiError.code === 'NETWORK_ERROR' || apiError.status === 401 || apiError.status === 429) {
+      setResultAccountStatus(t('account.result.queued'), 'gold');
+    } else {
+      setResultAccountStatus(t('account.result.rejected', { code: apiError.code }), 'red');
+    }
+  }
+}
+
+let pendingFinishRetryActive = false;
+
+async function retryPendingAccountFinishes(): Promise<void> {
+  if (pendingFinishRetryActive || accountClient.getSnapshot().status !== 'authenticated') return;
+  pendingFinishRetryActive = true;
+  try {
+    const responses = await accountClient.retryPendingFinishes();
+    if (responses.length > 0) {
+      for (const response of responses) announceAccountAchievements(response.newlyUnlocked);
+      showToast(t('account.syncRestored'), t('account.syncAccepted', { count: responses.length }), 'cyan');
+    }
+  } finally {
+    pendingFinishRetryActive = false;
+  }
+}
+
 function showResults(result: RunResult): void {
   if (currentRunIsOnline) broadcastLocalRaceState();
-  const wasBest = result.score > garage.bestScore;
-  garage.credits += result.credits;
-  garage.runs += 1;
-  garage.bestScore = Math.max(garage.bestScore, result.score);
-  saveGarage(garage);
+  const accountContext = activeAccountRun;
+  const progressOwner = activeRunProgressOwner;
+  const previousBest = activeRunPreviousBest;
+  activeAccountRun = null;
+  activeRunProgressOwner = 'none';
+  const wasBest = result.score > previousBest;
+  const accountStatus = accountClient.getSnapshot().status;
+  if (progressOwner === 'guest') {
+    guestGarage.credits += result.credits;
+    guestGarage.runs += 1;
+    guestGarage.bestScore = Math.max(guestGarage.bestScore, result.score);
+    saveGarage(guestGarage);
+    if (accountStatus !== 'authenticated') garage = { ...guestGarage };
+  }
   updateGarageUi();
   setRunUiActive(false);
   hud.classList.remove('is-active');
@@ -719,13 +1077,26 @@ function showResults(result: RunResult): void {
   setText('#result-score', result.score.toString().padStart(6, '0'));
   setText('#result-best', wasBest
     ? t('results.newBest')
-    : t('results.personalBest', { score: garage.bestScore.toLocaleString(getLocaleTag()) }));
+    : t('results.personalBest', {
+      score: (progressOwner === 'guest' ? guestGarage.bestScore : garage.bestScore).toLocaleString(getLocaleTag()),
+    }));
   setText('#result-speed', `${Math.round(result.maxSpeed).toLocaleString(getLocaleTag())} KM/H`);
   setText('#result-accuracy', `${Math.round(result.accuracy * 100)}%`);
   setText('#result-perfects', String(result.perfects));
   setText('#result-near', String(result.nearMisses));
   setText('#result-kills', String(result.kills));
-  setText('#result-credits', `+${result.credits} CR`);
+  displayedRunResult = result;
+  renderRaceSummary(result);
+  query<HTMLElement>('#replay-run strong').textContent = progressOwner === 'account' && accountContext?.ticket.rankedEligible
+    ? t('results.newRankedRun')
+    : t('results.replay');
+  setText('#result-credits', progressOwner === 'account' && accountContext ? 'SYNC…' : `+${result.credits} CR`);
+  if (progressOwner === 'account' && accountContext) void syncAccountRunResult(accountContext, result, previousBest);
+  else if (progressOwner === 'none') {
+    setResultAccountStatus(t('account.result.localUnavailable'), 'red');
+  } else {
+    setResultAccountStatus(t('account.result.guest'), 'muted');
+  }
   resultsScreen.classList.add('is-active');
 }
 
@@ -738,6 +1109,7 @@ async function startConfiguredRun(
   currentRunIsOnline = online;
   musicPreview.stop();
   startButton.disabled = true;
+  displayedRunResult = null;
   resultsScreen.classList.remove('is-active');
   query<HTMLButtonElement>('#replay-run').hidden = online;
   menu.classList.add('is-hidden');
@@ -759,6 +1131,8 @@ async function startConfiguredRun(
     });
   } catch (error) {
     console.error(error);
+    activeAccountRun = null;
+    activeRunProgressOwner = 'none';
     game.backToMenu();
     audio.useSynthetic();
     selectedMusicId = 'synthetic';
@@ -790,7 +1164,9 @@ async function launchRun(replay = false): Promise<void> {
   onlineMatch = null;
   remoteRaceStates.clear();
   game.setRemoteRacers([]);
-  await startConfiguredRun(config, false);
+  startButton.disabled = true;
+  const preparedConfig = await prepareAccountRun(config, false);
+  await startConfiguredRun(preparedConfig, false);
 }
 
 type MobileMenuPane = 'race' | 'loadout' | 'garage' | 'online';
@@ -848,8 +1224,8 @@ for (const button of abilityButtons) {
 installRadioKeyboard(abilityButtons);
 
 for (const button of queryAll<HTMLButtonElement>('.garage-module')) {
-  button.addEventListener('click', () => {
-    const module = button.dataset.module as keyof Pick<GarageState, 'engine' | 'cooling' | 'shield' | 'weapon'>;
+  button.addEventListener('click', async () => {
+    const module = button.dataset.module as GarageModuleId;
     const level = garage[module];
     const cost = 250 + level * 300;
     if (level >= 5) return;
@@ -858,9 +1234,28 @@ for (const button of queryAll<HTMLButtonElement>('.garage-module')) {
       requestAnimationFrame(() => button.classList.add('is-denied'));
       return;
     }
+    if (accountClient.getSnapshot().status === 'authenticated') {
+      if (pendingGarageUpgrades.size > 0) return;
+      pendingGarageUpgrades.add(module);
+      updateGarageUi();
+      try {
+        const response = await accountClient.upgradeGarage(module);
+        announceAccountAchievements(response.newlyUnlocked);
+      } catch (error) {
+        button.classList.remove('is-denied');
+        requestAnimationFrame(() => button.classList.add('is-denied'));
+        const code = error instanceof AccountApiError ? error.code : 'SYNC_ERROR';
+        showToast(t('account.garageSyncFailed'), accountErrorMessage(error) || code, 'red');
+      } finally {
+        pendingGarageUpgrades.delete(module);
+        updateGarageUi();
+      }
+      return;
+    }
     garage.credits -= cost;
     garage[module] += 1;
-    saveGarage(garage);
+    guestGarage = { ...garage };
+    saveGarage(guestGarage);
     updateGarageUi();
   });
 }
@@ -1492,6 +1887,7 @@ function leaveOnlineRoomUi(): void {
   onlineRoom = null;
   onlineMatch = null;
   currentRunIsOnline = false;
+  displayedRunResult = null;
   remoteRaceStates.clear();
   game.setRemoteRacers([]);
   window.clearTimeout(onlineStartTimer);
@@ -1507,13 +1903,11 @@ function syncRemoteRacers(): void {
   if (!onlineMatch || !lobbyClient?.playerId || !currentRunIsOnline) return;
   const currentMembers = new Set(onlineRoom?.players.map((player) => player.id) ?? []);
   const racers: RemoteRacerState[] = onlineMatch.humans
-    .filter((human) => {
-      if (human.id === lobbyClient?.playerId) return false;
-      const state = remoteRaceStates.get(human.id);
-      return currentMembers.has(human.id) || Boolean(state?.destroyed || state?.finished);
-    })
+    .filter((human) => human.id !== lobbyClient?.playerId)
     .map((human) => {
       const state = remoteRaceStates.get(human.id);
+      const terminal = Boolean(state?.destroyed || state?.finished);
+      const disconnected = Boolean(onlineRoom) && !currentMembers.has(human.id) && !terminal;
       return {
         id: human.id,
         name: human.name,
@@ -1521,13 +1915,16 @@ function syncRemoteRacers(): void {
         angle: state?.angle ?? 0,
         speed: state?.speed ?? 0,
         shield: state?.shield ?? 3,
-        active: state ? !state.destroyed && !state.finished : true,
+        score: state?.score ?? 0,
+        active: disconnected ? false : state ? !terminal : true,
         destroyed: state?.destroyed ?? false,
         finished: state?.finished ?? false,
-        finishedAt: state?.finished ? state.serverTime : undefined,
+        dnf: disconnected,
+        terminalAt: terminal ? state?.serverTime : undefined,
       };
     });
   game.setRemoteRacers(racers);
+  refreshVisibleRaceReport();
 }
 
 function broadcastLocalRaceState(): void {
@@ -1570,9 +1967,25 @@ async function handleOnlineRaceStart(config: AuthoritativeRaceConfig): Promise<v
   const delay = lobbyClient.delayUntil(config.startsAt);
   setOnlineStatus(`SYNC START // ${Math.max(0, delay / 1000).toFixed(1)} SEC // EDGE SIGNAL LOCKED FOR ALL PILOTS`);
   window.clearTimeout(onlineStartTimer);
+  const runConfig: RunConfig = { ...mine.runConfig, aiOpponents: config.aiOpponents };
+  const preparedRun = prepareAccountRun(runConfig, true);
+  let preparedConfig: RunConfig | null = null;
+  void preparedRun.then((value) => { preparedConfig = value; });
   onlineStartTimer = window.setTimeout(() => {
-    const runConfig: RunConfig = { ...mine.runConfig, aiOpponents: config.aiOpponents };
-    void startConfiguredRun(runConfig, true, config.bots).then(syncRemoteRacers);
+    if (!preparedConfig) {
+      accountRunPreparationEpoch += 1;
+      activeAccountRun = null;
+      const snapshot = accountClient.getSnapshot();
+      activeRunProgressOwner = snapshot.status === 'guest' || snapshot.status === 'error' ? 'guest' : 'none';
+      activeRunPreviousBest = activeRunProgressOwner === 'guest'
+        ? guestGarage.bestScore
+        : snapshot.profile?.garage.bestScore ?? garage.bestScore;
+      showToast(t('account.preflightSkipped'), t('account.preflightHint'), 'gold');
+    }
+    const synchronizedConfig = preparedConfig ?? (activeRunProgressOwner === 'guest'
+      ? { ...runConfig, garage: { ...guestGarage } }
+      : runConfig);
+    void startConfiguredRun(synchronizedConfig, true, config.bots).then(syncRemoteRacers);
   }, delay);
 }
 
@@ -1600,10 +2013,6 @@ function bindLobbyClient(client: LobbyClient): void {
     if (!isCurrent()) return;
     renderOnlineRoom(room);
     if (onlineMatch) {
-      const memberIds = new Set(room.players.map((player) => player.id));
-      for (const [playerId, state] of remoteRaceStates) {
-        if (!memberIds.has(playerId) && !state.destroyed && !state.finished) remoteRaceStates.delete(playerId);
-      }
       syncRemoteRacers();
     }
   });
@@ -1763,11 +2172,16 @@ query<HTMLFormElement>('#online-chat-form').addEventListener('submit', (event) =
 window.setInterval(() => {
   if (lobbyClient?.connectionState === 'online') lobbyClient.ping();
 }, 10_000);
+window.setInterval(() => void retryPendingAccountFinishes(), 30_000);
+window.addEventListener('online', () => void retryPendingAccountFinishes());
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') void retryPendingAccountFinishes();
+});
 renderOnlineRooms();
 setOnlineConnection('ready', 'READY');
 
 query<HTMLButtonElement>('#settings-open').addEventListener('click', () => {
-  if (settingsDialog.open) return;
+  if (settingsDialog.open || accountDialogElement.open) return;
   game.setInputCapture(true);
   syncSettingsUi();
   settingsDialog.showModal();
@@ -1786,7 +2200,7 @@ settingsDialog.addEventListener('cancel', (event) => {
 
 settingsDialog.addEventListener('close', () => {
   bindingCapture = null;
-  game.setInputCapture(false);
+  game.setInputCapture(accountDialogElement.open);
   query<HTMLButtonElement>('#settings-open').focus();
 });
 
@@ -1987,6 +2401,7 @@ query<HTMLButtonElement>('#return-menu').addEventListener('click', () => {
   currentRunIsOnline = false;
   onlineMatch = null;
   remoteRaceStates.clear();
+  displayedRunResult = null;
   resultsScreen.classList.remove('is-active');
   hud.classList.remove('is-active');
   menu.classList.remove('is-hidden');

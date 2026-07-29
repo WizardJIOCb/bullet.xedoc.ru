@@ -16,6 +16,7 @@ import {
   WEAPONS,
   type RunConfig,
   type LocalRaceSnapshot,
+  type RaceStanding,
   type RemoteRacerState,
   type RunResult,
   type RunStats,
@@ -57,6 +58,12 @@ import {
   type RivalAIState,
 } from './rivalAI';
 import { resolveOpponentVisualQuaternion } from './opponentVisual';
+import {
+  calculateCourseQuality,
+  createObstaclePerformance,
+  isMajorObstacle,
+  orderRaceStandings,
+} from './runReport';
 import {
   generateTrack,
   getTrackEventSafeCorridors,
@@ -100,6 +107,9 @@ interface Rival {
   ai: RivalAIState;
   lastOutput: RivalAIOutput | null;
   color: number;
+  maxSpeed: number;
+  obstaclesEncountered: number;
+  obstacleCollisions: number;
 }
 
 type OpponentKind = 'ai' | 'remote';
@@ -155,7 +165,9 @@ interface RemoteRacer {
   active: boolean;
   destroyed: boolean;
   finished: boolean;
-  finishedAt: number | null;
+  dnf: boolean;
+  terminalAt: number | null;
+  score: number | null;
 }
 
 interface Burst {
@@ -215,6 +227,8 @@ interface StreakSpec {
 const FIXED_STEP = 1 / 120;
 const RUN_COUNTDOWN_SECONDS = 2.8;
 const ONLINE_AI_CATCHUP_STEPS_PER_FRAME = 120;
+const RESULT_AI_CATCHUP_STEPS_PER_FRAME = 240;
+const RESULT_AI_MAX_DURATION_MULTIPLIER = 1.6;
 const ONLINE_TERMINAL_ACK_TIMEOUT = 1.5;
 const UPGRADES_AT = [0.31, 0.64];
 const TEMPORAL_FOCUS_DURATION = 1.2;
@@ -317,6 +331,9 @@ export class BallisticGame {
   private kills = 0;
   private shots = 0;
   private hits = 0;
+  private obstaclePerfects = 0;
+  private obstaclesEncountered = 0;
+  private obstacleCollisions = 0;
   private section = 1;
   private upgradeIndex = 0;
   private upgradeRoll = 0;
@@ -448,7 +465,7 @@ export class BallisticGame {
       shield: Math.max(0, this.shield),
       heat: clamp(stats.heat, 0, 100),
       flux: clamp(stats.flux, 0, 100),
-      score: Math.max(0, stats.score),
+      score: Math.max(0, this.pendingResult?.score ?? stats.score),
       rank: stats.rank,
       section: stats.section,
       active,
@@ -473,6 +490,8 @@ export class BallisticGame {
       const name = state.name.replace(/\s+/g, ' ').trim().slice(0, 24) || 'RACER';
       const targetProgress = clamp(state.progress, 0, 1);
       const targetAngle = wrapAngle(state.angle);
+      const terminal = Boolean(state.finished || state.destroyed);
+      const terminalStamp = state.terminalAt ?? state.finishedAt;
       let racer = this.remoteRacers.get(id);
       if (!racer) {
         const colorIndex = this.pickRemoteRacerColorIndex(id);
@@ -493,7 +512,9 @@ export class BallisticGame {
           active: state.active ?? true,
           destroyed: state.destroyed ?? false,
           finished: state.finished ?? false,
-          finishedAt: state.finished && Number.isFinite(state.finishedAt) ? state.finishedAt as number : null,
+          dnf: state.dnf ?? false,
+          terminalAt: terminal && Number.isFinite(terminalStamp) ? terminalStamp as number : null,
+          score: Number.isFinite(state.score) ? Math.max(0, state.score as number) : null,
         };
         this.remoteRacers.set(id, racer);
       } else {
@@ -505,9 +526,11 @@ export class BallisticGame {
         racer.active = state.active ?? true;
         racer.destroyed = state.destroyed ?? false;
         racer.finished = state.finished ?? false;
-        racer.finishedAt = racer.finished && Number.isFinite(state.finishedAt)
-          ? state.finishedAt as number
-          : racer.finished ? racer.finishedAt : null;
+        racer.dnf = state.dnf ?? false;
+        racer.terminalAt = terminal && Number.isFinite(terminalStamp)
+          ? terminalStamp as number
+          : terminal ? racer.terminalAt : null;
+        racer.score = Number.isFinite(state.score) ? Math.max(0, state.score as number) : racer.score;
       }
       racer.mesh.userData.remoteRacer = {
         id: racer.id,
@@ -519,7 +542,9 @@ export class BallisticGame {
         active: racer.active,
         destroyed: racer.destroyed,
         finished: racer.finished,
-        finishedAt: racer.finishedAt,
+        dnf: racer.dnf,
+        terminalAt: racer.terminalAt,
+        score: racer.score,
       };
     }
 
@@ -544,6 +569,14 @@ export class BallisticGame {
     this.applyPostProcessingSettings();
     this.applyRivalVisibilitySettings();
     this.resize();
+  }
+
+  /** Rebuilds volatile opponent rows without changing the locally awarded result. */
+  refreshRunReport(result: Readonly<RunResult>): RunResult {
+    return {
+      ...result,
+      standings: this.createRaceStandings(result.survived, result.score, result.rank),
+    };
   }
 
   /** Applies a live bloom slider value without reallocating render targets. */
@@ -1525,6 +1558,9 @@ export class BallisticGame {
         }, this.rivalAiModel.baseSpeed),
         lastOutput: null,
         color: colors[0],
+        maxSpeed: this.rivalAiModel.baseSpeed,
+        obstaclesEncountered: 0,
+        obstacleCollisions: 0,
       });
     }
   }
@@ -2389,6 +2425,9 @@ export class BallisticGame {
     this.kills = 0;
     this.shots = 0;
     this.hits = 0;
+    this.obstaclePerfects = 0;
+    this.obstaclesEncountered = 0;
+    this.obstacleCollisions = 0;
     this.section = 1;
     this.upgradeIndex = 0;
     this.upgradeRoll = 0;
@@ -2417,6 +2456,9 @@ export class BallisticGame {
         angle: (index / Math.max(1, this.rivals.length)) * TAU,
       }, baseSpeed);
       rival.lastOutput = null;
+      rival.maxSpeed = baseSpeed;
+      rival.obstaclesEncountered = 0;
+      rival.obstacleCollisions = 0;
     }
     for (const racer of this.remoteRacers.values()) {
       racer.progress = 0;
@@ -2425,7 +2467,9 @@ export class BallisticGame {
       racer.speed = 0;
       racer.destroyed = false;
       racer.finished = false;
-      racer.finishedAt = null;
+      racer.dnf = false;
+      racer.terminalAt = null;
+      racer.score = 0;
     }
   }
 
@@ -2457,19 +2501,22 @@ export class BallisticGame {
         this.stepSimulation(FIXED_STEP);
       }
     } else if (
-      this.onlineRun
-      && this.pendingResult
+      this.pendingResult
       && (this.state === 'finished' || this.state === 'dying')
       && dt > 0
     ) {
-      this.rivalAiCatchupBudget = ONLINE_AI_CATCHUP_STEPS_PER_FRAME;
-      this.updateRivals(
-        FIXED_STEP,
-        this.distance,
-        this.rivalAiTick * FIXED_STEP,
-        false,
-        this.localFinishAiTick ?? undefined,
-      );
+      if (this.onlineRun) {
+        this.rivalAiCatchupBudget = ONLINE_AI_CATCHUP_STEPS_PER_FRAME;
+        this.updateRivals(
+          FIXED_STEP,
+          this.distance,
+          this.rivalAiTick * FIXED_STEP,
+          false,
+          this.rivalReportMaxTick(),
+        );
+      } else {
+        this.catchUpSoloRivalsForReport();
+      }
     } else if (
       this.state === 'menu'
       || (this.state === 'finished' && this.impactFlashTimer <= 0 && this.chaseImpactEffects.length === 0)
@@ -2491,7 +2538,7 @@ export class BallisticGame {
       resultReady = this.resultDelay <= 0;
     }
     if (resultReady && this.awaitingTerminalAck && this.terminalAckTimeout > 0) resultReady = false;
-    if (resultReady && !this.onlineRivalsReadyForResult()) resultReady = false;
+    if (resultReady && !this.rivalsReadyForResult()) resultReady = false;
 
     this.updateVisuals(dt);
     this.uiAccumulator += dt;
@@ -2644,6 +2691,7 @@ export class BallisticGame {
         event.resolved = true;
         continue;
       }
+      if (isMajorObstacle(event.kind)) this.obstaclesEncountered += 1;
       const onEventCue = isInsideMusicEventWindow(event.musicTime, audibleTime);
       const delta = angularDistance(this.angle, event.angle);
       if (event.kind === 'gate' || event.kind === 'aperture') {
@@ -2651,14 +2699,14 @@ export class BallisticGame {
         else {
           event.resolved = true;
           if (delta > event.gapWidth * 0.69) this.registerNearMiss();
-          else if (onEventCue) this.registerPerfect(event.kind === 'aperture' ? 'APERTURE SYNC' : 'GATE SYNC');
+          else if (onEventCue) this.registerPerfect(event.kind === 'aperture' ? 'APERTURE SYNC' : 'GATE SYNC', true);
         }
       } else if (event.kind === 'halfwall') {
         if (isObstacleCollision(event, this.angle, audibleTime)) this.hitObstacle(event, audibleTime);
         else {
           event.resolved = true;
           if (delta < event.gapWidth + 0.16) this.registerNearMiss();
-          else if (onEventCue) this.registerPerfect('WALL SYNC');
+          else if (onEventCue) this.registerPerfect('WALL SYNC', true);
         }
       } else if (event.kind === 'blade' || event.kind === 'cross') {
         const bladeDelta = this.rotorAngularDistance(event, audibleTime);
@@ -2666,7 +2714,7 @@ export class BallisticGame {
         else {
           event.resolved = true;
           if (bladeDelta < event.gapWidth + 0.14) this.registerNearMiss();
-          else if (onEventCue) this.registerPerfect(event.kind === 'cross' ? 'CROSS SYNC' : 'BLADE SYNC');
+          else if (onEventCue) this.registerPerfect(event.kind === 'cross' ? 'CROSS SYNC' : 'BLADE SYNC', true);
         }
       } else if (event.kind === 'bastion') {
         if (isObstacleCollision(event, this.angle, audibleTime)) this.hitObstacle(event, audibleTime);
@@ -2719,6 +2767,7 @@ export class BallisticGame {
       this.hooks.onToast('PHASED', t('game.phased'), 'cyan');
       return;
     }
+    this.obstacleCollisions += 1;
     const impactAngle = this.angle;
     const knockback = computeObstacleKnockback(
       event,
@@ -2800,6 +2849,7 @@ export class BallisticGame {
 
   private destroyEvent(event: TrackEvent, fromAbility: boolean): void {
     if (event.destroyed) return;
+    if (!event.resolved && isMajorObstacle(event.kind)) this.obstaclesEncountered += 1;
     event.destroyed = true;
     event.resolved = true;
     this.kills += 1;
@@ -2832,13 +2882,56 @@ export class BallisticGame {
   }
 
   private onlineRivalsReadyForResult(): boolean {
-    if (
-      !this.onlineRun
-      || !this.onlineTimeProvider
-      || this.onlineRaceOriginTime === null
-      || this.rivals.every((rival) => rival.ai.finishTick !== null)
-    ) return true;
-    return this.rivalAiTick >= (this.localFinishAiTick ?? this.onlineAiTargetTick());
+    if (!this.onlineRun || this.rivals.every((rival) => rival.ai.finishTick !== null)) return true;
+    return this.rivalAiTick >= this.rivalReportMaxTick();
+  }
+
+  private rivalReportMaxTick(): number {
+    return Math.max(
+      this.rivalAiTick,
+      Math.ceil(this.plan.runDuration * RESULT_AI_MAX_DURATION_MULTIPLIER / FIXED_STEP),
+    );
+  }
+
+  private catchUpSoloRivalsForReport(): void {
+    if (this.onlineRun || !this.rivalAiModel || this.rivals.every((rival) => rival.ai.finishTick !== null)) return;
+    const finalTick = Math.min(
+      this.rivalReportMaxTick(),
+      this.rivalAiTick + RESULT_AI_CATCHUP_STEPS_PER_FRAME,
+    );
+    while (
+      this.rivalAiTick < finalTick
+      && this.rivals.some((rival) => rival.ai.finishTick === null)
+    ) {
+      const transportTime = (this.rivalAiTick + 1) * FIXED_STEP;
+      const paceReference = clamp(transportTime / this.plan.runDuration, 0, 1) * this.plan.length;
+      this.updateRivals(FIXED_STEP, paceReference, transportTime, false);
+    }
+  }
+
+  private catchUpOnlineRivalsToTick(targetTick: number): void {
+    if (!this.onlineRun || !Number.isFinite(targetTick) || !this.rivalAiModel || this.rivals.length === 0) return;
+    const boundedTarget = clamp(
+      Math.trunc(targetTick),
+      this.rivalAiTick,
+      Math.ceil(this.plan.runDuration / FIXED_STEP),
+    );
+    while (this.rivalAiTick < boundedTarget) {
+      this.rivalAiCatchupBudget = ONLINE_AI_CATCHUP_STEPS_PER_FRAME;
+      this.updateRivals(
+        FIXED_STEP,
+        this.distance,
+        this.rivalAiTick * FIXED_STEP,
+        false,
+        boundedTarget,
+      );
+    }
+  }
+
+  private rivalsReadyForResult(): boolean {
+    if (this.onlineRun) return this.onlineRivalsReadyForResult();
+    return this.rivals.every((rival) => rival.ai.finishTick !== null)
+      || this.rivalAiTick >= this.rivalReportMaxTick();
   }
 
   private updateRivals(
@@ -2865,7 +2958,7 @@ export class BallisticGame {
         ? clamp(
           Math.trunc(targetTickOverride as number),
           this.rivalAiTick,
-          Math.ceil(this.plan.runDuration / FIXED_STEP),
+          interactive ? Math.ceil(this.plan.runDuration / FIXED_STEP) : this.rivalReportMaxTick(),
         )
         : this.onlineAiTargetTick()
       : this.rivalAiTick + 1;
@@ -2903,7 +2996,7 @@ export class BallisticGame {
             paceReference: aiPaceReference,
             player,
             traffic: snapshots.filter((snapshot) => snapshot.id !== rival.profile.id),
-            allowPlayerTactics: !this.onlineRun,
+            allowPlayerTactics: interactive && !this.onlineRun,
           },
         ),
         aiTransportTime,
@@ -2960,13 +3053,29 @@ export class BallisticGame {
   }
 
   private resolveRivalHazards(rival: Rival, output: RivalAIOutput, transportTime: number): RivalAIOutput {
-    const hitHazard = output.crossedHazardIds.some((id) => {
+    const crossedObstacleIds = output.crossedHazardIds.filter((id) => {
+      const event = this.trackEventsById.get(id);
+      return Boolean(event && isMajorObstacle(event.kind));
+    });
+    rival.obstaclesEncountered = Math.max(
+      0,
+      Number.isFinite(rival.obstaclesEncountered) ? rival.obstaclesEncountered : 0,
+    ) + crossedObstacleIds.length;
+    const hitHazard = crossedObstacleIds.some((id) => {
       const event = this.trackEventsById.get(id);
       if (!event || (!this.onlineRun && event.destroyed)) return false;
       return isObstacleCollision(event, output.state.angle, transportTime);
     });
-    if (!hitHazard) return output;
+    if (!hitHazard) {
+      rival.maxSpeed = Math.max(Number.isFinite(rival.maxSpeed) ? rival.maxSpeed : 0, output.state.speed);
+      return output;
+    }
+    rival.obstacleCollisions = Math.max(
+      0,
+      Number.isFinite(rival.obstacleCollisions) ? rival.obstacleCollisions : 0,
+    ) + 1;
     const state = applyRivalHazardImpact(output.state, rival.profile);
+    rival.maxSpeed = Math.max(Number.isFinite(rival.maxSpeed) ? rival.maxSpeed : 0, state.speed);
     return {
       ...output,
       state,
@@ -3053,8 +3162,9 @@ export class BallisticGame {
     this.hooks.onUpgradeState([...this.pendingUpgradeOptions], installed);
   }
 
-  private registerPerfect(label: string): void {
+  private registerPerfect(label: string, obstacle = false): void {
     this.perfects += 1;
+    if (obstacle) this.obstaclePerfects += 1;
     this.sync = Math.min(32, this.sync + 1);
     const temporalCore = this.runUpgrades.has('temporal-core');
     this.score += 180 * (1 + this.sync * 0.08) * (temporalCore ? TEMPORAL_SCORE_MULTIPLIER : 1);
@@ -3092,11 +3202,12 @@ export class BallisticGame {
       this.localFinishAiTick = this.localFinishTime === null
         ? this.rivalAiTick
         : this.onlineAiTickAt(this.localFinishTime);
+      this.catchUpOnlineRivalsToTick(this.localFinishAiTick);
       this.awaitingTerminalAck = this.onlineRun;
       this.terminalAckTimeout = this.onlineRun ? ONLINE_TERMINAL_ACK_TIMEOUT : 0;
-      this.hooks.onTerminal();
       const result = this.createRunResult(false);
       this.beginDeathSequence(result);
+      this.hooks.onTerminal();
       return;
     }
     this.releaseInputs();
@@ -3105,13 +3216,121 @@ export class BallisticGame {
     this.localFinishAiTick = this.localFinishTime === null
       ? this.rivalAiTick
       : this.onlineAiTickAt(this.localFinishTime);
+    this.catchUpOnlineRivalsToTick(this.localFinishAiTick);
     this.awaitingTerminalAck = this.onlineRun;
     this.terminalAckTimeout = this.onlineRun ? ONLINE_TERMINAL_ACK_TIMEOUT : 0;
-    this.hooks.onTerminal();
     const result = this.createRunResult(true);
     this.audio.stop();
     this.pendingResult = result;
     this.resultDelay = 0.42;
+    this.hooks.onTerminal();
+  }
+
+  private getLocalElapsedTime(): number {
+    if (Number.isFinite(this.onlineRaceOriginTime) && Number.isFinite(this.localFinishTime)) {
+      return Math.max(0, ((this.localFinishTime as number) - (this.onlineRaceOriginTime as number)) / 1_000);
+    }
+    return Math.max(0, (Number.isFinite(this.simulationTick) ? this.simulationTick : 0) * FIXED_STEP);
+  }
+
+  private getPlayerObstaclePerformance() {
+    const obstacles = (this.plan?.events ?? []).filter((event) => isMajorObstacle(event.kind));
+    const encountered = Number.isFinite(this.obstaclesEncountered)
+      ? this.obstaclesEncountered
+      : obstacles.filter((event) => event.resolved || event.destroyed).length;
+    return createObstaclePerformance(obstacles.length, encountered, this.obstacleCollisions);
+  }
+
+  private getRemoteElapsedTime(racer: Readonly<RemoteRacer>): number | null {
+    if (!Number.isFinite(racer.terminalAt) || !Number.isFinite(this.onlineRaceOriginTime)) return null;
+    return Math.max(0, ((racer.terminalAt as number) - (this.onlineRaceOriginTime as number)) / 1_000);
+  }
+
+  private createRaceStandings(
+    survived: boolean,
+    finalScore: number,
+    rank: number,
+  ): RaceStanding[] {
+    const planLength = Math.max(1, Number.isFinite(this.plan?.length) ? this.plan.length : 1);
+    const obstacleTotal = (this.plan?.events ?? []).filter((event) => isMajorObstacle(event.kind)).length;
+    const entries: RaceStanding[] = [{
+      id: 'player',
+      name: 'YOU',
+      kind: 'player',
+      status: survived ? 'finished' : 'destroyed',
+      place: rank,
+      progress: clamp((Number.isFinite(this.distance) ? this.distance : 0) / planLength, 0, 1),
+      elapsedTime: this.getLocalElapsedTime(),
+      score: finalScore,
+      obstaclePerformance: this.getPlayerObstaclePerformance(),
+    }];
+
+    for (const rival of this.rivals ?? []) {
+      const finished = rival.ai.finishTick !== null;
+      const reportClosed = this.state !== 'playing'
+        && this.rivalAiTick >= this.rivalReportMaxTick();
+      entries.push({
+        id: rival.profile.id,
+        name: rival.profile.callSign,
+        kind: 'ai',
+        status: finished ? 'finished' : reportClosed ? 'dnf' : 'racing',
+        place: 0,
+        progress: clamp(rival.ai.distance / planLength, 0, 1),
+        elapsedTime: finished ? (rival.ai.finishTick as number) * FIXED_STEP : null,
+        score: null,
+        obstaclePerformance: createObstaclePerformance(
+          obstacleTotal,
+          rival.obstaclesEncountered,
+          rival.obstacleCollisions,
+        ),
+      });
+    }
+
+    for (const racer of this.remoteRacers?.values() ?? []) {
+      const status = racer.finished
+        ? 'finished'
+        : racer.destroyed
+          ? 'destroyed'
+          : racer.dnf || !racer.active
+            ? 'dnf'
+            : 'racing';
+      entries.push({
+        id: racer.id,
+        name: racer.name,
+        kind: 'human',
+        status,
+        place: 0,
+        progress: clamp(racer.targetProgress, 0, 1),
+        elapsedTime: this.getRemoteElapsedTime(racer),
+        score: racer.score,
+        obstaclePerformance: null,
+      });
+    }
+
+    return orderRaceStandings(entries, rank);
+  }
+
+  private createRunTelemetry(survived: boolean, finalScore: number, rank: number) {
+    const obstaclePerformance = this.getPlayerObstaclePerformance();
+    const planLength = Math.max(1, Number.isFinite(this.plan?.length) ? this.plan.length : 1);
+    const courseProgress = clamp((Number.isFinite(this.distance) ? this.distance : 0) / planLength, 0, 1);
+    return {
+      elapsedTime: this.getLocalElapsedTime(),
+      competitorCount: Math.max(
+        Number.isFinite(this.raceCompetitorCount) ? this.raceCompetitorCount : 1,
+        1 + (this.rivals?.length ?? 0) + (this.remoteRacers?.size ?? 0),
+      ),
+      courseProgress,
+      courseQuality: calculateCourseQuality({
+        survived,
+        progress: courseProgress,
+        obstaclePerformance,
+        perfects: Number.isFinite(this.obstaclePerfects) ? this.obstaclePerfects : this.perfects,
+        nearMisses: this.nearMisses,
+      }),
+      obstaclePerformance,
+      standings: this.createRaceStandings(survived, finalScore, rank),
+    };
   }
 
   private createRunResult(survived: boolean): RunResult {
@@ -3132,20 +3351,14 @@ export class BallisticGame {
       survived,
       trackName: TRACKS[this.trackId].name,
       seed: this.plan.seed,
+      ...this.createRunTelemetry(survived, finalScore, rank),
     };
   }
 
   private refreshRunResultPlacement(result: Readonly<RunResult>): RunResult {
-    const rank = this.getRank();
-    if (rank === result.rank) return { ...result };
-    const previousBonus = Math.max(0, this.raceCompetitorCount - result.rank) * 1200;
-    const placementBonus = Math.max(0, this.raceCompetitorCount - rank) * 1200;
-    const score = Math.max(0, result.score - previousBonus + placementBonus);
     return {
       ...result,
-      rank,
-      score,
-      credits: Math.max(90, Math.round(score / 42 + this.kills * 8)),
+      ...this.createRunTelemetry(result.survived, result.score, result.rank),
     };
   }
 
@@ -3666,7 +3879,7 @@ export class BallisticGame {
       && (racer.active || racer.finished)
       && (
         localFinished && racer.finished
-          ? localFinishTime !== null && racer.finishedAt !== null && racer.finishedAt < localFinishTime
+          ? localFinishTime !== null && racer.terminalAt !== null && racer.terminalAt < localFinishTime
           : racer.targetProgress * this.plan.length > this.distance + 2
       )
     )).length;
