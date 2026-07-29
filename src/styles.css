@@ -1444,8 +1444,17 @@ label:focus-within {
   white-space: nowrap;
 }
 
+.menu-sidebar {
+  min-width: 0;
+  display: flex;
+  grid-column: 2;
+  grid-row: 1 / span 3;
+  flex-direction: column;
+  gap: clamp(14px, 1.4vw, 22px);
+  align-self: start;
+}
+
 .loadout-panel {
-  grid-row: span 3;
   padding: clamp(18px, 1.7vw, 28px);
 }
 
@@ -2778,7 +2787,7 @@ label:focus-within {
 #online-entry-status { grid-column: 1 / -1; }
 
 .launch-panel {
-  grid-column: 2;
+  grid-column: auto;
 }
 
 .launch-button {
@@ -4224,6 +4233,7 @@ kbd {
 
 @media (max-width: 960px) {
   .menu-grid { grid-template-columns: 1fr; }
+  .menu-sidebar { grid-column: 1; grid-row: auto; }
   .loadout-panel { grid-row: auto; }
   .launch-panel { grid-column: 1; }
   .online-panel { grid-column: 1; }
@@ -4277,6 +4287,7 @@ kbd {
   #game-canvas, .visual-overlay { position: fixed; }
   .screen--menu { position: relative; min-height: 100%; padding: 18px 14px 25px; }
   .menu-grid { grid-template-columns: 1fr; }
+  .menu-sidebar { grid-column: 1; grid-row: auto; }
   .loadout-panel { grid-row: auto; }
   .launch-panel { grid-column: 1; }
   .game-title { font-size: clamp(58px, 16vw, 100px); }
@@ -4589,6 +4600,10 @@ html.is-run-active body {
 
   .menu-grid {
     display: block;
+  }
+
+  .menu-sidebar {
+    display: contents;
   }
 
   .screen--menu [data-menu-pane] {
