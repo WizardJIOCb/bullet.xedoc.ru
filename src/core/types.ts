@@ -1,4 +1,4 @@
-export type TrackId = 'aurora' | 'reactor' | 'void' | 'forge';
+export type TrackId = 'aurora' | 'reactor' | 'void' | 'forge' | 'skyline' | 'abyss';
 export type WeaponId = 'pulse' | 'scatter' | 'rail';
 export type AbilityId = 'phase' | 'emp' | 'overdrive';
 export type UpgradeId =
@@ -60,7 +60,33 @@ export interface MusicProfile {
   bass: number[];
   mids: number[];
   highs: number[];
+  onsets?: number[];
+  kicks?: number[];
+  transients?: number[];
+  beats: RhythmBeat[];
+  transitions: MusicTransition[];
   seed: number;
+}
+
+export type RhythmCue = 'beat' | 'kick' | 'transient' | 'transition';
+
+export interface RhythmBeat {
+  time: number;
+  strength: number;
+  bass: number;
+  highs: number;
+  barBeat: 0 | 1 | 2 | 3;
+  gridBeat?: boolean;
+  cue?: RhythmCue;
+  onset?: number;
+  kick?: number;
+  transient?: number;
+}
+
+export interface MusicTransition {
+  time: number;
+  strength: number;
+  kind: 'build' | 'drop' | 'break' | 'fill';
 }
 
 export interface RunConfig {
@@ -69,6 +95,49 @@ export interface RunConfig {
   ability: AbilityId;
   seed: number;
   garage: GarageState;
+  /** Number of local AI rivals. Omitted keeps the classic three-rival solo race. */
+  aiOpponents?: number;
+}
+
+/**
+ * Compact, serialization-safe state of the local bolide. `speed` uses the same
+ * km/h display scale as the HUD and `progress` is normalized to the course.
+ */
+export interface LocalRaceSnapshot {
+  progress: number;
+  angle: number;
+  speed: number;
+  shield: number;
+  heat: number;
+  flux: number;
+  score: number;
+  rank: number;
+  section: number;
+  active: boolean;
+  running: boolean;
+  destroyed: boolean;
+  finished: boolean;
+}
+
+/** Network-fed visual state for another human racer. Remote racers are visual only. */
+export interface RemoteRacerState {
+  id: string;
+  name: string;
+  progress: number;
+  angle: number;
+  speed: number;
+  shield: number;
+  /** Latest synchronized score, when supplied by an online race state. */
+  score?: number;
+  active?: boolean;
+  destroyed?: boolean;
+  finished?: boolean;
+  /** The pilot left the active match without a terminal packet. */
+  dnf?: boolean;
+  /** Authoritative server timestamp for either a finish or a destruction. */
+  terminalAt?: number;
+  /** @deprecated Use terminalAt. Kept for compatibility with older clients. */
+  finishedAt?: number;
 }
 
 export interface GarageState {
@@ -89,7 +158,8 @@ export interface UpgradeDefinition {
   tone: 'cyan' | 'gold' | 'red' | 'violet';
 }
 
-export type TrackEventKind = 'gate' | 'mine' | 'shard' | 'boost' | 'drone' | 'coolant';
+export type TrackEventKind = 'gate' | 'aperture' | 'halfwall' | 'blade' | 'cross' | 'bastion' | 'shard' | 'boost' | 'coolant';
+export type TrackEventTrigger = RhythmCue | MusicTransition['kind'];
 
 export interface TrackEvent {
   id: number;
@@ -101,6 +171,18 @@ export interface TrackEvent {
   resolved: boolean;
   destroyed: boolean;
   beatIndex: number;
+  musicTime: number;
+  trigger: TrackEventTrigger;
+  strength: number;
+  rotationRate: number;
+  rotationPhase: number;
+  armCount: number;
+  patternId: number;
+  warningDistance: number;
+  /** Center of the generator's physically reachable opening at impact time. */
+  safeAngle?: number;
+  /** Angular velocity of the reference bolide at the reachable opening. */
+  safeAngularVelocity?: number;
 }
 
 export interface RunStats {
@@ -120,6 +202,48 @@ export interface RunStats {
   rhythmPulse: number;
   phaseActive: boolean;
   overheated: boolean;
+  rivals?: RivalRaceMarker[];
+}
+
+export type RivalRaceMode = 'cruise' | 'read' | 'pulse' | 'draft' | 'block' | 'overtake' | 'edge' | 'vent';
+
+export interface RivalRaceMarker {
+  id: string;
+  name: string;
+  progress: number;
+  mode: RivalRaceMode;
+  color: number;
+  boost: number;
+}
+
+export type RaceStandingKind = 'player' | 'ai' | 'human';
+export type RaceStandingStatus = 'finished' | 'destroyed' | 'racing' | 'dnf';
+
+export interface ObstaclePerformance {
+  /** Every major hazard generated for the course. */
+  total: number;
+  /** Hazards actually reached before the run ended. */
+  encountered: number;
+  /** Reached hazards passed, phased through, or destroyed without a hull contact. */
+  cleared: number;
+  /** Physical contacts with course hazards. */
+  collisions: number;
+  /** Normalized 0..1 clearance ratio across encountered hazards. */
+  clearance: number;
+}
+
+export interface RaceStanding {
+  id: string;
+  name: string;
+  kind: RaceStandingKind;
+  status: RaceStandingStatus;
+  place: number;
+  progress: number;
+  /** Race clock in seconds. Null means the pilot has not finished. */
+  elapsedTime: number | null;
+  /** Real synchronized score when available; AI telemetry deliberately leaves it null. */
+  score: number | null;
+  obstaclePerformance: ObstaclePerformance | null;
 }
 
 export interface RunResult {
@@ -134,6 +258,13 @@ export interface RunResult {
   survived: boolean;
   trackName: string;
   seed: number;
+  /** Optional rich local telemetry. The account API ignores it for score authority. */
+  elapsedTime?: number;
+  competitorCount?: number;
+  courseProgress?: number;
+  courseQuality?: number;
+  obstaclePerformance?: ObstaclePerformance;
+  standings?: RaceStanding[];
 }
 
 export const TRACKS: Record<TrackId, TrackTheme> = {
@@ -141,7 +272,7 @@ export const TRACKS: Record<TrackId, TrackTheme> = {
     id: 'aurora',
     name: 'Aurora Spine',
     kicker: 'FLOW / 01',
-    description: 'Ледяная мегаструктура, широкие дуги и длинные окна для разгона.',
+    description: 'An icy megastructure with wide arcs and long acceleration windows.',
     seed: 0xa01a,
     radius: 13.5,
     colors: {
@@ -158,7 +289,7 @@ export const TRACKS: Record<TrackId, TrackTheme> = {
     id: 'reactor',
     name: 'Solar Rupture',
     kicker: 'HEAT / 02',
-    description: 'Реакторная шахта с узкими окнами, горячими секторами и тяжёлыми дронами.',
+    description: 'A reactor shaft with narrow windows, hot sectors, and heavy armored bastions.',
     seed: 0x501a,
     radius: 12.4,
     colors: {
@@ -175,7 +306,7 @@ export const TRACKS: Record<TrackId, TrackTheme> = {
     id: 'void',
     name: 'Null Cathedral',
     kicker: 'VOID / 03',
-    description: 'Открытый каркас над сингулярностью: резкие штопоры и богатые линии Flux.',
+    description: 'An open frame above a singularity: sharp corkscrews and rich Flux lines.',
     seed: 0xc0de,
     radius: 14.2,
     colors: {
@@ -192,7 +323,7 @@ export const TRACKS: Record<TrackId, TrackTheme> = {
     id: 'forge',
     name: 'Pulse Forge',
     kicker: 'INDUSTRIAL / 04',
-    description: 'Раскалённый индустриальный коридор: плотные минные поля, ритмичные ворота и максимальная плотность событий.',
+    description: 'A scorching industrial corridor with dense gates, rotating patterns, and maximum event density.',
     seed: 0xf0a6e,
     radius: 11.8,
     colors: {
@@ -205,13 +336,47 @@ export const TRACKS: Record<TrackId, TrackTheme> = {
     handling: 0.98,
     hazardRate: 1.35,
   },
+  skyline: {
+    id: 'skyline',
+    name: 'Skyline Drift',
+    kicker: 'SKYWAY / 05',
+    description: 'A transparent sky-tube threading a radiant vertical city and its streams of flying traffic.',
+    seed: 0x5c17e,
+    radius: 13.1,
+    colors: {
+      background: 0x78cfff,
+      fog: 0x5f9fbd,
+      primary: 0x39dcff,
+      secondary: 0xffca6a,
+      danger: 0xff426d,
+    },
+    handling: 1.08,
+    hazardRate: 1.06,
+  },
+  abyss: {
+    id: 'abyss',
+    name: 'Abyssal Divide',
+    kicker: 'PELAGIC / 06',
+    description: 'A glass ocean artery that forks around living reefs, migrating giants, and the dark edge of the abyss.',
+    seed: 0xab755,
+    radius: 13.8,
+    colors: {
+      background: 0x031b32,
+      fog: 0x063a50,
+      primary: 0x3bf4ff,
+      secondary: 0xc56dff,
+      danger: 0xff4f87,
+    },
+    handling: 1.1,
+    hazardRate: 1.12,
+  },
 };
 
 export const WEAPONS: Record<WeaponId, WeaponDefinition> = {
   pulse: {
     id: 'pulse',
     name: 'Pulse Lance',
-    description: 'Точный импульс. Попадание в бит наносит двойной урон.',
+    description: 'A precise pulse. Beat hits deal double damage.',
     fireRate: 4.4,
     damage: 1,
     projectiles: 1,
@@ -221,7 +386,7 @@ export const WEAPONS: Record<WeaponId, WeaponDefinition> = {
   scatter: {
     id: 'scatter',
     name: 'Arc Scatter',
-    description: 'Три плазменные дуги очищают широкий сектор, но быстро греют реактор.',
+    description: 'Three plasma arcs clear a wide sector, but heat the reactor quickly.',
     fireRate: 1.8,
     damage: 0.8,
     projectiles: 3,
@@ -231,7 +396,7 @@ export const WEAPONS: Record<WeaponId, WeaponDefinition> = {
   rail: {
     id: 'rail',
     name: 'Graviton Rail',
-    description: 'Медленный пробивной снаряд для дронов и плотных минных линий.',
+    description: 'A slow armor-piercing projectile for bastion cores.',
     fireRate: 0.82,
     damage: 3,
     projectiles: 1,
@@ -244,32 +409,32 @@ export const ABILITIES: Record<AbilityId, AbilityDefinition> = {
   phase: {
     id: 'phase',
     name: 'Phase Shift',
-    description: 'На 1,4 сек. отрывает болид от стенки и игнорирует столкновения.',
+    description: 'Detaches the craft from the wall for 1.4 sec and ignores collisions.',
     cooldown: 7,
   },
   emp: {
     id: 'emp',
     name: 'EMP Halo',
-    description: 'Сжигает мины и оглушает дронов впереди на 180 метров.',
+    description: 'Destroys armored bastions ahead within a 190-meter radius.',
     cooldown: 11,
   },
   overdrive: {
     id: 'overdrive',
     name: 'Redline',
-    description: 'Четыре секунды без нагрева и с максимальной тягой.',
+    description: 'Four seconds without heat buildup and with maximum thrust.',
     cooldown: 14,
   },
 };
 
 export const UPGRADES: UpgradeDefinition[] = [
-  { id: 'cryo-loop', name: 'Cryo Loop', description: 'Perfect-события снимают 7% heat, пассивное охлаждение +18%.', tag: 'COOLING', tone: 'cyan' },
-  { id: 'resonant-chamber', name: 'Resonant Chamber', description: 'Каждый четвёртый ритм-выстрел выпускает бесплатный двойной импульс.', tag: 'WEAPON', tone: 'violet' },
-  { id: 'kinetic-skin', name: 'Kinetic Skin', description: 'Near-miss восстанавливает 18 Flux и даёт короткий импульс скорости.', tag: 'FLOW', tone: 'gold' },
-  { id: 'phase-battery', name: 'Phase Battery', description: 'Способность перезаряжается на 25% быстрее.', tag: 'ABILITY', tone: 'cyan' },
-  { id: 'redline-engine', name: 'Redline Engine', description: '+16% к максимальной скорости, но boost греет сильнее.', tag: 'ENGINE', tone: 'red' },
-  { id: 'glass-cannon', name: 'Glass Cannon', description: '+65% к урону, но максимальный щит уменьшается на один сегмент.', tag: 'RISK', tone: 'red' },
-  { id: 'echo-shield', name: 'Echo Shield', description: 'Каждые 8 успешных ритм-действий восстанавливают сегмент щита.', tag: 'SHIELD', tone: 'violet' },
-  { id: 'afterburner', name: 'Afterburner', description: 'Overdrive и идеальный boost длятся на 1,2 сек. дольше.', tag: 'BOOST', tone: 'gold' },
-  { id: 'flux-magnet', name: 'Flux Magnet', description: 'Удваивает радиус сбора кристаллов и их ценность.', tag: 'ECONOMY', tone: 'cyan' },
-  { id: 'temporal-core', name: 'Temporal Core', description: 'Синхронизация с битом даёт +35% к счёту и временно замедляет время для точных манёвров.', tag: 'RHYTHM', tone: 'gold' },
+  { id: 'cryo-loop', name: 'Cryo Loop', description: 'Perfect events remove 7% heat; passive cooling +18%.', tag: 'COOLING', tone: 'cyan' },
+  { id: 'resonant-chamber', name: 'Resonant Chamber', description: 'Every fourth rhythm shot fires a free double pulse.', tag: 'WEAPON', tone: 'violet' },
+  { id: 'kinetic-skin', name: 'Kinetic Skin', description: 'Near misses restore 18 Flux and grant a short speed pulse.', tag: 'FLOW', tone: 'gold' },
+  { id: 'phase-battery', name: 'Phase Battery', description: 'Ability recharge is 25% faster.', tag: 'ABILITY', tone: 'cyan' },
+  { id: 'redline-engine', name: 'Redline Engine', description: '+16% top speed, but boost generates more heat.', tag: 'ENGINE', tone: 'red' },
+  { id: 'glass-cannon', name: 'Glass Cannon', description: '+65% damage, but maximum shield loses one segment.', tag: 'RISK', tone: 'red' },
+  { id: 'echo-shield', name: 'Echo Shield', description: 'Every 8 successful rhythm actions restore one shield segment.', tag: 'SHIELD', tone: 'violet' },
+  { id: 'afterburner', name: 'Afterburner', description: 'Overdrive and perfect boost last 1.2 sec longer.', tag: 'BOOST', tone: 'gold' },
+  { id: 'flux-magnet', name: 'Flux Magnet', description: 'Doubles crystal pickup radius and value.', tag: 'ECONOMY', tone: 'cyan' },
+  { id: 'temporal-core', name: 'Temporal Core', description: 'Perfect sync grants +35% score and stronger handling for 1.2 sec.', tag: 'RHYTHM', tone: 'gold' },
 ];

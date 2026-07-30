@@ -1,0 +1,44 @@
+[Unit]
+Description=BALLISTIC EDGE online lobby
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/bullet.xedoc.ru/backend-current/server
+EnvironmentFile=-/var/www/bullet.xedoc.ru/backend-current/server/.env.production
+EnvironmentFile=-/etc/ballistic-edge/account.env
+Environment=NODE_ENV=production
+Environment=HOST=127.0.0.1
+Environment=PORT=8787
+Environment=WS_PATH=/multiplayer
+Environment=ALLOWED_ORIGINS=https://bullet.xedoc.ru
+Environment=MAX_CONNECTIONS=500
+Environment=MAX_ROOMS=256
+Environment=HANDSHAKE_TIMEOUT_MS=8000
+Environment=ROOM_IDLE_TIMEOUT_MS=1800000
+Environment=ACCOUNT_DATABASE_PATH=/var/lib/ballistic-edge/accounts.sqlite
+Environment=ACCOUNT_COOKIE_SECURE=true
+ExecStartPre=/usr/bin/test -r /var/www/bullet.xedoc.ru/backend-current/server/index.ts
+ExecStartPre=/usr/bin/test -r /var/www/bullet.xedoc.ru/backend-current/src/online/protocol.ts
+ExecStartPre=/usr/bin/test -r /var/www/bullet.xedoc.ru/backend-current/src/core/types.ts
+ExecStartPre=/usr/bin/test -r /var/www/bullet.xedoc.ru/backend-current/src/account/protocol.ts
+ExecStartPre=/usr/bin/test -r /var/www/bullet.xedoc.ru/backend-current/src/account/achievements.ts
+ExecStart=/usr/bin/npm start
+Restart=always
+RestartSec=2
+TimeoutStopSec=10
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=full
+ProtectHome=true
+StateDirectory=ballistic-edge
+StateDirectoryMode=0750
+ReadWritePaths=/var/lib/ballistic-edge
+
+[Install]
+WantedBy=multi-user.target

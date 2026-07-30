@@ -1,168 +1,730 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#03050a" />
-    <meta name="description" content="Ballistic Edge — музыкальная roguelike-гонка на сверхзвуковой скорости." />
+    <meta name="description" content="Ballistic Edge — a music-driven roguelike race at supersonic speed." data-i18n-content="meta.description" />
+    <link rel="icon" href="/favicon-v2.png" type="image/png" />
+    <link rel="icon" href="/favicon-32-v2.png" type="image/png" sizes="32x32" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon-v2.png" sizes="180x180" />
     <title>BALLISTIC EDGE // Pulse Run</title>
   </head>
   <body>
     <main id="app">
-      <canvas id="game-canvas" aria-label="Игровая сцена Ballistic Edge"></canvas>
+      <canvas id="game-canvas" aria-label="Ballistic Edge game scene" data-i18n-aria-label="canvas.label"></canvas>
       <div class="visual-overlay visual-overlay--vignette" aria-hidden="true"></div>
       <div class="visual-overlay visual-overlay--scanlines" aria-hidden="true"></div>
       <div id="damage-flash" aria-hidden="true"></div>
 
-      <section id="menu" class="screen screen--menu">
+      <section id="menu" class="screen screen--menu" data-active-pane="race">
         <header class="menu-header">
           <div class="system-mark">
             <span class="system-mark__dot"></span>
             WEBGL PULSE-RACING PROTOCOL
           </div>
-          <button id="effects-toggle" class="icon-button" type="button" aria-pressed="false" title="Уменьшить вспышки">
-            FX <span>MAX</span>
-          </button>
+          <div class="menu-header__actions">
+            <button id="account-open" class="icon-button account-trigger" type="button" aria-haspopup="dialog" aria-controls="account-dialog">
+              ID <span id="account-open-label" data-i18n="account.signIn">SIGN IN</span>
+            </button>
+            <button id="settings-open" class="icon-button" type="button" aria-haspopup="dialog" aria-controls="settings-dialog">
+              CFG <span data-i18n="common.settings">SETTINGS</span>
+            </button>
+            <button id="effects-toggle" class="icon-button" type="button" aria-pressed="false" title="Reduce flashes" data-i18n-title="effects.reduce">
+              FX <span>MAX</span>
+            </button>
+          </div>
         </header>
 
+        <nav class="mobile-menu-nav" aria-label="Main menu sections" data-i18n-aria-label="menu.sections">
+          <button class="is-active" data-menu-tab="race" type="button" aria-pressed="true"><span>01</span> <b data-i18n="menu.track">TRACK</b></button>
+          <button data-menu-tab="loadout" type="button" aria-pressed="false"><span>02</span> <b data-i18n="menu.music">MUSIC</b></button>
+          <button data-menu-tab="garage" type="button" aria-pressed="false"><span>03</span> <b data-i18n="menu.garage">GARAGE</b></button>
+          <button data-menu-tab="online" type="button" aria-pressed="false"><span>04</span> <b data-i18n="menu.online">ONLINE</b></button>
+        </nav>
+
         <div class="menu-grid">
-          <section class="hero-panel">
+          <section class="hero-panel" data-menu-pane="race">
             <div class="hero-panel__eyebrow">MACH // ROGUELIKE // RHYTHM</div>
             <h1 class="game-title"><span>BALLISTIC</span><strong>EDGE</strong></h1>
-            <p class="hero-panel__lead">
-              Оседлай внутреннюю стенку мегатоннеля. Собери боевой билд. Преврати любой MP3 в трассу, которая дышит в ритме.
+            <p class="hero-panel__lead" data-i18n="hero.lead">
+              Ride the inner wall of a megatunnel. Build a combat loadout. Turn any MP3 into a course that breathes with the rhythm.
             </p>
 
             <div class="track-heading">
-              <span>01 / ВЫБЕРИ СИГНАЛ ТРАССЫ</span>
-              <span id="track-count">04 ROUTES ONLINE</span>
+              <span data-i18n="track.heading">01 / CHOOSE A COURSE SIGNAL</span>
+              <span id="track-count">06 ROUTES ONLINE</span>
             </div>
-            <div class="track-grid" role="radiogroup" aria-label="Выбор трассы">
-              <button class="track-card is-selected" data-track="aurora" type="button" role="radio" aria-checked="true">
-                <span class="track-card__visual track-card__visual--aurora"><i></i><i></i><i></i></span>
+            <div class="track-grid" role="radiogroup" aria-label="Course selection" data-i18n-aria-label="track.group">
+              <button class="track-card is-selected" data-track="aurora" data-selected-label="SELECTED" data-i18n-selected-label="track.selected" type="button" role="radio" aria-checked="true">
+                <span class="track-card__visual track-card__visual--aurora">
+                  <img class="track-card__image" src="/assets/tracks/aurora-spine-v3.webp" alt="" width="1200" height="600" decoding="async" />
+                  <i></i><i></i><i></i>
+                </span>
                 <span class="track-card__meta">FLOW / 01</span>
                 <strong>Aurora Spine</strong>
-                <small>Широкие дуги / x0.88 hazard</small>
+                <small data-i18n="track.aurora.short">Wide arcs / x0.88 hazard</small>
               </button>
-              <button class="track-card" data-track="reactor" type="button" role="radio" aria-checked="false">
-                <span class="track-card__visual track-card__visual--reactor"><i></i><i></i><i></i></span>
+              <button class="track-card" data-track="reactor" data-selected-label="SELECTED" data-i18n-selected-label="track.selected" type="button" role="radio" aria-checked="false">
+                <span class="track-card__visual track-card__visual--reactor">
+                  <img class="track-card__image" src="/assets/tracks/solar-rupture-v3.webp" alt="" width="1200" height="600" decoding="async" />
+                  <i></i><i></i><i></i>
+                </span>
                 <span class="track-card__meta">HEAT / 02</span>
                 <strong>Solar Rupture</strong>
-                <small>Узкие окна / x1.18 hazard</small>
+                <small data-i18n="track.reactor.short">Narrow windows / x1.18 hazard</small>
               </button>
-              <button class="track-card" data-track="void" type="button" role="radio" aria-checked="false">
-                <span class="track-card__visual track-card__visual--void"><i></i><i></i><i></i></span>
+              <button class="track-card" data-track="void" data-selected-label="SELECTED" data-i18n-selected-label="track.selected" type="button" role="radio" aria-checked="false">
+                <span class="track-card__visual track-card__visual--void">
+                  <img class="track-card__image" src="/assets/tracks/null-cathedral-v3.webp" alt="" width="1200" height="600" decoding="async" />
+                  <i></i><i></i><i></i>
+                </span>
                 <span class="track-card__meta">VOID / 03</span>
                 <strong>Null Cathedral</strong>
-                <small>Штопоры / богатый Flux</small>
+                <small data-i18n="track.void.short">Corkscrews / rich Flux</small>
               </button>
-              <button class="track-card" data-track="forge" type="button" role="radio" aria-checked="false">
-                <span class="track-card__visual track-card__visual--forge"><i></i><i></i><i></i></span>
+              <button class="track-card" data-track="forge" data-selected-label="SELECTED" data-i18n-selected-label="track.selected" type="button" role="radio" aria-checked="false">
+                <span class="track-card__visual track-card__visual--forge">
+                  <img class="track-card__image" src="/assets/tracks/pulse-forge-v3.webp" alt="" width="1200" height="600" decoding="async" />
+                  <i></i><i></i><i></i>
+                </span>
                 <span class="track-card__meta">INDUSTRIAL / 04</span>
                 <strong>Pulse Forge</strong>
-                <small>Плотные мины / x1.35 hazard</small>
+                <small data-i18n="track.forge.short">Dense gates / x1.35 hazard</small>
+              </button>
+              <button class="track-card" data-track="skyline" data-selected-label="SELECTED" data-i18n-selected-label="track.selected" type="button" role="radio" aria-checked="false">
+                <span class="track-card__visual track-card__visual--skyline">
+                  <img class="track-card__image" src="/assets/tracks/skyline-drift-v1.webp" alt="" width="1200" height="600" decoding="async" />
+                  <i></i><i></i><i></i>
+                </span>
+                <span class="track-card__meta">SKYWAY / 05</span>
+                <strong>Skyline Drift</strong>
+                <small data-i18n="track.skyline.short">Glass skyway / flying city</small>
+              </button>
+              <button class="track-card" data-track="abyss" data-selected-label="SELECTED" data-i18n-selected-label="track.selected" type="button" role="radio" aria-checked="false">
+                <span class="track-card__visual track-card__visual--abyss">
+                  <img class="track-card__image" src="/assets/tracks/abyssal-divide-v1.webp" alt="" width="1200" height="600" decoding="async" />
+                  <i></i><i></i><i></i>
+                </span>
+                <span class="track-card__meta">PELAGIC / 06</span>
+                <strong>Abyssal Divide</strong>
+                <small data-i18n="track.abyss.short">Twin routes / living ocean</small>
               </button>
             </div>
           </section>
 
-          <aside class="loadout-panel panel-glass">
+          <div class="menu-sidebar">
+          <aside class="loadout-panel panel-glass" data-menu-pane="loadout">
             <div class="panel-label"><span>02</span> MUSIC MATRIX</div>
+            <fieldset id="music-library" class="music-library" aria-busy="true">
+              <legend class="music-library__legend" data-i18n="music.serverLibrary">SERVER LIBRARY</legend>
+              <div class="music-library__control">
+                <select id="music-catalog" class="music-library__select" aria-label="Music selection" data-i18n-aria-label="music.select" aria-describedby="music-catalog-status music-catalog-error" autocomplete="off" disabled>
+                  <option value="" data-i18n="music.syncing">SYNCING CATALOG…</option>
+                </select>
+                <button id="music-catalog-retry" class="music-library__retry" type="button" hidden data-i18n="music.retry">RETRY</button>
+              </div>
+              <p id="music-catalog-status" class="music-library__status" role="status" aria-live="polite" data-i18n="music.reading">Reading /assets/music…</p>
+              <p id="music-catalog-error" class="music-library__error" role="alert" hidden></p>
+            </fieldset>
+            <div class="music-divider"><span data-i18n="music.divider">OR A LOCAL FILE</span></div>
             <label id="music-drop" class="music-drop" for="music-file">
-              <input id="music-file" type="file" accept="audio/mpeg,audio/mp3,audio/wav,audio/ogg,audio/*" hidden />
+              <input id="music-file" class="visually-hidden" type="file" accept="audio/*,.mp3,.wav,.ogg,.oga,.opus,.m4a,.aac,.flac,.webm" />
               <span class="music-drop__icon" aria-hidden="true">
                 <svg viewBox="0 0 32 32"><path d="M9 23.5V8.8l15-3.3v14.8M9 23.5c0 2-1.8 3.7-4 3.7s-4-1.3-4-3.3 1.8-3.7 4-3.7c1.6 0 3 .7 4 1.7m15-1.6c0 2-1.8 3.7-4 3.7s-4-1.3-4-3.3 1.8-3.7 4-3.7c1.6 0 3 .7 4 1.7M9 13l15-3.3"/></svg>
               </span>
               <span class="music-drop__copy">
                 <strong id="music-title">EDGE SIGNAL // 148 BPM</strong>
-                <small id="music-meta">Встроенный синтетический трек · 01:22</small>
+                <small id="music-meta">Built-in synthesizer · 01:22</small>
               </span>
-              <span class="music-drop__action" id="music-action">LOAD MP3</span>
+              <span class="music-drop__action" id="music-action" data-i18n="music.loadFile">LOAD FILE</span>
             </label>
-            <p class="privacy-note"><span>LOCAL</span> Аудио анализируется только в браузере и не загружается на сервер.</p>
+            <p class="privacy-note"><span>LOCAL</span> <b data-i18n="music.privacy">Audio is analyzed only in your browser and is never uploaded to the server.</b></p>
+
+            <section class="playlist-panel" aria-labelledby="playlist-title">
+              <header class="playlist-panel__header">
+                <div>
+                  <span data-i18n="playlist.heading">MY PLAYLISTS</span>
+                  <strong id="playlist-title" data-i18n="playlist.title">LOCAL COLLECTION</strong>
+                </div>
+                <div class="playlist-panel__actions">
+                  <button id="playlist-create" type="button" title="Create playlist" data-i18n-title="playlist.create" data-i18n="playlist.new">+ NEW</button>
+                  <button id="playlist-rename" type="button" title="Rename playlist" data-i18n-title="playlist.rename" data-i18n="playlist.renameAction">RENAME</button>
+                  <button id="playlist-delete" type="button" title="Delete playlist" data-i18n-title="playlist.delete" data-i18n="playlist.deleteAction">DELETE</button>
+                </div>
+              </header>
+              <div class="playlist-panel__row">
+                <label for="playlist-select" data-i18n="playlist.list">LIST</label>
+                <select id="playlist-select" aria-label="My playlist" data-i18n-aria-label="playlist.select"></select>
+              </div>
+              <div class="playlist-panel__row">
+                <label for="playlist-track-select" data-i18n="playlist.track">TRACK</label>
+                <select id="playlist-track-select" aria-label="Track in selected playlist" data-i18n-aria-label="playlist.trackSelect"></select>
+                <button id="playlist-track-load" type="button" data-i18n="playlist.load">LOAD</button>
+                <button id="playlist-track-remove" type="button" data-i18n="playlist.remove">REMOVE</button>
+              </div>
+              <p id="playlist-status" role="status" aria-live="polite" data-i18n="playlist.initial">Uploaded files are saved to the selected list on this device only.</p>
+            </section>
+
+            <section id="music-preview" class="music-preview" aria-labelledby="music-preview-title" hidden>
+              <header class="music-preview__header">
+                <h3 id="music-preview-title" data-i18n="preview.title">COURSE TIMELINE</h3>
+                <span id="music-preview-course">AURORA SPINE // COURSE MAP</span>
+              </header>
+
+              <div class="music-preview__transport">
+                <button
+                  id="music-preview-play"
+                  class="music-preview__play"
+                  type="button"
+                  aria-label="Play music preview"
+                  data-i18n-aria-label="preview.play"
+                  aria-pressed="false"
+                  aria-controls="music-preview-seek"
+                >
+                  <svg class="music-preview__play-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.4 18.5 12 8 18.6Z" /></svg>
+                  <svg class="music-preview__pause-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h3.5v14H7zm6.5 0H17v14h-3.5z" /></svg>
+                </button>
+                <div class="music-preview__clock" aria-label="Preview position" data-i18n-aria-label="preview.position">
+                  <span id="music-preview-current">00:00</span>
+                  <i aria-hidden="true">/</i>
+                  <span id="music-preview-duration">00:00</span>
+                </div>
+                <label class="music-preview__volume" for="music-preview-volume">
+                  <svg class="music-preview__volume-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M4 9v6h4l5 4V5L8 9H4Zm12.4-.9a5.5 5.5 0 0 1 0 7.8l-1.2-1.2a3.8 3.8 0 0 0 0-5.4l1.2-1.2Zm2.4-2.4a8.9 8.9 0 0 1 0 12.6l-1.2-1.2a7.2 7.2 0 0 0 0-10.2l1.2-1.2Z" />
+                  </svg>
+                  <input
+                    id="music-preview-volume"
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value="82"
+                    aria-label="Music volume"
+                    data-i18n-aria-label="preview.volume"
+                    aria-valuetext="82 percent"
+                  />
+                  <output id="music-preview-volume-value" for="music-preview-volume" aria-hidden="true">82%</output>
+                </label>
+                <output id="music-preview-bpm" class="music-preview__bpm">— BPM</output>
+              </div>
+
+              <div class="music-preview__timeline">
+                <canvas id="music-preview-waveform" width="720" height="144" aria-hidden="true"></canvas>
+                <div id="music-preview-markers" class="music-preview__markers" role="group" aria-label="Course obstacles and musical transitions" data-i18n-aria-label="preview.markers"></div>
+                <span id="music-preview-playhead" class="music-preview__playhead" aria-hidden="true"></span>
+              </div>
+              <input
+                id="music-preview-seek"
+                class="music-preview__seek"
+                type="range"
+                min="0"
+                max="0"
+                step="0.01"
+                value="0"
+                aria-label="Position in music course"
+                data-i18n-aria-label="preview.seek"
+                aria-valuetext="00:00 of 00:00"
+                aria-describedby="music-preview-detail"
+              />
+
+              <p id="music-preview-detail" class="music-preview__detail">Choose a marker to see its time and obstacle type.</p>
+              <ul id="music-preview-legend" class="music-preview__legend" aria-label="Timeline legend" data-i18n-aria-label="preview.legend">
+                <li><i class="music-preview__legend-icon music-preview__legend-icon--wall" aria-hidden="true">▯</i><span>GATE / WALL</span></li>
+                <li><i class="music-preview__legend-icon music-preview__legend-icon--rotor" aria-hidden="true">✣</i><span>BLADE / CROSS</span></li>
+                <li><i class="music-preview__legend-icon music-preview__legend-icon--bastion" aria-hidden="true">▣</i><span>BASTION</span></li>
+                <li><i class="music-preview__legend-icon music-preview__legend-icon--reward" aria-hidden="true">◇</i><span>BOOST / COOL</span></li>
+                <li><i class="music-preview__legend-icon music-preview__legend-icon--transition" aria-hidden="true">▲</i><span>DROP</span></li>
+                <li><i class="music-preview__legend-icon music-preview__legend-icon--beat" aria-hidden="true">│</i><span>KICK / HIT</span></li>
+              </ul>
+              <p id="music-preview-status" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></p>
+            </section>
 
             <div class="panel-label panel-label--spaced"><span>03</span> COMBAT LOADOUT</div>
             <div class="selector-block">
-              <div class="selector-block__title">WEAPON</div>
-              <div class="segmented" role="radiogroup" aria-label="Выбор оружия">
+              <div class="selector-block__title" data-i18n="loadout.weapon">WEAPON</div>
+              <div class="segmented" role="radiogroup" aria-label="Weapon selection" data-i18n-aria-label="loadout.weaponGroup">
                 <button class="is-selected" data-weapon="pulse" type="button" role="radio" aria-checked="true">PULSE</button>
                 <button data-weapon="scatter" type="button" role="radio" aria-checked="false">ARC</button>
                 <button data-weapon="rail" type="button" role="radio" aria-checked="false">RAIL</button>
               </div>
-              <p id="weapon-description">Точный импульс. Попадание в бит наносит двойной урон.</p>
+              <p id="weapon-description">A precise pulse. Beat hits deal double damage.</p>
             </div>
             <div class="selector-block">
-              <div class="selector-block__title">ACTIVE MODULE</div>
-              <div class="segmented" role="radiogroup" aria-label="Выбор способности">
+              <div class="selector-block__title" data-i18n="loadout.activeModule">ACTIVE MODULE</div>
+              <div class="segmented" role="radiogroup" aria-label="Ability selection" data-i18n-aria-label="loadout.abilityGroup">
                 <button class="is-selected" data-ability="phase" type="button" role="radio" aria-checked="true">PHASE</button>
                 <button data-ability="emp" type="button" role="radio" aria-checked="false">EMP</button>
                 <button data-ability="overdrive" type="button" role="radio" aria-checked="false">REDLINE</button>
               </div>
-              <p id="ability-description">На 1,4 сек. отрывает болид от стенки и игнорирует столкновения.</p>
+              <p id="ability-description">Detaches the craft from the wall for 1.4 sec and ignores collisions.</p>
             </div>
           </aside>
 
-          <section class="garage-panel panel-glass">
+          <section class="launch-panel">
+            <button id="start-run" class="launch-button" type="button">
+              <span class="launch-button__icon">▶</span>
+              <span><small data-i18n="launch.initialize">INITIALIZE RUN</small><strong data-i18n="launch.start">ACCELERATE</strong></span>
+              <span class="launch-button__seed" id="seed-label">SEED // RANDOM</span>
+            </button>
+            <div class="control-strip" aria-label="Current control layout" data-i18n-aria-label="controls.current">
+              <span><kbd data-control-hint="left">A</kbd><kbd data-control-hint="right">D</kbd> WALL RIDE</span>
+              <span><kbd data-control-hint="boost">SPACE</kbd> BOOST</span>
+              <span><kbd data-control-hint="fire">F</kbd> / CLICK FIRE</span>
+              <span><kbd data-control-hint="ability">Q</kbd> ABILITY</span>
+              <span><kbd data-control-hint="cool">S</kbd> COOL</span>
+            </div>
+          </section>
+          </div>
+
+          <section class="garage-panel panel-glass" data-menu-pane="garage">
             <div class="garage-panel__header">
               <div>
-                <div class="panel-label"><span>04</span> BOLIDE GARAGE</div>
-                <p>Постоянные модули сохраняются между забегами.</p>
+                <div class="panel-label"><span>04</span> <b data-i18n="garage.title">CRAFT GARAGE</b></div>
+                <p data-i18n="garage.persistence">Permanent modules are retained between runs.</p>
               </div>
               <div class="credits"><i></i><strong id="credits-value">900</strong> CR</div>
             </div>
             <div class="garage-grid">
               <button class="garage-module" data-module="engine" type="button">
-                <span class="garage-module__icon">ENG</span>
-                <span><strong>Vector Drive</strong><small>тяга и управление</small></span>
+                <span class="garage-module__icon"><img src="/assets/modules/vector-drive.jpg" alt="" width="384" height="384" loading="lazy" /></span>
+                <span><strong>Vector Drive</strong><small data-i18n="garage.engine">thrust and handling</small></span>
                 <span class="garage-module__level" data-level-for="engine">LV.0</span>
                 <span class="garage-module__cost" data-cost-for="engine">250 CR</span>
               </button>
               <button class="garage-module" data-module="cooling" type="button">
-                <span class="garage-module__icon">CRY</span>
-                <span><strong>Cryo Lattice</strong><small>скорость охлаждения</small></span>
+                <span class="garage-module__icon"><img src="/assets/modules/cryo-lattice.jpg" alt="" width="384" height="384" loading="lazy" /></span>
+                <span><strong>Cryo Lattice</strong><small data-i18n="garage.cooling">cooling speed</small></span>
                 <span class="garage-module__level" data-level-for="cooling">LV.0</span>
                 <span class="garage-module__cost" data-cost-for="cooling">250 CR</span>
               </button>
               <button class="garage-module" data-module="shield" type="button">
-                <span class="garage-module__icon">SHD</span>
-                <span><strong>Aegis Skin</strong><small>ёмкость щита</small></span>
+                <span class="garage-module__icon"><img src="/assets/modules/aegis-skin.jpg" alt="" width="384" height="384" loading="lazy" /></span>
+                <span><strong>Aegis Skin</strong><small data-i18n="garage.shield">shield capacity</small></span>
                 <span class="garage-module__level" data-level-for="shield">LV.0</span>
                 <span class="garage-module__cost" data-cost-for="shield">250 CR</span>
               </button>
               <button class="garage-module" data-module="weapon" type="button">
-                <span class="garage-module__icon">WPN</span>
-                <span><strong>Flux Chamber</strong><small>урон оружия</small></span>
+                <span class="garage-module__icon"><img src="/assets/modules/flux-chamber.jpg" alt="" width="384" height="384" loading="lazy" /></span>
+                <span><strong>Flux Chamber</strong><small data-i18n="garage.weapon">weapon damage</small></span>
                 <span class="garage-module__level" data-level-for="weapon">LV.0</span>
                 <span class="garage-module__cost" data-cost-for="weapon">250 CR</span>
               </button>
             </div>
           </section>
 
-          <section class="launch-panel">
-            <button id="start-run" class="launch-button" type="button">
-              <span class="launch-button__icon">▶</span>
-              <span><small>INITIALIZE RUN</small><strong>РАЗОГНАТЬСЯ</strong></span>
-              <span class="launch-button__seed" id="seed-label">SEED // RANDOM</span>
-            </button>
-            <div class="control-strip">
-              <span><kbd>A</kbd><kbd>D</kbd> WALL RIDE</span>
-              <span><kbd>SPACE</kbd> BOOST</span>
-              <span><kbd>F</kbd> / CLICK FIRE</span>
-              <span><kbd>Q</kbd> ABILITY</span>
-              <span><kbd>S</kbd> COOL</span>
+          <section id="online-panel" class="online-panel panel-glass" data-menu-pane="online" aria-labelledby="online-title">
+            <header class="online-panel__header">
+              <div>
+                <div class="panel-label"><span>05</span> <b data-i18n="online.grid">ONLINE GRID</b></div>
+                <h2 id="online-title" data-i18n="online.title">ONLINE RACE</h2>
+              </div>
+              <span id="online-connection" class="online-connection" data-state="ready">READY</span>
+            </header>
+
+            <div id="online-entry" class="online-entry">
+              <label class="online-field" for="online-name">
+                <span data-i18n="online.pilotName">PILOT NAME</span>
+                <input id="online-name" type="text" maxlength="24" autocomplete="nickname" value="PILOT" />
+              </label>
+              <button id="online-create" class="online-primary" type="button" data-i18n="online.createRoom">CREATE ROOM</button>
+              <label class="online-field online-field--code" for="online-code">
+                <span data-i18n="online.roomCode">ROOM CODE</span>
+                <input id="online-code" type="text" maxlength="8" autocomplete="off" spellcheck="false" placeholder="AB12CD" />
+              </label>
+              <button id="online-join" class="online-secondary" type="button" data-i18n="online.join">JOIN</button>
+              <button id="online-refresh" class="online-link" type="button" data-i18n="online.refresh">REFRESH OPEN ROOMS</button>
+              <div id="online-room-list" class="online-room-list" aria-live="polite"></div>
+              <p id="online-entry-status" class="online-status" role="status" aria-live="polite" data-i18n="online.entryInitial">Press CREATE or REFRESH to connect to the network node.</p>
+            </div>
+
+            <div id="online-lobby" class="online-lobby" hidden>
+              <div class="online-lobby__topline">
+                <div><span data-i18n="online.room">ROOM</span><strong id="online-room-code">------</strong></div>
+                <div><span data-i18n="online.status">STATUS</span><strong id="online-room-status">WAITING</strong></div>
+                <button id="online-copy-code" class="online-link" type="button" data-i18n="online.copyCode">COPY CODE</button>
+              </div>
+              <div class="online-lobby__grid">
+                <section class="online-roster" aria-labelledby="online-roster-title">
+                  <h3 id="online-roster-title"><b data-i18n="online.pilots">PILOTS</b> <span id="online-player-count">0 / 0</span></h3>
+                  <div id="online-players" class="online-players"></div>
+                </section>
+                <section class="online-host-controls" aria-labelledby="online-race-config-title">
+                  <h3 id="online-race-config-title" data-i18n="online.hostConfig">HOST RACE CONFIG</h3>
+                  <label for="online-track"><span data-i18n="online.track">TRACK</span>
+                    <select id="online-track">
+                      <option value="aurora">AURORA SPINE</option>
+                      <option value="reactor">SOLAR RUPTURE</option>
+                      <option value="void">NULL CATHEDRAL</option>
+                      <option value="forge">PULSE FORGE</option>
+                      <option value="skyline">SKYLINE DRIFT</option>
+                      <option value="abyss">ABYSSAL DIVIDE</option>
+                    </select>
+                  </label>
+                  <label for="online-ai"><span data-i18n="online.aiOpponents">AI OPPONENTS</span> <output id="online-ai-value" for="online-ai">3</output>
+                    <input id="online-ai" type="range" min="0" max="7" step="1" value="3" />
+                  </label>
+                  <label for="online-slots"><span data-i18n="online.playerSlots">PLAYER SLOTS</span> <output id="online-slots-value" for="online-slots">4</output>
+                    <input id="online-slots" type="range" min="2" max="8" step="1" value="4" />
+                  </label>
+                </section>
+              </div>
+              <section class="online-chat" aria-labelledby="online-chat-title">
+                <h3 id="online-chat-title" data-i18n="online.lobbyChat">LOBBY CHAT</h3>
+                <div id="online-chat-log" class="online-chat__log" role="log" aria-live="polite"></div>
+                <form id="online-chat-form" class="online-chat__form">
+                  <input id="online-chat-input" type="text" maxlength="280" autocomplete="off" placeholder="Message your team…" data-i18n-placeholder="online.chatPlaceholder" />
+                  <button type="submit" data-i18n="online.send">SEND</button>
+                </form>
+              </section>
+              <div class="online-lobby__actions">
+                <button id="online-leave" class="online-secondary" type="button" data-i18n="online.leave">LEAVE ROOM</button>
+                <button id="online-ready" class="online-secondary" type="button" data-i18n="online.ready">READY</button>
+                <button id="online-start" class="online-primary" type="button" disabled data-i18n="online.start">START ONLINE RACE</button>
+              </div>
+              <p id="online-status" class="online-status" role="status" aria-live="polite" data-i18n="online.needPlayer">One more human pilot is required to start.</p>
             </div>
           </section>
+
         </div>
       </section>
 
-      <section id="hud" class="hud" aria-live="polite">
+      <dialog id="settings-dialog" class="settings-dialog" aria-labelledby="settings-title">
+        <div class="settings-shell panel-glass">
+          <header class="settings-header">
+            <div>
+              <span class="settings-kicker">06 // SYSTEM CONFIG</span>
+              <h2 id="settings-title" data-i18n="settings.title">SETTINGS</h2>
+            </div>
+            <button id="settings-close" class="settings-close" type="button" aria-label="Close settings" data-i18n-aria-label="settings.close">×</button>
+          </header>
+
+          <nav class="settings-tabs" role="tablist" aria-label="Settings sections" data-i18n-aria-label="settings.sections">
+            <button id="settings-tab-audio" type="button" role="tab" aria-selected="true" aria-controls="settings-panel-audio" tabindex="0" data-settings-tab="audio" data-i18n="settings.audioTab">AUDIO</button>
+            <button id="settings-tab-graphics" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-graphics" tabindex="-1" data-settings-tab="graphics" data-i18n="settings.graphicsTab">GRAPHICS</button>
+            <button id="settings-tab-controls" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-controls" tabindex="-1" data-settings-tab="controls" data-i18n="settings.controlsTab">CONTROLS</button>
+            <button id="settings-tab-language" type="button" role="tab" aria-selected="false" aria-controls="settings-panel-language" tabindex="-1" data-settings-tab="language" data-i18n="settings.languageTab">LANGUAGE</button>
+          </nav>
+
+          <div class="settings-body">
+            <section id="settings-panel-audio" class="settings-panel" role="tabpanel" aria-labelledby="settings-tab-audio" data-settings-panel="audio">
+              <div class="settings-section-heading"><span>AUDIO MIX</span><small data-i18n="settings.audio.live">Changes apply immediately</small></div>
+              <label class="settings-range" for="volume-master">
+                <span><strong data-i18n="settings.audio.master">Master volume</strong><small>MASTER OUTPUT</small></span>
+                <output id="volume-master-value" for="volume-master">90%</output>
+                <input id="volume-master" type="range" min="0" max="100" step="1" value="90" />
+              </label>
+              <label class="settings-range" for="volume-music">
+                <span><strong data-i18n="settings.audio.music">Music</strong><small>RHYTHM TRACK</small></span>
+                <output id="volume-music-value" for="volume-music">82%</output>
+                <input id="volume-music" type="range" min="0" max="100" step="1" value="82" />
+              </label>
+              <label class="settings-range" for="volume-effects">
+                <span><strong data-i18n="settings.audio.effects">Effects</strong><small>WEAPON / IMPACT / PICKUP</small></span>
+                <output id="volume-effects-value" for="volume-effects">72%</output>
+                <input id="volume-effects" type="range" min="0" max="100" step="1" value="72" />
+              </label>
+              <label class="settings-toggle" for="audio-muted">
+                <span><strong data-i18n="settings.audio.mute">Mute audio</strong><small data-i18n="settings.audio.muteHint">Rhythm analysis keeps running</small></span>
+                <input id="audio-muted" type="checkbox" />
+                <i aria-hidden="true"></i>
+              </label>
+            </section>
+
+            <section id="settings-panel-graphics" class="settings-panel" role="tabpanel" aria-labelledby="settings-tab-graphics" data-settings-panel="graphics" hidden>
+              <div class="settings-section-heading"><span>RENDER PIPELINE</span><small data-i18n="settings.graphics.apply">Quality applies to the preview and next run</small></div>
+              <label class="settings-select" for="graphics-quality">
+                <span><strong data-i18n="settings.graphics.quality">Render quality</strong><small data-i18n="settings.graphics.qualityHint">Tunnel resolution and detail</small></span>
+                <select id="graphics-quality">
+                  <option value="performance">PERFORMANCE</option>
+                  <option value="balanced">BALANCED</option>
+                  <option value="quality">QUALITY</option>
+                </select>
+              </label>
+              <label class="settings-range" for="graphics-bloom-intensity">
+                <span><strong data-i18n="settings.graphics.bloomIntensity">Glow intensity</strong><small data-i18n="settings.graphics.bloomIntensityHint">BLOOM POWER · 0% completely removes glare</small></span>
+                <output id="graphics-bloom-intensity-value" for="graphics-bloom-intensity">60%</output>
+                <input id="graphics-bloom-intensity" type="range" min="0" max="100" step="1" value="60" />
+              </label>
+              <label class="settings-range" for="graphics-brightness">
+                <span><strong data-i18n="settings.graphics.brightness">Camera brightness</strong><small data-i18n="settings.graphics.brightnessHint">EXPOSURE · affects the entire game render</small></span>
+                <output id="graphics-brightness-value" for="graphics-brightness">88%</output>
+                <input id="graphics-brightness" type="range" min="20" max="100" step="1" value="88" />
+              </label>
+              <label class="settings-range" for="graphics-rival-visibility">
+                <span><strong data-i18n="settings.graphics.rivalVisibility">Rival visibility</strong><small data-i18n="settings.graphics.rivalVisibilityHint">RIVAL VISIBILITY · silhouette, outline, and engines</small></span>
+                <output id="graphics-rival-visibility-value" for="graphics-rival-visibility">85%</output>
+                <input id="graphics-rival-visibility" type="range" min="35" max="100" step="1" value="85" />
+              </label>
+              <label class="settings-toggle" for="graphics-bloom">
+                <span><strong data-i18n="settings.graphics.bloom">Glow</strong><small>BLOOM</small></span>
+                <input id="graphics-bloom" type="checkbox" />
+                <i aria-hidden="true"></i>
+              </label>
+              <label class="settings-toggle" for="graphics-chromatic">
+                <span><strong data-i18n="settings.graphics.chromatic">Chromatic pulse</strong><small>RGB DISTORTION</small></span>
+                <input id="graphics-chromatic" type="checkbox" />
+                <i aria-hidden="true"></i>
+              </label>
+              <label class="settings-toggle" for="graphics-shake">
+                <span><strong data-i18n="settings.graphics.shake">Camera shake</strong><small>SPEED / IMPACT SHAKE</small></span>
+                <input id="graphics-shake" type="checkbox" />
+                <i aria-hidden="true"></i>
+              </label>
+              <label class="settings-toggle" for="graphics-reduced">
+                <span><strong data-i18n="settings.graphics.reduced">Safe flashes</strong><small>REDUCED FLASHES</small></span>
+                <input id="graphics-reduced" type="checkbox" />
+                <i aria-hidden="true"></i>
+              </label>
+            </section>
+
+            <section id="settings-panel-controls" class="settings-panel" role="tabpanel" aria-labelledby="settings-tab-controls" data-settings-panel="controls" hidden>
+              <div class="settings-section-heading"><span>INPUT MATRIX</span><small data-i18n="settings.controls.hint">Press a binding, then enter a new key</small></div>
+              <div id="settings-controls-list" class="settings-controls-list"></div>
+              <p class="settings-controls-note" data-i18n="settings.controls.note">ESC — cancel · BACKSPACE — clear secondary key · mouse always fires</p>
+            </section>
+
+            <section id="settings-panel-language" class="settings-panel" role="tabpanel" aria-labelledby="settings-tab-language" data-settings-panel="language" hidden>
+              <div class="settings-section-heading"><span data-i18n="settings.language.heading">DISPLAY LANGUAGE</span><small data-i18n="settings.language.hint">Applies instantly across the menu, HUD, and race messages</small></div>
+              <label class="settings-select" for="settings-language">
+                <span><strong data-i18n="settings.language.label">Game language</strong><small data-i18n="settings.language.pack">LANGUAGE PACK</small></span>
+                <select id="settings-language">
+                  <option value="en" data-i18n="settings.language.english">English</option>
+                  <option value="ru" data-i18n="settings.language.russian">Русский</option>
+                </select>
+              </label>
+            </section>
+          </div>
+
+          <footer class="settings-footer">
+            <button id="settings-reset" class="settings-secondary" type="button" data-i18n="settings.resetTab">RESET TAB</button>
+            <span id="settings-status" role="status" aria-live="polite" data-i18n="settings.saved">SETTINGS SAVED LOCALLY</span>
+            <button id="settings-done" class="settings-primary" type="button" data-i18n="common.done">DONE</button>
+          </footer>
+        </div>
+      </dialog>
+
+      <dialog id="account-dialog" class="settings-dialog account-dialog" aria-labelledby="account-title">
+        <div class="settings-shell account-shell panel-glass">
+          <header class="settings-header account-header">
+            <div>
+              <span class="settings-kicker">07 // PILOT NETWORK</span>
+              <h2 id="account-title" data-i18n="account.title">PILOT ACCOUNT</h2>
+            </div>
+            <button id="account-close" class="settings-close" type="button" aria-label="Close account" data-i18n-aria-label="account.close">×</button>
+          </header>
+
+          <nav class="settings-tabs account-tabs" role="tablist" aria-label="Account sections" data-i18n-aria-label="account.sections">
+            <button id="account-tab-profile" type="button" role="tab" aria-selected="true" aria-controls="account-panel-profile" tabindex="0" data-account-tab="profile" data-i18n="account.profileTab">PROFILE</button>
+            <button id="account-tab-rankings" type="button" role="tab" aria-selected="false" aria-controls="account-panel-rankings" tabindex="-1" data-account-tab="rankings" data-i18n="account.rankingsTab">RANKINGS</button>
+            <button id="account-tab-achievements" type="button" role="tab" aria-selected="false" aria-controls="account-panel-achievements" tabindex="-1" data-account-tab="achievements" data-i18n="account.achievementsTab">ACHIEVEMENTS</button>
+          </nav>
+
+          <div class="settings-body account-body">
+            <section id="account-panel-profile" class="settings-panel account-panel" role="tabpanel" aria-labelledby="account-tab-profile" data-account-panel="profile">
+              <section id="account-recovery-shard" class="account-recovery-shard" aria-labelledby="account-recovery-shard-title" hidden>
+                <div class="account-recovery-shard__mark" aria-hidden="true">◇</div>
+                <div>
+                  <span class="account-kicker" data-i18n="account.recoveryShardKicker">ONE-TIME RECOVERY SHARD</span>
+                  <h3 id="account-recovery-shard-title" data-i18n="account.recoveryShardTitle">SAVE THIS CODE NOW</h3>
+                  <p data-i18n="account.recoveryShardHint">It will not be shown again. Keep it offline; anyone with this code can reset your password.</p>
+                </div>
+                <label class="account-recovery-code" for="account-recovery-code">
+                  <span data-i18n="account.recoveryCode">RECOVERY CODE</span>
+                  <input id="account-recovery-code" type="text" readonly spellcheck="false" autocomplete="off" value="" />
+                </label>
+                <div class="account-recovery-shard__actions">
+                  <button id="account-recovery-copy" class="online-secondary" type="button" data-i18n="account.copyCode">COPY CODE</button>
+                  <button id="account-recovery-ack" class="online-primary" type="button" data-i18n="account.savedCode">I SAVED IT</button>
+                </div>
+              </section>
+
+              <div id="account-guest" class="account-guest">
+                <div class="settings-section-heading">
+                  <span data-i18n="account.identityHeading">PILOT IDENTITY</span>
+                  <small data-i18n="account.identityHint">Save progression, ranked scores, and achievements across devices</small>
+                </div>
+                <div class="segmented account-auth-switch" role="group" aria-label="Authentication mode" data-i18n-aria-label="account.authMode">
+                  <button class="is-selected" data-account-auth-mode="login" type="button" aria-pressed="true" data-i18n="account.loginTab">SIGN IN</button>
+                  <button data-account-auth-mode="register" type="button" aria-pressed="false" data-i18n="account.registerTab">REGISTER</button>
+                  <button data-account-auth-mode="recover" type="button" aria-pressed="false" data-i18n="account.recoverTab">RECOVER</button>
+                </div>
+
+                <form id="account-login-form" class="account-auth-form" data-account-auth-panel="login">
+                  <label class="online-field" for="account-login-handle">
+                    <span data-i18n="account.handle">PILOT HANDLE</span>
+                    <input id="account-login-handle" name="username" type="text" minlength="3" maxlength="20" required autocomplete="username" spellcheck="false" />
+                  </label>
+                  <label class="online-field" for="account-login-password">
+                    <span data-i18n="account.password">PASSWORD</span>
+                    <input id="account-login-password" name="password" type="password" minlength="10" maxlength="128" required autocomplete="current-password" />
+                  </label>
+                  <button class="online-primary account-auth-submit" type="submit" data-i18n="account.signInAction">CONNECT ACCOUNT</button>
+                </form>
+
+                <form id="account-register-form" class="account-auth-form" data-account-auth-panel="register" hidden>
+                  <label class="online-field" for="account-register-handle">
+                    <span data-i18n="account.handle">PILOT HANDLE</span>
+                    <input id="account-register-handle" name="username" type="text" minlength="3" maxlength="20" pattern="[A-Za-z0-9_-]+" required autocomplete="username" spellcheck="false" aria-describedby="account-register-handle-hint" />
+                    <small id="account-register-handle-hint" data-i18n="account.handleHint">3–20 Latin letters, numbers, underscore, or dash</small>
+                  </label>
+                  <label class="online-field" for="account-register-password">
+                    <span data-i18n="account.newPassword">NEW PASSWORD</span>
+                    <input id="account-register-password" name="new-password" type="password" minlength="10" maxlength="128" required autocomplete="new-password" />
+                  </label>
+                  <label class="online-field" for="account-register-confirm">
+                    <span data-i18n="account.confirmPassword">CONFIRM PASSWORD</span>
+                    <input id="account-register-confirm" name="confirm-password" type="password" minlength="10" maxlength="128" required autocomplete="new-password" />
+                  </label>
+                  <button class="online-primary account-auth-submit" type="submit" data-i18n="account.registerAction">CREATE PILOT ID</button>
+                  <p class="account-auth-note" data-i18n="account.registerHint">A one-time recovery shard will appear after registration.</p>
+                </form>
+
+                <form id="account-recover-form" class="account-auth-form" data-account-auth-panel="recover" hidden>
+                  <label class="online-field" for="account-recover-handle">
+                    <span data-i18n="account.handle">PILOT HANDLE</span>
+                    <input id="account-recover-handle" name="username" type="text" minlength="3" maxlength="20" required autocomplete="username" spellcheck="false" />
+                  </label>
+                  <label class="online-field" for="account-recover-code-input">
+                    <span data-i18n="account.recoveryCode">RECOVERY CODE</span>
+                    <input id="account-recover-code-input" name="recovery-code" type="text" minlength="8" maxlength="128" required autocomplete="one-time-code" spellcheck="false" />
+                  </label>
+                  <label class="online-field" for="account-recover-password">
+                    <span data-i18n="account.newPassword">NEW PASSWORD</span>
+                    <input id="account-recover-password" name="new-password" type="password" minlength="10" maxlength="128" required autocomplete="new-password" />
+                  </label>
+                  <label class="online-field" for="account-recover-confirm">
+                    <span data-i18n="account.confirmPassword">CONFIRM PASSWORD</span>
+                    <input id="account-recover-confirm" name="confirm-password" type="password" minlength="10" maxlength="128" required autocomplete="new-password" />
+                  </label>
+                  <button class="online-primary account-auth-submit" type="submit" data-i18n="account.recoverAction">RESET ACCESS</button>
+                  <p class="account-auth-note" data-i18n="account.recoverHint">Successful recovery rotates the shard and displays a new code once.</p>
+                </form>
+                <p id="account-auth-error" class="account-error" role="alert" hidden></p>
+              </div>
+
+              <div id="account-profile" class="account-profile" hidden>
+                <header class="account-profile__hero">
+                  <div id="account-profile-avatar" class="account-avatar" aria-hidden="true">BE</div>
+                  <div>
+                    <span class="account-kicker" data-i18n="account.syncedPilot">SYNCED PILOT</span>
+                    <h3 id="account-profile-handle">PILOT</h3>
+                    <p id="account-profile-since">—</p>
+                  </div>
+                  <div class="account-profile__rank"><span data-i18n="account.globalRank">GLOBAL RANK</span><strong id="account-profile-rank">—</strong></div>
+                </header>
+
+                <div class="account-stat-grid" aria-label="Pilot statistics" data-i18n-aria-label="account.stats">
+                  <div><span data-i18n="account.runs">RUNS</span><strong id="account-stat-runs">0</strong></div>
+                  <div><span data-i18n="account.finishes">FINISHES</span><strong id="account-stat-finishes">0</strong></div>
+                  <div><span data-i18n="account.victories">VICTORIES</span><strong id="account-stat-victories">0</strong></div>
+                  <div><span data-i18n="account.totalScore">TOTAL SCORE</span><strong id="account-stat-score">0</strong></div>
+                  <div><span data-i18n="account.maxSpeed">MAX SPEED</span><strong id="account-stat-speed">0</strong></div>
+                  <div><span data-i18n="account.unlocked">UNLOCKED</span><strong id="account-stat-achievements">0 / 0</strong></div>
+                </div>
+
+                <section class="account-garage" aria-labelledby="account-garage-title">
+                  <header>
+                    <div><span class="account-kicker" data-i18n="account.garageKicker">CLOUD GARAGE</span><h3 id="account-garage-title" data-i18n="account.garage">GARAGE LOADOUT</h3></div>
+                    <div class="credits"><i></i><strong id="account-profile-credits">0</strong> CR</div>
+                  </header>
+                  <div class="account-garage__modules">
+                    <div><span>ENG</span><strong data-account-garage-level="engine">LV.0</strong></div>
+                    <div><span>CRY</span><strong data-account-garage-level="cooling">LV.0</strong></div>
+                    <div><span>SHD</span><strong data-account-garage-level="shield">LV.0</strong></div>
+                    <div><span>WPN</span><strong data-account-garage-level="weapon">LV.0</strong></div>
+                  </div>
+                </section>
+
+                <section class="account-route-bests" aria-labelledby="account-route-bests-title">
+                  <div class="settings-section-heading"><span id="account-route-bests-title" data-i18n="account.routeBests">ROUTE PERSONAL BESTS</span><small data-i18n="account.routeBestsHint">Ranked score and current route position</small></div>
+                  <div id="account-route-best-list" class="account-route-best-list"></div>
+                </section>
+
+                <section class="account-legacy" aria-labelledby="account-legacy-title">
+                  <div><strong id="account-legacy-title" data-i18n="account.legacyTitle">LOCAL GARAGE IMPORT</strong><small id="account-legacy-hint" data-i18n="account.legacyHint">Merge this device's earlier garage once. Higher module levels are preserved.</small></div>
+                  <button id="account-import-legacy" class="online-secondary" type="button" data-i18n="account.importLegacy">IMPORT LOCAL SAVE</button>
+                </section>
+                <button id="account-logout" class="online-link account-logout" type="button" data-i18n="account.logout">DISCONNECT ACCOUNT</button>
+              </div>
+            </section>
+
+            <section id="account-panel-rankings" class="settings-panel account-panel" role="tabpanel" aria-labelledby="account-tab-rankings" data-account-panel="rankings" hidden>
+              <div class="settings-section-heading">
+                <span data-i18n="leaderboard.heading">PILOT RANKINGS</span>
+                <small data-i18n="leaderboard.provisional">PROVISIONAL BETA // client-authoritative scores</small>
+              </div>
+              <div class="account-ranking-toolbar">
+                <label for="leaderboard-scope"><span data-i18n="leaderboard.scope">BOARD</span>
+                  <select id="leaderboard-scope">
+                    <option value="global" data-i18n="leaderboard.global">GLOBAL // SIX-ROUTE RATING</option>
+                    <option value="aurora">AURORA SPINE</option>
+                    <option value="reactor">SOLAR RUPTURE</option>
+                    <option value="void">NULL CATHEDRAL</option>
+                    <option value="forge">PULSE FORGE</option>
+                    <option value="skyline">SKYLINE DRIFT</option>
+                    <option value="abyss">ABYSSAL DIVIDE</option>
+                  </select>
+                </label>
+                <span class="account-beta-badge" data-i18n="leaderboard.beta">BETA</span>
+              </div>
+              <p class="account-ranking-note" data-i18n="leaderboard.globalHint">Global rating is the sum of your best ranked score on every route.</p>
+              <div id="leaderboard-own-rank" class="account-own-rank" hidden></div>
+              <div class="account-leaderboard" role="table" aria-label="Pilot leaderboard" data-i18n-aria-label="leaderboard.table">
+                <div class="account-leaderboard__header" role="row">
+                  <span role="columnheader" data-i18n="leaderboard.rank">RANK</span>
+                  <span role="columnheader" data-i18n="leaderboard.pilot">PILOT</span>
+                  <span role="columnheader" data-i18n="leaderboard.runs">RUNS</span>
+                  <span role="columnheader" data-i18n="leaderboard.score">SCORE</span>
+                  <span role="columnheader" data-i18n="leaderboard.date">DATE</span>
+                </div>
+                <div id="leaderboard-list" class="account-leaderboard__body" role="rowgroup"></div>
+              </div>
+              <p id="leaderboard-status" class="account-empty" role="status" aria-live="polite" data-i18n="leaderboard.initial">Choose a board to synchronize the top pilots.</p>
+            </section>
+
+            <section id="account-panel-achievements" class="settings-panel account-panel" role="tabpanel" aria-labelledby="account-tab-achievements" data-account-panel="achievements" hidden>
+              <div class="settings-section-heading">
+                <span data-i18n="achievement.heading">ACHIEVEMENT MATRIX</span>
+                <small id="achievement-summary" data-i18n="achievement.guestSummary">Sign in to synchronize progress</small>
+              </div>
+              <div id="achievement-guest" class="account-guest-callout">
+                <strong data-i18n="achievement.guestTitle">CAREER SIGNAL NOT CONNECTED</strong>
+                <p data-i18n="achievement.guestHint">Ranked milestones and route mastery are stored in your pilot account.</p>
+                <button id="achievement-sign-in" class="online-primary" type="button" data-i18n="account.signInAction">CONNECT ACCOUNT</button>
+              </div>
+              <div id="achievement-list" class="account-achievement-grid" aria-live="polite"></div>
+            </section>
+          </div>
+
+          <footer class="settings-footer account-footer">
+            <span id="account-status" role="status" aria-live="polite" data-i18n="account.guestStatus">GUEST MODE // rankings remain public</span>
+            <button id="account-done" class="settings-primary" type="button" data-i18n="common.done">DONE</button>
+          </footer>
+        </div>
+      </dialog>
+
+      <section id="hud" class="hud">
         <div class="hud-top hud-panel">
           <div class="hud-brand"><strong>BE</strong><span id="hud-track">AURORA SPINE</span></div>
           <div class="race-progress">
             <span id="section-label">SECTOR 01 // IGNITION</span>
-            <div class="race-progress__bar"><i id="progress-fill"></i><b class="rival-dot rival-dot--one"></b><b class="rival-dot rival-dot--two"></b><b class="rival-dot rival-dot--three"></b></div>
+            <div class="race-progress__bar" role="progressbar" aria-label="Course progress and obstacle map" data-i18n-aria-label="hud.progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <i id="progress-fill"></i>
+              <div id="race-course-markers" class="race-course-markers" aria-hidden="true"></div>
+              <div id="rival-markers" class="rival-markers" aria-hidden="true"></div>
+            </div>
           </div>
-          <div class="rank"><strong id="rank-value">4</strong><span>/ 4<br />POSITION</span></div>
+          <div class="rank"><strong id="rank-value">4</strong><span><b id="rank-total">/ 4</b><br /><span data-i18n="hud.position">POSITION</span></span></div>
         </div>
+
+        <section id="upgrade-draft" class="upgrade-draft" aria-labelledby="upgrade-draft-label" aria-live="polite" aria-atomic="true" hidden>
+          <div id="upgrade-draft-label" class="upgrade-draft__label"><b data-i18n="hud.chooseModule">ROGUELIKE INTERCEPT // CHOOSE A MODULE</b> <span id="upgrade-key-hint">1–3</span></div>
+          <div id="upgrade-options" class="upgrade-choices" role="group" aria-label="Available upgrades" data-i18n-aria-label="hud.availableUpgrades"></div>
+        </section>
+
+        <div id="installed-upgrades" class="installed-upgrades" aria-label="Installed upgrades" data-i18n-aria-label="hud.installedUpgrades"></div>
 
         <div class="hud-left">
           <div class="meter-title">AEGIS // SHIELD</div>
@@ -189,8 +751,8 @@
             <strong id="heat-value">00</strong>
           </div>
           <div class="combat-state">
-            <span>WEAPON</span><strong id="hud-weapon">PULSE LANCE</strong><i id="weapon-ready"></i>
-            <span>ABILITY</span><strong id="hud-ability">PHASE SHIFT</strong><small id="ability-ready">READY</small>
+            <span data-i18n="hud.weapon">WEAPON</span><strong id="hud-weapon">PULSE LANCE</strong><i id="weapon-ready"></i>
+            <span data-i18n="hud.ability">ABILITY</span><strong id="hud-ability">PHASE SHIFT</strong><small id="ability-ready">READY</small>
           </div>
         </div>
 
@@ -203,46 +765,110 @@
 
       <div id="countdown" class="countdown" aria-live="assertive"></div>
 
-      <section id="upgrade-screen" class="screen screen--overlay upgrade-screen" aria-labelledby="upgrade-title">
-        <div class="upgrade-shell">
-          <div class="upgrade-kicker">ROGUELIKE INTERCEPT // TIME DILATION ACTIVE</div>
-          <h2 id="upgrade-title">ВЫБЕРИ МОДУЛЬ</h2>
-          <p>Выбор останется с болидом до конца текущего забега.</p>
-          <div id="upgrade-options" class="upgrade-grid"></div>
-          <small class="upgrade-hint">Музыка и симуляция поставлены на паузу</small>
-        </div>
-      </section>
-
       <section id="results-screen" class="screen screen--overlay results-screen" aria-labelledby="result-title">
         <div class="results-shell panel-glass">
-          <div class="result-rank"><span>RUN RANK</span><strong id="result-rank">S</strong><i></i></div>
+          <div class="result-rank"><span data-i18n="results.runRank">RUN GRADE</span><strong id="result-rank">S</strong><i></i></div>
           <div class="results-copy">
-            <div id="result-status" class="upgrade-kicker">SIGNAL CONQUERED</div>
-            <h2 id="result-title">PULSE COMPLETE</h2>
+            <div id="result-status" class="upgrade-kicker" data-i18n="results.signalConquered">SIGNAL CONQUERED</div>
+            <h2 id="result-title" data-i18n="results.complete">PULSE COMPLETE</h2>
             <p id="result-route">AURORA SPINE // SEED 000000</p>
           </div>
-          <div class="result-score"><span>TOTAL SCORE</span><strong id="result-score">000000</strong><small id="result-best">NEW PERSONAL BEST</small></div>
+          <div class="result-score"><span data-i18n="results.totalScore">TOTAL SCORE</span><strong id="result-score">000000</strong><small id="result-best" data-i18n="results.newBest">NEW PERSONAL BEST</small></div>
           <div class="result-stats">
-            <div><span>MAX VELOCITY</span><strong id="result-speed">0 KM/H</strong></div>
-            <div><span>ACCURACY</span><strong id="result-accuracy">0%</strong></div>
-            <div><span>PERFECT SYNC</span><strong id="result-perfects">0</strong></div>
-            <div><span>NEAR MISSES</span><strong id="result-near">0</strong></div>
-            <div><span>TARGETS ERASED</span><strong id="result-kills">0</strong></div>
-            <div><span>REWARD</span><strong id="result-credits">+0 CR</strong></div>
+            <div><span data-i18n="results.maxVelocity">MAX VELOCITY</span><strong id="result-speed">0 KM/H</strong></div>
+            <div><span data-i18n="results.accuracy">ACCURACY</span><strong id="result-accuracy">0%</strong></div>
+            <div><span data-i18n="results.perfectSync">PERFECT SYNC</span><strong id="result-perfects">0</strong></div>
+            <div><span data-i18n="results.nearMisses">NEAR MISSES</span><strong id="result-near">0</strong></div>
+            <div><span data-i18n="results.targets">TARGETS ERASED</span><strong id="result-kills">0</strong></div>
+            <div><span data-i18n="results.reward">REWARD</span><strong id="result-credits">+0 CR</strong></div>
           </div>
+          <section id="result-race-summary" class="result-race-summary" aria-labelledby="result-race-summary-title">
+            <header class="result-race-summary__header">
+              <h3 id="result-race-summary-title" data-i18n="results.raceSummary">RACE SUMMARY</h3>
+              <p id="result-performance-summary" data-i18n="results.performancePending">COURSE TELEMETRY PENDING</p>
+            </header>
+            <dl class="result-race-summary__metrics">
+              <div>
+                <dt id="result-position-label" data-i18n="results.finishPosition">FINISH POSITION</dt>
+                <dd><strong id="result-position">— / —</strong></dd>
+              </div>
+              <div>
+                <dt data-i18n="results.finishTime">FINISH TIME</dt>
+                <dd><strong id="result-time">00:00.000</strong></dd>
+              </div>
+              <div>
+                <dt data-i18n="results.courseGrade">COURSE GRADE</dt>
+                <dd><strong id="result-course-grade">—</strong></dd>
+              </div>
+              <div>
+                <dt data-i18n="results.obstacleClearance">OBSTACLE CLEARANCE</dt>
+                <dd>
+                  <strong id="result-obstacle-clearance">—%</strong>
+                  <small id="result-obstacle-detail" data-i18n="results.obstaclePending">AWAITING OBSTACLE TELEMETRY</small>
+                </dd>
+              </div>
+            </dl>
+          </section>
+          <section id="result-rivals" class="result-rivals" aria-labelledby="result-rivals-title">
+            <header class="result-rivals__header">
+              <h3 id="result-rivals-title" data-i18n="results.rivalStandings">RACE STANDINGS</h3>
+              <p id="result-rivals-note" data-i18n="results.rivalStandingsHint">FINAL DATA FOR EVERY PILOT IN THIS RUN</p>
+            </header>
+            <div class="result-rivals__viewport">
+              <table id="result-rivals-table">
+                <caption class="visually-hidden" data-i18n="results.rivalStandingsCaption">Final race standings and pilot performance</caption>
+                <thead>
+                  <tr>
+                    <th scope="col" data-i18n="results.standingPosition">POS</th>
+                    <th scope="col" data-i18n="results.standingPilot">PILOT</th>
+                    <th scope="col" data-i18n="results.standingTime">TIME</th>
+                    <th scope="col" data-i18n="results.standingScore">SCORE</th>
+                    <th scope="col" data-i18n="results.standingObstacles">OBSTACLES</th>
+                    <th scope="col" data-i18n="results.standingStatus">STATUS</th>
+                  </tr>
+                </thead>
+                <tbody id="result-rivals-body">
+                  <tr id="result-rivals-placeholder">
+                    <td colspan="6" data-i18n="results.standingsPending">RACE TELEMETRY PENDING</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+          <p id="result-account-status" class="result-account-status" data-tone="muted" role="status" aria-live="polite" data-i18n="account.result.guest">GUEST SAVE // THIS DEVICE</p>
           <div class="result-actions">
-            <button id="replay-run" class="launch-button launch-button--compact" type="button"><span>↻</span><strong>REPLAY SEED</strong></button>
-            <button id="return-menu" class="secondary-button" type="button">RETURN TO GARAGE</button>
+            <button id="replay-run" class="launch-button launch-button--compact" type="button"><span>↻</span><strong data-i18n="results.replay">REPLAY SEED</strong></button>
+            <button id="return-menu" class="secondary-button" type="button" data-i18n="results.return">RETURN TO GARAGE</button>
           </div>
         </div>
       </section>
 
-      <div class="mobile-controls" aria-label="Сенсорное управление">
-        <div><button data-control="left" type="button">◀</button><button data-control="right" type="button">▶</button></div>
-        <div><button data-control="cool" type="button">COOL</button><button data-action="fire" type="button">FIRE</button><button data-control="boost" type="button">BOOST</button><button data-action="ability" type="button">Q</button></div>
+      <div id="mobile-controls" class="mobile-controls" aria-label="Touch controls" data-i18n-aria-label="mobile.controls" aria-hidden="true" hidden>
+        <div class="mobile-controls__steering" role="group" aria-label="Craft steering" data-i18n-aria-label="mobile.steering">
+          <button class="touch-control touch-control--steer" data-control="left" type="button" aria-label="Turn left" data-i18n-aria-label="mobile.left" aria-pressed="false">
+            <span aria-hidden="true">‹</span><small>LEFT</small>
+          </button>
+          <button class="touch-control touch-control--steer" data-control="right" type="button" aria-label="Turn right" data-i18n-aria-label="mobile.right" aria-pressed="false">
+            <span aria-hidden="true">›</span><small>RIGHT</small>
+          </button>
+        </div>
+        <div class="mobile-controls__actions" role="group" aria-label="Craft actions" data-i18n-aria-label="mobile.actions">
+          <button class="touch-control touch-control--utility" data-control="cool" type="button" aria-label="Cool the reactor" data-i18n-aria-label="mobile.cool" aria-pressed="false">
+            <span aria-hidden="true">❄</span><small>COOL</small>
+          </button>
+          <button class="touch-control touch-control--utility" data-action="ability" type="button" aria-label="Activate ability" data-i18n-aria-label="mobile.ability" aria-pressed="false">
+            <span aria-hidden="true">Q</span><small id="mobile-ability-name">PHASE</small><i id="mobile-ability-state">READY</i>
+          </button>
+          <button class="touch-control touch-control--primary touch-control--fire" data-control="fire" type="button" aria-label="Fire, hold supported" data-i18n-aria-label="mobile.fire" aria-pressed="false">
+            <span aria-hidden="true">●</span><small>FIRE</small><i id="mobile-fire-state">HOLD</i>
+          </button>
+          <button class="touch-control touch-control--primary touch-control--boost" data-control="boost" type="button" aria-label="Boost" data-i18n-aria-label="mobile.boost" aria-pressed="false">
+            <span aria-hidden="true">»</span><small>BOOST</small>
+          </button>
+        </div>
       </div>
     </main>
-    <noscript>Для Ballistic Edge нужен JavaScript и поддержка WebGL.</noscript>
+    <noscript>Ballistic Edge requires JavaScript and WebGL support.</noscript>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
