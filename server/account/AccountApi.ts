@@ -62,7 +62,7 @@ interface ApiFailureLike {
   message?: unknown;
 }
 
-const TRACK_IDS = new Set<TrackId>(['aurora', 'reactor', 'void', 'forge']);
+const TRACK_IDS = new Set<TrackId>(['aurora', 'reactor', 'void', 'forge', 'skyline', 'abyss']);
 const GARAGE_MODULES = new Set<GarageModuleId>(['engine', 'cooling', 'shield', 'weapon']);
 const MUSIC_SOURCES = new Set<AccountMusicSource>(['synthetic', 'catalog', 'local']);
 const WEAPONS = new Set(['pulse', 'scatter', 'rail']);

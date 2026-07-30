@@ -8,7 +8,7 @@ import {
 } from './achievements';
 
 function snapshot(): AchievementSnapshot {
-  const tracks = Object.fromEntries((['aurora', 'reactor', 'void', 'forge'] as TrackId[]).map((trackId) => [
+  const tracks = Object.fromEntries((['aurora', 'reactor', 'void', 'forge', 'skyline', 'abyss'] as TrackId[]).map((trackId) => [
     trackId,
     { finishes: 0, wins: 0, bestScore: 0 },
   ])) as AchievementSnapshot['tracks'];
@@ -30,7 +30,7 @@ describe('account achievements', () => {
   it('expands profile and route-scoped achievements deterministically', () => {
     const evaluations = evaluateAchievements(snapshot());
 
-    expect(evaluations).toHaveLength(24);
+    expect(evaluations).toHaveLength(30);
     expect(evaluations.map((achievement) => achievement.key)).toContain('route-clear:forge');
     expect(new Set(evaluations.map((achievement) => achievement.key)).size).toBe(evaluations.length);
   });

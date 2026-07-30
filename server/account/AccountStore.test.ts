@@ -91,7 +91,7 @@ describe('AccountStore auth and persistence', () => {
     const profile = await second.getProfile(grant.profile.accountId);
     expect(profile).toMatchObject({ handle: 'PilotOne', garage: { credits: 900, engine: 0 } });
     const migrations = second.database.prepare('SELECT COUNT(*) AS count FROM schema_migrations').get() as { count: number };
-    expect(migrations.count).toBe(1);
+    expect(migrations.count).toBe(3);
     second.close();
   });
 
@@ -251,7 +251,7 @@ describe('AccountStore progress, runs, and leaderboards', () => {
     store.close();
   });
 
-  it('builds global score from the four synthetic solo PBs and resolves ties deterministically', async () => {
+  it('builds global score from the six synthetic solo PBs and resolves ties deterministically', async () => {
     let now = 5_000;
     const store = createStore({ now: () => now });
     const alpha = await register(store, 'AlphaPilot');
@@ -263,15 +263,15 @@ describe('AccountStore progress, runs, and leaderboards', () => {
       await store.finishRun(accountId, ticket.runId, finishRequest(ticket.seed, { score: value, maxSpeed: 2_000 }));
       now += 1;
     }
-    for (const track of ['aurora', 'reactor', 'void', 'forge'] as TrackId[]) await score(alpha.profile.accountId, track, 10_000);
-    for (const track of ['aurora', 'reactor', 'void', 'forge'] as TrackId[]) await score(beta.profile.accountId, track, 10_000);
+    for (const track of ['aurora', 'reactor', 'void', 'forge', 'skyline', 'abyss'] as TrackId[]) await score(alpha.profile.accountId, track, 10_000);
+    for (const track of ['aurora', 'reactor', 'void', 'forge', 'skyline', 'abyss'] as TrackId[]) await score(beta.profile.accountId, track, 10_000);
 
     const global = await store.leaderboard('global', beta.profile.accountId, 1);
     expect(global.entries).toHaveLength(1);
-    expect(global.entries[0]).toMatchObject({ handle: 'AlphaPilot', score: 40_000, rank: 1 });
-    expect(global.ownEntry).toMatchObject({ handle: 'BetaPilot', score: 40_000, rank: 2, isCurrentPlayer: true });
+    expect(global.entries[0]).toMatchObject({ handle: 'AlphaPilot', score: 60_000, rank: 1 });
+    expect(global.ownEntry).toMatchObject({ handle: 'BetaPilot', score: 60_000, rank: 2, isCurrentPlayer: true });
     const betaProfile = await store.getProfile(beta.profile.accountId);
-    expect(betaProfile.globalScore).toBe(40_000);
+    expect(betaProfile.globalScore).toBe(60_000);
     expect(betaProfile.globalRank).toBe(2);
     store.close();
   });

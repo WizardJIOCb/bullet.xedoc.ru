@@ -1,4 +1,4 @@
-export type TrackId = 'aurora' | 'reactor' | 'void' | 'forge';
+export type TrackId = 'aurora' | 'reactor' | 'void' | 'forge' | 'skyline' | 'abyss';
 export type WeaponId = 'pulse' | 'scatter' | 'rail';
 export type AbilityId = 'phase' | 'emp' | 'overdrive';
 export type UpgradeId =
@@ -335,6 +335,40 @@ export const TRACKS: Record<TrackId, TrackTheme> = {
     },
     handling: 0.98,
     hazardRate: 1.35,
+  },
+  skyline: {
+    id: 'skyline',
+    name: 'Skyline Drift',
+    kicker: 'SKYWAY / 05',
+    description: 'A transparent sky-tube threading a radiant vertical city and its streams of flying traffic.',
+    seed: 0x5c17e,
+    radius: 13.1,
+    colors: {
+      background: 0x78cfff,
+      fog: 0x5f9fbd,
+      primary: 0x39dcff,
+      secondary: 0xffca6a,
+      danger: 0xff426d,
+    },
+    handling: 1.08,
+    hazardRate: 1.06,
+  },
+  abyss: {
+    id: 'abyss',
+    name: 'Abyssal Divide',
+    kicker: 'PELAGIC / 06',
+    description: 'A glass ocean artery that forks around living reefs, migrating giants, and the dark edge of the abyss.',
+    seed: 0xab755,
+    radius: 13.8,
+    colors: {
+      background: 0x031b32,
+      fog: 0x063a50,
+      primary: 0x3bf4ff,
+      secondary: 0xc56dff,
+      danger: 0xff4f87,
+    },
+    handling: 1.1,
+    hazardRate: 1.12,
   },
 };
 

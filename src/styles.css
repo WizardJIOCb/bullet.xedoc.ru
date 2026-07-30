@@ -267,7 +267,7 @@ label:focus-within {
 
 .track-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -381,6 +381,19 @@ label:focus-within {
     repeating-conic-gradient(from 45deg at 50% 50%, rgba(255, 33, 91, 0.18) 0 8deg, transparent 8deg 22deg),
     radial-gradient(ellipse, rgba(255, 201, 58, 0.27), transparent 48%),
     linear-gradient(160deg, #35050f, #090106 75%);
+}
+.track-card__visual--skyline {
+  color: #49dcff;
+  background:
+    radial-gradient(circle at 80% 18%, rgba(255, 225, 142, 0.54), transparent 25%),
+    linear-gradient(160deg, #69caff, #d9f4ff 48%, #1979aa 100%);
+}
+.track-card__visual--abyss {
+  color: #54f4ff;
+  background:
+    radial-gradient(circle at 52% 5%, rgba(126, 236, 255, 0.46), transparent 29%),
+    radial-gradient(ellipse at 28% 72%, rgba(174, 83, 255, 0.22), transparent 38%),
+    linear-gradient(165deg, #0a7898, #052a49 48%, #010814 100%);
 }
 
 .track-card__meta,
@@ -4239,7 +4252,7 @@ kbd {
   .online-panel { grid-column: 1; }
   .track-grid {
     overflow-x: auto;
-    grid-template-columns: repeat(4, minmax(220px, 1fr));
+    grid-template-columns: repeat(5, minmax(220px, 1fr));
     padding-bottom: 6px;
   }
   .settings-dialog {
@@ -4291,7 +4304,7 @@ kbd {
   .loadout-panel { grid-row: auto; }
   .launch-panel { grid-column: 1; }
   .game-title { font-size: clamp(58px, 16vw, 100px); }
-  .track-grid { grid-template-columns: repeat(4, minmax(220px, 1fr)); }
+  .track-grid { grid-template-columns: repeat(5, minmax(220px, 1fr)); }
   .garage-grid { grid-template-columns: 1fr 1fr; }
   .hud-left { top: auto; bottom: 92px; transform: none; }
   .hud-right { top: auto; bottom: 92px; transform: none; }

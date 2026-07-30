@@ -53,7 +53,7 @@
 
             <div class="track-heading">
               <span data-i18n="track.heading">01 / CHOOSE A COURSE SIGNAL</span>
-              <span id="track-count">04 ROUTES ONLINE</span>
+              <span id="track-count">06 ROUTES ONLINE</span>
             </div>
             <div class="track-grid" role="radiogroup" aria-label="Course selection" data-i18n-aria-label="track.group">
               <button class="track-card is-selected" data-track="aurora" data-selected-label="SELECTED" data-i18n-selected-label="track.selected" type="button" role="radio" aria-checked="true">
@@ -91,6 +91,24 @@
                 <span class="track-card__meta">INDUSTRIAL / 04</span>
                 <strong>Pulse Forge</strong>
                 <small data-i18n="track.forge.short">Dense gates / x1.35 hazard</small>
+              </button>
+              <button class="track-card" data-track="skyline" data-selected-label="SELECTED" data-i18n-selected-label="track.selected" type="button" role="radio" aria-checked="false">
+                <span class="track-card__visual track-card__visual--skyline">
+                  <img class="track-card__image" src="/assets/tracks/skyline-drift-v1.webp" alt="" width="1200" height="600" decoding="async" />
+                  <i></i><i></i><i></i>
+                </span>
+                <span class="track-card__meta">SKYWAY / 05</span>
+                <strong>Skyline Drift</strong>
+                <small data-i18n="track.skyline.short">Glass skyway / flying city</small>
+              </button>
+              <button class="track-card" data-track="abyss" data-selected-label="SELECTED" data-i18n-selected-label="track.selected" type="button" role="radio" aria-checked="false">
+                <span class="track-card__visual track-card__visual--abyss">
+                  <img class="track-card__image" src="/assets/tracks/abyssal-divide-v1.webp" alt="" width="1200" height="600" decoding="async" />
+                  <i></i><i></i><i></i>
+                </span>
+                <span class="track-card__meta">PELAGIC / 06</span>
+                <strong>Abyssal Divide</strong>
+                <small data-i18n="track.abyss.short">Twin routes / living ocean</small>
               </button>
             </div>
           </section>
@@ -340,6 +358,8 @@
                       <option value="reactor">SOLAR RUPTURE</option>
                       <option value="void">NULL CATHEDRAL</option>
                       <option value="forge">PULSE FORGE</option>
+                      <option value="skyline">SKYLINE DRIFT</option>
+                      <option value="abyss">ABYSSAL DIVIDE</option>
                     </select>
                   </label>
                   <label for="online-ai"><span data-i18n="online.aiOpponents">AI OPPONENTS</span> <output id="online-ai-value" for="online-ai">3</output>
@@ -638,11 +658,13 @@
               <div class="account-ranking-toolbar">
                 <label for="leaderboard-scope"><span data-i18n="leaderboard.scope">BOARD</span>
                   <select id="leaderboard-scope">
-                    <option value="global" data-i18n="leaderboard.global">GLOBAL // FOUR-ROUTE RATING</option>
+                    <option value="global" data-i18n="leaderboard.global">GLOBAL // SIX-ROUTE RATING</option>
                     <option value="aurora">AURORA SPINE</option>
                     <option value="reactor">SOLAR RUPTURE</option>
                     <option value="void">NULL CATHEDRAL</option>
                     <option value="forge">PULSE FORGE</option>
+                    <option value="skyline">SKYLINE DRIFT</option>
+                    <option value="abyss">ABYSSAL DIVIDE</option>
                   </select>
                 </label>
                 <span class="account-beta-badge" data-i18n="leaderboard.beta">BETA</span>

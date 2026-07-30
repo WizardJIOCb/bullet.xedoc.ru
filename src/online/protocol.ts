@@ -192,7 +192,7 @@ export type DecodeResult<T> =
   | { ok: true; value: T }
   | { ok: false; error: string };
 
-const TRACK_IDS: ReadonlySet<TrackId> = new Set(['aurora', 'reactor', 'void', 'forge']);
+const TRACK_IDS: ReadonlySet<TrackId> = new Set(['aurora', 'reactor', 'void', 'forge', 'skyline', 'abyss']);
 const WEAPON_IDS: ReadonlySet<WeaponId> = new Set(['pulse', 'scatter', 'rail']);
 const ABILITY_IDS: ReadonlySet<AbilityId> = new Set(['phase', 'emp', 'overdrive']);
 const ERROR_CODES: ReadonlySet<OnlineErrorCode> = new Set([

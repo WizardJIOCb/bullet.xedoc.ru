@@ -124,6 +124,164 @@ const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX leaderboard_order ON leaderboard_best(board_key, score DESC, achieved_at ASC, account_id ASC);
     `,
   },
+  {
+    version: 2,
+    name: 'skyline-drift-route',
+    sql: `
+      CREATE TABLE track_progress_v2 (
+        account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        track_id TEXT NOT NULL CHECK (track_id IN ('aurora', 'reactor', 'void', 'forge', 'skyline')),
+        runs INTEGER NOT NULL DEFAULT 0 CHECK (runs >= 0),
+        finishes INTEGER NOT NULL DEFAULT 0 CHECK (finishes >= 0),
+        wins INTEGER NOT NULL DEFAULT 0 CHECK (wins >= 0),
+        best_score INTEGER NOT NULL DEFAULT 0 CHECK (best_score >= 0),
+        max_speed REAL NOT NULL DEFAULT 0 CHECK (max_speed >= 0),
+        best_accuracy REAL NOT NULL DEFAULT 0 CHECK (best_accuracy BETWEEN 0 AND 1),
+        perfects INTEGER NOT NULL DEFAULT 0 CHECK (perfects >= 0),
+        near_misses INTEGER NOT NULL DEFAULT 0 CHECK (near_misses >= 0),
+        kills INTEGER NOT NULL DEFAULT 0 CHECK (kills >= 0),
+        PRIMARY KEY (account_id, track_id)
+      ) STRICT;
+      INSERT INTO track_progress_v2 SELECT * FROM track_progress;
+
+      CREATE TABLE runs_v2 (
+        id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        mode TEXT NOT NULL CHECK (mode IN ('solo', 'online')),
+        track_id TEXT NOT NULL CHECK (track_id IN ('aurora', 'reactor', 'void', 'forge', 'skyline')),
+        music_source TEXT NOT NULL CHECK (music_source IN ('synthetic', 'catalog', 'local')),
+        music_id TEXT NOT NULL,
+        seed INTEGER NOT NULL,
+        weapon TEXT NOT NULL,
+        ability TEXT NOT NULL,
+        ai_opponents INTEGER NOT NULL,
+        garage_json TEXT NOT NULL,
+        started_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        finished_at INTEGER,
+        status TEXT NOT NULL CHECK (status IN ('started', 'accepted', 'rejected', 'expired')),
+        ranked_eligible INTEGER NOT NULL CHECK (ranked_eligible IN (0, 1)),
+        ranked INTEGER CHECK (ranked IN (0, 1)),
+        result_hash TEXT,
+        result_json TEXT,
+        response_json TEXT
+      ) STRICT;
+      INSERT INTO runs_v2 SELECT * FROM runs;
+
+      CREATE TABLE achievement_progress_v2 (
+        account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        achievement_key TEXT NOT NULL,
+        current_value REAL NOT NULL DEFAULT 0,
+        target_value REAL NOT NULL,
+        unlocked_at INTEGER,
+        run_id TEXT REFERENCES runs_v2(id) ON DELETE SET NULL,
+        PRIMARY KEY (account_id, achievement_key)
+      ) STRICT;
+      INSERT INTO achievement_progress_v2 SELECT * FROM achievement_progress;
+
+      CREATE TABLE leaderboard_best_v2 (
+        board_key TEXT NOT NULL,
+        account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        run_id TEXT NOT NULL REFERENCES runs_v2(id) ON DELETE CASCADE,
+        score INTEGER NOT NULL CHECK (score >= 0),
+        achieved_at INTEGER NOT NULL,
+        PRIMARY KEY (board_key, account_id)
+      ) STRICT;
+      INSERT INTO leaderboard_best_v2 SELECT * FROM leaderboard_best;
+
+      DROP TABLE leaderboard_best;
+      DROP TABLE achievement_progress;
+      DROP TABLE runs;
+      DROP TABLE track_progress;
+      ALTER TABLE track_progress_v2 RENAME TO track_progress;
+      ALTER TABLE runs_v2 RENAME TO runs;
+      ALTER TABLE achievement_progress_v2 RENAME TO achievement_progress;
+      ALTER TABLE leaderboard_best_v2 RENAME TO leaderboard_best;
+
+      CREATE INDEX runs_account_started ON runs(account_id, started_at DESC);
+      CREATE INDEX runs_expiry ON runs(status, expires_at);
+      CREATE INDEX leaderboard_order ON leaderboard_best(board_key, score DESC, achieved_at ASC, account_id ASC);
+    `,
+  },
+  {
+    version: 3,
+    name: 'abyssal-divide-route',
+    sql: `
+      CREATE TABLE track_progress_v3 (
+        account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        track_id TEXT NOT NULL CHECK (track_id IN ('aurora', 'reactor', 'void', 'forge', 'skyline', 'abyss')),
+        runs INTEGER NOT NULL DEFAULT 0 CHECK (runs >= 0),
+        finishes INTEGER NOT NULL DEFAULT 0 CHECK (finishes >= 0),
+        wins INTEGER NOT NULL DEFAULT 0 CHECK (wins >= 0),
+        best_score INTEGER NOT NULL DEFAULT 0 CHECK (best_score >= 0),
+        max_speed REAL NOT NULL DEFAULT 0 CHECK (max_speed >= 0),
+        best_accuracy REAL NOT NULL DEFAULT 0 CHECK (best_accuracy BETWEEN 0 AND 1),
+        perfects INTEGER NOT NULL DEFAULT 0 CHECK (perfects >= 0),
+        near_misses INTEGER NOT NULL DEFAULT 0 CHECK (near_misses >= 0),
+        kills INTEGER NOT NULL DEFAULT 0 CHECK (kills >= 0),
+        PRIMARY KEY (account_id, track_id)
+      ) STRICT;
+      INSERT INTO track_progress_v3 SELECT * FROM track_progress;
+
+      CREATE TABLE runs_v3 (
+        id TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        mode TEXT NOT NULL CHECK (mode IN ('solo', 'online')),
+        track_id TEXT NOT NULL CHECK (track_id IN ('aurora', 'reactor', 'void', 'forge', 'skyline', 'abyss')),
+        music_source TEXT NOT NULL CHECK (music_source IN ('synthetic', 'catalog', 'local')),
+        music_id TEXT NOT NULL,
+        seed INTEGER NOT NULL,
+        weapon TEXT NOT NULL,
+        ability TEXT NOT NULL,
+        ai_opponents INTEGER NOT NULL,
+        garage_json TEXT NOT NULL,
+        started_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        finished_at INTEGER,
+        status TEXT NOT NULL CHECK (status IN ('started', 'accepted', 'rejected', 'expired')),
+        ranked_eligible INTEGER NOT NULL CHECK (ranked_eligible IN (0, 1)),
+        ranked INTEGER CHECK (ranked IN (0, 1)),
+        result_hash TEXT,
+        result_json TEXT,
+        response_json TEXT
+      ) STRICT;
+      INSERT INTO runs_v3 SELECT * FROM runs;
+
+      CREATE TABLE achievement_progress_v3 (
+        account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        achievement_key TEXT NOT NULL,
+        current_value REAL NOT NULL DEFAULT 0,
+        target_value REAL NOT NULL,
+        unlocked_at INTEGER,
+        run_id TEXT REFERENCES runs_v3(id) ON DELETE SET NULL,
+        PRIMARY KEY (account_id, achievement_key)
+      ) STRICT;
+      INSERT INTO achievement_progress_v3 SELECT * FROM achievement_progress;
+
+      CREATE TABLE leaderboard_best_v3 (
+        board_key TEXT NOT NULL,
+        account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        run_id TEXT NOT NULL REFERENCES runs_v3(id) ON DELETE CASCADE,
+        score INTEGER NOT NULL CHECK (score >= 0),
+        achieved_at INTEGER NOT NULL,
+        PRIMARY KEY (board_key, account_id)
+      ) STRICT;
+      INSERT INTO leaderboard_best_v3 SELECT * FROM leaderboard_best;
+
+      DROP TABLE leaderboard_best;
+      DROP TABLE achievement_progress;
+      DROP TABLE runs;
+      DROP TABLE track_progress;
+      ALTER TABLE track_progress_v3 RENAME TO track_progress;
+      ALTER TABLE runs_v3 RENAME TO runs;
+      ALTER TABLE achievement_progress_v3 RENAME TO achievement_progress;
+      ALTER TABLE leaderboard_best_v3 RENAME TO leaderboard_best;
+
+      CREATE INDEX runs_account_started ON runs(account_id, started_at DESC);
+      CREATE INDEX runs_expiry ON runs(status, expires_at);
+      CREATE INDEX leaderboard_order ON leaderboard_best(board_key, score DESC, achieved_at ASC, account_id ASC);
+    `,
+  },
 ] as const;
 
 function checksum(migration: Migration): string {

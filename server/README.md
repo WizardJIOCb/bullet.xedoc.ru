@@ -53,7 +53,7 @@ The public API prefix is `/api/v1`:
 - `GET /me/profile`
 - `POST /me/import-legacy`, `/me/garage/upgrade`
 - `POST /runs/start`, `/runs/:runId/finish`
-- `GET /leaderboards?scope=global|aurora|reactor|void|forge&limit=25`
+- `GET /leaderboards?scope=global|aurora|reactor|void|forge|skyline|abyss&limit=25`
 - `GET /achievements`
 
 Synthetic solo tickets are provisionally ranked. Catalog, local-audio and

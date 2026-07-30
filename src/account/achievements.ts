@@ -56,9 +56,9 @@ const PROFILE_ACHIEVEMENTS: readonly ProfileAchievementDefinition[] = [
   },
   {
     id: 'all-routes',
-    target: 4,
+    target: 6,
     tone: 'violet',
-    icon: '4',
+    icon: '6',
     progress: (state) => Object.values(state.tracks).filter((track) => track.finishes > 0).length,
   },
 ] as const;
@@ -68,6 +68,8 @@ const TRACK_MASTER_SCORES: Record<TrackId, number> = {
   reactor: 70_000,
   void: 75_000,
   forge: 85_000,
+  skyline: 78_000,
+  abyss: 82_000,
 };
 
 export function achievementKey(id: AccountAchievementId, trackId: TrackId | null): string {
